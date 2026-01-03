@@ -1,0 +1,215 @@
+import Foundation
+
+/// A single settings entry displayed in a settings list.
+public struct SettingItem {
+    /// Stable identifier for the setting.
+    public let id: String
+    /// Label shown in the list.
+    public let label: String
+    /// Optional description shown below the list.
+    public let description: String?
+    /// Current value displayed in the list.
+    public var currentValue: String
+    /// Optional list of fixed values.
+    public let values: [String]?
+    /// Optional submenu component factory.
+    public let submenu: ((String, @escaping (String?) -> Void) -> Component)?
+
+    /// Create a settings item.
+    public init(
+        id: String,
+        label: String,
+        description: String? = nil,
+        currentValue: String,
+        values: [String]? = nil,
+        submenu: ((String, @escaping (String?) -> Void) -> Component)? = nil
+    ) {
+        self.id = id
+        self.label = label
+        self.description = description
+        self.currentValue = currentValue
+        self.values = values
+        self.submenu = submenu
+    }
+}
+
+/// Theme configuration for settings lists.
+public struct SettingsListTheme: Sendable {
+    /// Style for labels.
+    public let label: @Sendable (String, Bool) -> String
+    /// Style for values.
+    public let value: @Sendable (String, Bool) -> String
+    /// Style for descriptions.
+    public let description: @Sendable (String) -> String
+    /// Prefix used to indicate the selected item.
+    public let cursor: String
+    /// Style for hints and footer text.
+    public let hint: @Sendable (String) -> String
+
+    /// Create a settings list theme.
+    public init(
+        label: @escaping @Sendable (String, Bool) -> String,
+        value: @escaping @Sendable (String, Bool) -> String,
+        description: @escaping @Sendable (String) -> String,
+        cursor: String,
+        hint: @escaping @Sendable (String) -> String
+    ) {
+        self.label = label
+        self.value = value
+        self.description = description
+        self.cursor = cursor
+        self.hint = hint
+    }
+}
+
+/// List UI for editing and selecting setting values.
+public final class SettingsList: Component {
+    private var items: [SettingItem]
+    private let theme: SettingsListTheme
+    private var selectedIndex = 0
+    private let maxVisible: Int
+    private let onChange: (String, String) -> Void
+    private let onCancel: () -> Void
+
+    private var submenuComponent: Component?
+    private var submenuItemIndex: Int?
+
+    /// Create a settings list.
+    public init(
+        items: [SettingItem],
+        maxVisible: Int,
+        theme: SettingsListTheme,
+        onChange: @escaping (String, String) -> Void,
+        onCancel: @escaping () -> Void
+    ) {
+        self.items = items
+        self.maxVisible = maxVisible
+        self.theme = theme
+        self.onChange = onChange
+        self.onCancel = onCancel
+    }
+
+    /// Update a setting value by id.
+    public func updateValue(id: String, newValue: String) {
+        if let index = items.firstIndex(where: { $0.id == id }) {
+            items[index].currentValue = newValue
+        }
+    }
+
+    /// Invalidate the active submenu, if present.
+    public func invalidate() {
+        submenuComponent?.invalidate()
+    }
+
+    /// Render the list or the active submenu.
+    public func render(width: Int) -> [String] {
+        if let submenuComponent {
+            return submenuComponent.render(width: width)
+        }
+        return renderMainList(width: width)
+    }
+
+    /// Handle navigation, selection, and submenu input.
+    public func handleInput(_ data: String) {
+        if let submenuComponent {
+            submenuComponent.handleInput(data)
+            return
+        }
+
+        if isArrowUp(data) {
+            selectedIndex = selectedIndex == 0 ? max(items.count - 1, 0) : selectedIndex - 1
+        } else if isArrowDown(data) {
+            selectedIndex = selectedIndex == max(items.count - 1, 0) ? 0 : selectedIndex + 1
+        } else if isEnter(data) || data == " " {
+            activateItem()
+        } else if isEscape(data) || isCtrlC(data) {
+            onCancel()
+        }
+    }
+
+    private func renderMainList(width: Int) -> [String] {
+        var lines: [String] = []
+
+        guard !items.isEmpty else {
+            lines.append(theme.hint("  No settings available"))
+            return lines
+        }
+
+        let startIndex = max(0, min(selectedIndex - maxVisible / 2, items.count - maxVisible))
+        let endIndex = min(startIndex + maxVisible, items.count)
+        let maxLabelWidth = min(30, items.map { visibleWidth($0.label) }.max() ?? 0)
+
+        for i in startIndex..<endIndex {
+            let item = items[i]
+            let isSelected = i == selectedIndex
+            let prefix = isSelected ? theme.cursor : "  "
+            let prefixWidth = visibleWidth(prefix)
+
+            let labelPadded = item.label + String(repeating: " ", count: max(0, maxLabelWidth - visibleWidth(item.label)))
+            let labelText = theme.label(labelPadded, isSelected)
+
+            let separator = "  "
+            let usedWidth = prefixWidth + maxLabelWidth + visibleWidth(separator)
+            let valueMaxWidth = width - usedWidth - 2
+            let valueText = theme.value(truncateToWidth(item.currentValue, maxWidth: valueMaxWidth, ellipsis: ""), isSelected)
+
+            lines.append(prefix + labelText + separator + valueText)
+        }
+
+        if startIndex > 0 || endIndex < items.count {
+            let scrollText = "  (\(selectedIndex + 1)/\(items.count))"
+            lines.append(theme.hint(truncateToWidth(scrollText, maxWidth: width - 2, ellipsis: "")))
+        }
+
+        if let description = items[safe: selectedIndex]?.description {
+            lines.append("")
+            lines.append(theme.description("  \(truncateToWidth(description, maxWidth: width - 4, ellipsis: ""))"))
+        }
+
+        lines.append("")
+        lines.append(theme.hint("  Enter/Space to change · Esc to cancel"))
+
+        return lines
+    }
+
+    private func activateItem() {
+        guard let item = items[safe: selectedIndex] else { return }
+
+        if let submenu = item.submenu {
+            submenuItemIndex = selectedIndex
+            submenuComponent = submenu(item.currentValue) { [weak self] selectedValue in
+                guard let self else { return }
+                if let selectedValue {
+                    if let index = self.items.firstIndex(where: { $0.id == item.id }) {
+                        self.items[index].currentValue = selectedValue
+                    }
+                    self.onChange(item.id, selectedValue)
+                }
+                self.closeSubmenu()
+            }
+        } else if let values = item.values, !values.isEmpty {
+            let currentIndex = values.firstIndex(of: item.currentValue) ?? 0
+            let nextIndex = (currentIndex + 1) % values.count
+            let newValue = values[nextIndex]
+            if let index = items.firstIndex(where: { $0.id == item.id }) {
+                items[index].currentValue = newValue
+            }
+            onChange(item.id, newValue)
+        }
+    }
+
+    private func closeSubmenu() {
+        submenuComponent = nil
+        if let submenuItemIndex {
+            selectedIndex = submenuItemIndex
+            self.submenuItemIndex = nil
+        }
+    }
+}
+
+private extension Array {
+    subscript(safe index: Int) -> Element? {
+        guard index >= 0 && index < count else { return nil }
+        return self[index]
+    }
+}
