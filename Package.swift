@@ -17,6 +17,14 @@ let package = Package(
             name: "MiniTuiDemo",
             targets: ["MiniTuiDemo"]
         ),
+        .executable(
+            name: "MiniTuiKeyTester",
+            targets: ["MiniTuiKeyTester"]
+        ),
+        .executable(
+            name: "MiniTuiImageTest",
+            targets: ["MiniTuiImageTest"]
+        ),
     ],
     dependencies: [
         .package(url: "https://github.com/apple/swift-markdown.git", from: "0.3.0"),
@@ -34,6 +42,14 @@ let package = Package(
         ),
         .executableTarget(
             name: "MiniTuiDemo",
+            dependencies: ["MiniTui"]
+        ),
+        .executableTarget(
+            name: "MiniTuiKeyTester",
+            dependencies: ["MiniTui"]
+        ),
+        .executableTarget(
+            name: "MiniTuiImageTest",
             dependencies: ["MiniTui"]
         ),
     ]
