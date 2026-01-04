@@ -47,12 +47,13 @@ public struct SelectListTheme: Sendable {
 }
 
 /// Scrollable list of selectable items.
-public final class SelectList: Component {
+public final class SelectList: SystemCursorAware {
     private var items: [SelectItem]
     private var filteredItems: [SelectItem]
     private var selectedIndex: Int = 0
     private let maxVisible: Int
     private let theme: SelectListTheme
+    public var usesSystemCursor = false
 
     /// Called when an item is selected with Enter.
     public var onSelect: ((SelectItem) -> Void)?
@@ -98,7 +99,8 @@ public final class SelectList: Component {
 
             let line: String
             if isSelected {
-                let prefixWidth = 2
+                let prefix = "→ " + (usesSystemCursor ? systemCursorMarker : "")
+                let prefixWidth = visibleWidth("→ ")
                 let displayValue = item.label.isEmpty ? item.value : item.label
                 if let description = item.description, width > 40 {
                     let maxValueWidth = min(30, width - prefixWidth - 4)
@@ -108,14 +110,14 @@ public final class SelectList: Component {
                     let remainingWidth = width - descriptionStart - 2
                     if remainingWidth > 10 {
                         let truncatedDesc = truncateToWidth(description, maxWidth: remainingWidth, ellipsis: "")
-                        line = theme.selectedText("→ \(truncatedValue)\(spacing)\(truncatedDesc)")
+                        line = theme.selectedText("\(prefix)\(truncatedValue)\(spacing)\(truncatedDesc)")
                     } else {
                         let maxWidth = width - prefixWidth - 2
-                        line = theme.selectedText("→ \(truncateToWidth(displayValue, maxWidth: maxWidth, ellipsis: ""))")
+                        line = theme.selectedText("\(prefix)\(truncateToWidth(displayValue, maxWidth: maxWidth, ellipsis: ""))")
                     }
                 } else {
                     let maxWidth = width - prefixWidth - 2
-                    line = theme.selectedText("→ \(truncateToWidth(displayValue, maxWidth: maxWidth, ellipsis: ""))")
+                    line = theme.selectedText("\(prefix)\(truncateToWidth(displayValue, maxWidth: maxWidth, ellipsis: ""))")
                 }
             } else {
                 let displayValue = item.label.isEmpty ? item.value : item.label
@@ -154,10 +156,10 @@ public final class SelectList: Component {
 
     /// Handle navigation and selection input.
     public func handleInput(_ data: String) {
-        if isArrowUp(data) {
+        if isArrowUp(data) || isCtrlP(data) {
             selectedIndex = selectedIndex == 0 ? max(filteredItems.count - 1, 0) : selectedIndex - 1
             notifySelectionChange()
-        } else if isArrowDown(data) {
+        } else if isArrowDown(data) || isCtrlN(data) {
             selectedIndex = selectedIndex == max(filteredItems.count - 1, 0) ? 0 : selectedIndex + 1
             notifySelectionChange()
         } else if isEnter(data) {

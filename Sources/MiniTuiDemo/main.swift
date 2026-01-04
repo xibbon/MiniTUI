@@ -127,11 +127,16 @@ private struct ScreenState {
 }
 
 @MainActor
-private final class MenuScreen: Component {
+private final class MenuScreen: SystemCursorAware {
     private let container = Container()
     private let list: SelectList
     var onSelect: ((DemoScreen) -> Void)?
     var onCancel: (() -> Void)?
+    var usesSystemCursor = false {
+        didSet {
+            list.usesSystemCursor = usesSystemCursor
+        }
+    }
 
     init(theme: SelectListTheme) {
         let items = DemoScreen.allCases.map { screen in
@@ -167,11 +172,16 @@ private final class MenuScreen: Component {
 }
 
 @MainActor
-private final class InputDemo: Component {
+private final class InputDemo: SystemCursorAware {
     private let container = Container()
     private let input = Input()
     private let output = Text("Submitted: (none)", paddingX: 1, paddingY: 0)
     private let onExit: () -> Void
+    var usesSystemCursor = false {
+        didSet {
+            input.usesSystemCursor = usesSystemCursor
+        }
+    }
 
     init(onExit: @escaping () -> Void) {
         self.onExit = onExit
@@ -204,10 +214,15 @@ private final class InputDemo: Component {
 }
 
 @MainActor
-private final class EditorDemo: Component {
+private final class EditorDemo: SystemCursorAware {
     private let container = Container()
     private let editor: Editor
     private let output = Text("Last submit: (none)", paddingX: 1, paddingY: 0)
+    var usesSystemCursor = false {
+        didSet {
+            editor.usesSystemCursor = usesSystemCursor
+        }
+    }
 
     init(theme: EditorTheme) {
         editor = Editor(theme: theme)
@@ -254,10 +269,15 @@ private final class EditorDemo: Component {
 }
 
 @MainActor
-private final class SelectListDemo: Component {
+private final class SelectListDemo: SystemCursorAware {
     private let container = Container()
     private let list: SelectList
     private let output = Text("Selected: (none)", paddingX: 1, paddingY: 0)
+    var usesSystemCursor = false {
+        didSet {
+            list.usesSystemCursor = usesSystemCursor
+        }
+    }
 
     init(theme: SelectListTheme, onExit: @escaping () -> Void) {
         let items = [
@@ -300,10 +320,15 @@ private final class SelectListDemo: Component {
 }
 
 @MainActor
-private final class SimpleSelectSubmenu: Component {
+private final class SimpleSelectSubmenu: SystemCursorAware {
     private let container = Container()
     private let list: SelectList
     private let onFinish: (String?) -> Void
+    var usesSystemCursor = false {
+        didSet {
+            list.usesSystemCursor = usesSystemCursor
+        }
+    }
 
     init(title: String, options: [String], selected: String, theme: SelectListTheme, onFinish: @escaping (String?) -> Void) {
         self.onFinish = onFinish
@@ -345,10 +370,15 @@ private final class SimpleSelectSubmenu: Component {
 }
 
 @MainActor
-private final class SettingsListDemo: Component {
+private final class SettingsListDemo: SystemCursorAware {
     private let container = Container()
     private let list: SettingsList
     private let output = Text("Last change: (none)", paddingX: 1, paddingY: 0)
+    var usesSystemCursor = false {
+        didSet {
+            list.usesSystemCursor = usesSystemCursor
+        }
+    }
 
     init(theme: SettingsListTheme, selectTheme: SelectListTheme, onExit: @escaping () -> Void) {
         let items = [
@@ -456,7 +486,7 @@ private final class CancellableLoaderDemo: Component {
 }
 
 @MainActor
-private final class DemoApp: Component {
+private final class DemoApp: SystemCursorAware {
     private let tui: TUI
     private let header: Text
     private let footer: Text
@@ -464,6 +494,11 @@ private final class DemoApp: Component {
     private var body: Component
     private var cleanup: (() -> Void)?
     private var current: DemoScreen?
+    var usesSystemCursor = false {
+        didSet {
+            applyCursorPreference()
+        }
+    }
 
     init(tui: TUI) {
         self.tui = tui
@@ -525,6 +560,7 @@ private final class DemoApp: Component {
         body = menuScreen
         header.setText("MiniTui Component Demo")
         footer.setText("Use arrows and Enter to select. Esc quits.")
+        applyCursorPreference()
         tui.requestRender()
     }
 
@@ -539,7 +575,14 @@ private final class DemoApp: Component {
         header.setText("MiniTui - \(screen.label)")
         cleanup = state.cleanup
 
+        applyCursorPreference()
         tui.requestRender()
+    }
+
+    private func applyCursorPreference() {
+        if let bodyAware = body as? SystemCursorAware {
+            bodyAware.usesSystemCursor = usesSystemCursor
+        }
     }
 
     private func buildScreen(for screen: DemoScreen) -> ScreenState {

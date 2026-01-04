@@ -27,13 +27,15 @@ private struct LayoutLine {
 }
 
 /// Multi-line editor with history and autocomplete support.
-public final class Editor: Component {
+public final class Editor: SystemCursorAware, KillBufferAware {
     private var state = EditorState(lines: [""], cursorLine: 0, cursorCol: 0)
     private let theme: EditorTheme
     private var lastWidth: Int = 80
 
     /// Formatter used to color the editor border.
     public var borderColor: @Sendable (String) -> String
+    /// When true, do not render a custom cursor and rely on the system cursor.
+    public var usesSystemCursor = false
 
     private var autocompleteProvider: AutocompleteProvider?
     private var autocompleteList: SelectList?
@@ -95,7 +97,9 @@ public final class Editor: Component {
                 let before = displayText.prefixCharacters(cursorPos)
                 let after = displayText.substring(from: cursorPos, length: max(0, displayText.count - cursorPos))
 
-                if !after.isEmpty {
+                if usesSystemCursor {
+                    displayText = before + systemCursorMarker + after
+                } else if !after.isEmpty {
                     let first = after.prefixCharacters(1)
                     let rest = after.substring(from: 1, length: max(0, after.count - 1))
                     let cursor = "\u{001B}[7m\(first)\u{001B}[0m"
@@ -165,8 +169,8 @@ public final class Editor: Component {
             if isEscape(input) {
                 cancelAutocomplete()
                 return
-            } else if isArrowUp(input) || isArrowDown(input) || isEnter(input) || isTab(input) {
-                if isArrowUp(input) || isArrowDown(input) {
+            } else if isArrowUp(input) || isArrowDown(input) || isCtrlP(input) || isCtrlN(input) || isEnter(input) || isTab(input) {
+                if isArrowUp(input) || isArrowDown(input) || isCtrlP(input) || isCtrlN(input) {
                     autocompleteList.handleInput(input)
                     return
                 }
@@ -229,11 +233,17 @@ public final class Editor: Component {
         }
 
         if isCtrlK(input) {
-            deleteToEndOfLine()
+            killToEndOfLine()
+        } else if isAltBackspace(input) {
+            killWordBackwards()
+        } else if isAltD(input) {
+            killWordForwards()
+        } else if isCtrlY(input) {
+            yankKillBuffer()
         } else if isCtrlU(input) {
             deleteToStartOfLine()
-        } else if isCtrlW(input) || isAltBackspace(input) {
-            deleteWordBackwards()
+        } else if isCtrlW(input) {
+            killWordBackwards()
         } else if isCtrlA(input) {
             moveToLineStart()
         } else if isCtrlE(input) {
@@ -279,7 +289,7 @@ public final class Editor: Component {
             moveWordBackwards()
         } else if isAltRight(input) || isCtrlRight(input) {
             moveWordForwards()
-        } else if isArrowUp(input) {
+        } else if isArrowUp(input) || isCtrlP(input) {
             if isEditorEmpty() {
                 navigateHistory(direction: -1)
             } else if historyIndex > -1 && isOnFirstVisualLine() {
@@ -287,15 +297,15 @@ public final class Editor: Component {
             } else {
                 moveCursor(deltaLine: -1, deltaCol: 0)
             }
-        } else if isArrowDown(input) {
+        } else if isArrowDown(input) || isCtrlN(input) {
             if historyIndex > -1 && isOnLastVisualLine() {
                 navigateHistory(direction: 1)
             } else {
                 moveCursor(deltaLine: 1, deltaCol: 0)
             }
-        } else if isArrowRight(input) {
+        } else if isArrowRight(input) || isCtrlF(input) {
             moveCursor(deltaLine: 0, deltaCol: 1)
-        } else if isArrowLeft(input) {
+        } else if isArrowLeft(input) || isCtrlB(input) {
             moveCursor(deltaLine: 0, deltaCol: -1)
         } else if isShiftSpace(input) {
             insertCharacter(" ")
@@ -469,6 +479,41 @@ public final class Editor: Component {
         onChange?(getText())
     }
 
+    private func killToEndOfLine() {
+        historyIndex = -1
+        let currentLine = state.lines[safe: state.cursorLine] ?? ""
+        let killText: String
+
+        if state.cursorCol < currentLine.count {
+            killText = currentLine.substring(from: state.cursorCol, length: max(0, currentLine.count - state.cursorCol))
+            state.lines[state.cursorLine] = currentLine.prefixCharacters(state.cursorCol)
+        } else if state.cursorLine < state.lines.count - 1 {
+            killText = "\n"
+            let nextLine = state.lines[state.cursorLine + 1]
+            state.lines[state.cursorLine] = currentLine + nextLine
+            state.lines.remove(at: state.cursorLine + 1)
+        } else {
+            killText = ""
+        }
+
+        KillBuffer.shared.registerKill(killText, append: true)
+        onChange?(getText())
+    }
+
+    private func yankKillBuffer() {
+        let killBuffer = KillBuffer.shared.yank()
+        guard !killBuffer.isEmpty else { return }
+
+        if killBuffer.contains("\n") {
+            handlePaste(killBuffer)
+            return
+        }
+
+        for char in killBuffer {
+            insertCharacter(String(char))
+        }
+    }
+
     private func deleteWordBackwards() {
         historyIndex = -1
         let currentLine = state.lines[safe: state.cursorLine] ?? ""
@@ -490,6 +535,35 @@ public final class Editor: Component {
             let after = currentLine.substring(from: state.cursorCol, length: max(0, currentLine.count - state.cursorCol))
             state.lines[state.cursorLine] = before + after
             state.cursorCol = deleteFrom
+        }
+
+        onChange?(getText())
+    }
+
+    private func killWordBackwards() {
+        historyIndex = -1
+        let currentLine = state.lines[safe: state.cursorLine] ?? ""
+
+        if state.cursorCol == 0 {
+            if state.cursorLine > 0 {
+                let previousLine = state.lines[state.cursorLine - 1]
+                state.lines[state.cursorLine - 1] = previousLine + currentLine
+                state.lines.remove(at: state.cursorLine)
+                state.cursorLine -= 1
+                state.cursorCol = previousLine.count
+                KillBuffer.shared.registerKill("\n", append: true, prepend: true)
+            }
+        } else {
+            let oldCursor = state.cursorCol
+            moveWordBackwards()
+            let deleteFrom = state.cursorCol
+            state.cursorCol = oldCursor
+            let before = currentLine.prefixCharacters(deleteFrom)
+            let after = currentLine.substring(from: state.cursorCol, length: max(0, currentLine.count - state.cursorCol))
+            let deleted = currentLine.substring(from: deleteFrom, length: max(0, state.cursorCol - deleteFrom))
+            state.lines[state.cursorLine] = before + after
+            state.cursorCol = deleteFrom
+            KillBuffer.shared.registerKill(deleted, append: true, prepend: true)
         }
 
         onChange?(getText())
@@ -565,6 +639,43 @@ public final class Editor: Component {
                 }
             }
         }
+    }
+
+    private func killWordForwards() {
+        historyIndex = -1
+        let currentLine = state.lines[safe: state.cursorLine] ?? ""
+
+        guard state.cursorCol < currentLine.count else { return }
+
+        let textAfterCursor = Array(currentLine.substring(from: state.cursorCol, length: max(0, currentLine.count - state.cursorCol)))
+        var index = 0
+
+        while index < textAfterCursor.count, isWhitespaceChar(textAfterCursor[index]) {
+            index += 1
+        }
+
+        if index < textAfterCursor.count {
+            let first = textAfterCursor[index]
+            if isPunctuationChar(first) {
+                while index < textAfterCursor.count, isPunctuationChar(textAfterCursor[index]) {
+                    index += 1
+                }
+            } else {
+                while index < textAfterCursor.count,
+                      !isWhitespaceChar(textAfterCursor[index]),
+                      !isPunctuationChar(textAfterCursor[index]) {
+                    index += 1
+                }
+            }
+        }
+
+        let deleteTo = state.cursorCol + index
+        let before = currentLine.prefixCharacters(state.cursorCol)
+        let after = currentLine.substring(from: deleteTo, length: max(0, currentLine.count - deleteTo))
+        let deleted = currentLine.substring(from: state.cursorCol, length: max(0, deleteTo - state.cursorCol))
+        state.lines[state.cursorLine] = before + after
+        KillBuffer.shared.registerKill(deleted, append: true)
+        onChange?(getText())
     }
 
     private func moveCursor(deltaLine: Int, deltaCol: Int) {

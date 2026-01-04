@@ -1,13 +1,15 @@
 import Foundation
 
 /// Single-line text input with cursor and editing shortcuts.
-public final class Input: Component {
+public final class Input: SystemCursorAware, KillBufferAware {
     private var value: String = ""
     private var cursor: Int = 0
     /// Called when the user submits with Enter.
     public var onSubmit: ((String) -> Void)?
     /// Called when the user presses Ctrl-D on an empty input.
     public var onEnd: (() -> Void)?
+    /// When true, do not render a custom cursor and rely on the system cursor.
+    public var usesSystemCursor = false
 
     private var pasteBuffer: String = ""
     private var isInPaste = false
@@ -79,14 +81,14 @@ public final class Input: Component {
             return
         }
 
-        if isArrowLeft(input) {
+        if isArrowLeft(input) || isCtrlB(input) {
             if cursor > 0 {
                 cursor -= 1
             }
             return
         }
 
-        if isArrowRight(input) {
+        if isArrowRight(input) || isCtrlF(input) {
             if cursor < value.count {
                 cursor += 1
             }
@@ -112,8 +114,23 @@ public final class Input: Component {
             return
         }
 
-        if isCtrlW(input) || isAltBackspace(input) {
-            deleteWordBackwards()
+        if isCtrlY(input) {
+            yankKillBuffer()
+            return
+        }
+
+        if isAltBackspace(input) {
+            killWordBackwards()
+            return
+        }
+
+        if isAltD(input) {
+            killWordForwards()
+            return
+        }
+
+        if isCtrlW(input) {
+            killWordBackwards()
             return
         }
 
@@ -124,7 +141,7 @@ public final class Input: Component {
         }
 
         if isCtrlK(input) {
-            value = value.prefixCharacters(cursor)
+            killToEndOfLine()
             return
         }
 
@@ -181,11 +198,17 @@ public final class Input: Component {
         }
 
         let beforeCursor = visibleText.prefixCharacters(cursorDisplay)
-        let atCursor = cursorDisplay < visibleText.count ? visibleText.substring(from: cursorDisplay, length: 1) : " "
-        let afterCursor = cursorDisplay + 1 <= visibleText.count ? visibleText.substring(from: cursorDisplay + 1, length: max(0, visibleText.count - cursorDisplay - 1)) : ""
+        let afterCursor = visibleText.substring(from: cursorDisplay, length: max(0, visibleText.count - cursorDisplay))
+        let textWithCursor: String
 
-        let cursorChar = "\u{001B}[7m\(atCursor)\u{001B}[27m"
-        let textWithCursor = beforeCursor + cursorChar + afterCursor
+        if usesSystemCursor {
+            textWithCursor = beforeCursor + systemCursorMarker + afterCursor
+        } else {
+            let atCursor = afterCursor.isEmpty ? " " : afterCursor.prefixCharacters(1)
+            let remaining = afterCursor.isEmpty ? "" : afterCursor.substring(from: 1, length: max(0, afterCursor.count - 1))
+            let cursorChar = "\u{001B}[7m\(atCursor)\u{001B}[27m"
+            textWithCursor = beforeCursor + cursorChar + remaining
+        }
 
         let visualLength = visibleWidth(textWithCursor)
         let padding = String(repeating: " ", count: max(0, availableWidth - visualLength))
@@ -274,5 +297,72 @@ public final class Input: Component {
         let after = value.substring(from: cursor, length: value.count - cursor)
         value = before + cleanText + after
         cursor += cleanText.count
+    }
+
+    private func killToEndOfLine() {
+        let before = value.prefixCharacters(cursor)
+        let after = value.substring(from: cursor, length: value.count - cursor)
+        KillBuffer.shared.registerKill(after, append: true)
+        value = before
+    }
+
+    private func yankKillBuffer() {
+        let killBuffer = KillBuffer.shared.yank()
+        guard !killBuffer.isEmpty else { return }
+        let before = value.prefixCharacters(cursor)
+        let after = value.substring(from: cursor, length: value.count - cursor)
+        value = before + killBuffer + after
+        cursor += killBuffer.count
+    }
+
+    private func killWordBackwards() {
+        guard cursor > 0 else { return }
+
+        let oldCursor = cursor
+        moveWordBackwards()
+        let deleteFrom = cursor
+        cursor = oldCursor
+
+        let before = value.prefixCharacters(deleteFrom)
+        let after = value.substring(from: cursor, length: value.count - cursor)
+        let deleted = value.substring(from: deleteFrom, length: max(0, cursor - deleteFrom))
+        value = before + after
+        cursor = deleteFrom
+
+        KillBuffer.shared.registerKill(deleted, append: true, prepend: true)
+    }
+
+    private func killWordForwards() {
+        guard cursor < value.count else { return }
+
+        let textAfterCursor = Array(value.substring(from: cursor, length: value.count - cursor))
+        var index = 0
+
+        while index < textAfterCursor.count, isWhitespaceChar(textAfterCursor[index]) {
+            index += 1
+        }
+
+        if index < textAfterCursor.count {
+            let first = textAfterCursor[index]
+            if isPunctuationChar(first) {
+                while index < textAfterCursor.count, isPunctuationChar(textAfterCursor[index]) {
+                    index += 1
+                }
+            } else {
+                while index < textAfterCursor.count,
+                      !isWhitespaceChar(textAfterCursor[index]),
+                      !isPunctuationChar(textAfterCursor[index]) {
+                    index += 1
+                }
+            }
+        }
+
+        let deleteTo = cursor + index
+        let before = value.prefixCharacters(cursor)
+        let after = value.substring(from: deleteTo, length: value.count - deleteTo)
+        let deleted = value.substring(from: cursor, length: max(0, deleteTo - cursor))
+        value = before + after
+
+        KillBuffer.shared.registerKill(deleted, append: true)
     }
 }

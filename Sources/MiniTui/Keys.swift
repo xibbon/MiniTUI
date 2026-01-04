@@ -2,17 +2,21 @@ import Foundation
 
 private enum Codepoints {
     static let a = 97
+    static let b = 98
     static let c = 99
     static let d = 100
     static let e = 101
+    static let f = 102
     static let g = 103
     static let k = 107
     static let l = 108
+    static let n = 110
     static let o = 111
     static let p = 112
     static let t = 116
     static let u = 117
     static let w = 119
+    static let y = 121
     static let z = 122
 
     static let escape = 27
@@ -108,18 +112,26 @@ private func matchesKittySequence(_ data: String, expectedCodepoint: Int, expect
 public enum Keys {
     /// Kitty sequence for Ctrl+A.
     public static let ctrlA = kittySequence(codepoint: Codepoints.a, modifier: Modifiers.ctrl)
+    /// Kitty sequence for Ctrl+B.
+    public static let ctrlB = kittySequence(codepoint: Codepoints.b, modifier: Modifiers.ctrl)
     /// Kitty sequence for Ctrl+C.
     public static let ctrlC = kittySequence(codepoint: Codepoints.c, modifier: Modifiers.ctrl)
     /// Kitty sequence for Ctrl+D.
     public static let ctrlD = kittySequence(codepoint: Codepoints.d, modifier: Modifiers.ctrl)
+    /// Kitty sequence for Alt+D.
+    public static let altD = kittySequence(codepoint: Codepoints.d, modifier: Modifiers.alt)
     /// Kitty sequence for Ctrl+E.
     public static let ctrlE = kittySequence(codepoint: Codepoints.e, modifier: Modifiers.ctrl)
+    /// Kitty sequence for Ctrl+F.
+    public static let ctrlF = kittySequence(codepoint: Codepoints.f, modifier: Modifiers.ctrl)
     /// Kitty sequence for Ctrl+G.
     public static let ctrlG = kittySequence(codepoint: Codepoints.g, modifier: Modifiers.ctrl)
     /// Kitty sequence for Ctrl+K.
     public static let ctrlK = kittySequence(codepoint: Codepoints.k, modifier: Modifiers.ctrl)
     /// Kitty sequence for Ctrl+L.
     public static let ctrlL = kittySequence(codepoint: Codepoints.l, modifier: Modifiers.ctrl)
+    /// Kitty sequence for Ctrl+N.
+    public static let ctrlN = kittySequence(codepoint: Codepoints.n, modifier: Modifiers.ctrl)
     /// Kitty sequence for Ctrl+O.
     public static let ctrlO = kittySequence(codepoint: Codepoints.o, modifier: Modifiers.ctrl)
     /// Kitty sequence for Ctrl+P.
@@ -130,6 +142,8 @@ public enum Keys {
     public static let ctrlU = kittySequence(codepoint: Codepoints.u, modifier: Modifiers.ctrl)
     /// Kitty sequence for Ctrl+W.
     public static let ctrlW = kittySequence(codepoint: Codepoints.w, modifier: Modifiers.ctrl)
+    /// Kitty sequence for Ctrl+Y.
+    public static let ctrlY = kittySequence(codepoint: Codepoints.y, modifier: Modifiers.ctrl)
     /// Kitty sequence for Ctrl+Z.
     public static let ctrlZ = kittySequence(codepoint: Codepoints.z, modifier: Modifiers.ctrl)
 
@@ -149,17 +163,22 @@ public enum Keys {
 
 private enum RawKeys {
     static let ctrlA = "\u{0001}"
+    static let ctrlB = "\u{0002}"
     static let ctrlC = "\u{0003}"
     static let ctrlD = "\u{0004}"
+    static let altD = "\u{001B}d"
     static let ctrlE = "\u{0005}"
+    static let ctrlF = "\u{0006}"
     static let ctrlG = "\u{0007}"
     static let ctrlK = "\u{000B}"
     static let ctrlL = "\u{000C}"
+    static let ctrlN = "\u{000E}"
     static let ctrlO = "\u{000F}"
     static let ctrlP = "\u{0010}"
     static let ctrlT = "\u{0014}"
     static let ctrlU = "\u{0015}"
     static let ctrlW = "\u{0017}"
+    static let ctrlY = "\u{0019}"
     static let ctrlZ = "\u{001A}"
     static let altBackspace = "\u{001B}\u{007F}"
     static let shiftTab = "\u{001B}[Z"
@@ -190,6 +209,11 @@ public func isCtrlA(_ data: String) -> Bool {
     return data == RawKeys.ctrlA || data == Keys.ctrlA || matchesKittySequence(data, expectedCodepoint: Codepoints.a, expectedModifier: Modifiers.ctrl)
 }
 
+/// Return true when input matches Ctrl+B (raw byte or Kitty protocol).
+public func isCtrlB(_ data: String) -> Bool {
+    return data == RawKeys.ctrlB || data == Keys.ctrlB || matchesKittySequence(data, expectedCodepoint: Codepoints.b, expectedModifier: Modifiers.ctrl)
+}
+
 /// Return true when input matches Ctrl+C (raw byte or Kitty protocol).
 public func isCtrlC(_ data: String) -> Bool {
     return data == RawKeys.ctrlC || data == Keys.ctrlC || matchesKittySequence(data, expectedCodepoint: Codepoints.c, expectedModifier: Modifiers.ctrl)
@@ -200,9 +224,19 @@ public func isCtrlD(_ data: String) -> Bool {
     return data == RawKeys.ctrlD || data == Keys.ctrlD || matchesKittySequence(data, expectedCodepoint: Codepoints.d, expectedModifier: Modifiers.ctrl)
 }
 
+/// Return true when input matches Alt+D (raw byte or Kitty protocol).
+public func isAltD(_ data: String) -> Bool {
+    return data == RawKeys.altD || data == Keys.altD || matchesKittySequence(data, expectedCodepoint: Codepoints.d, expectedModifier: Modifiers.alt)
+}
+
 /// Return true when input matches Ctrl+E (raw byte or Kitty protocol).
 public func isCtrlE(_ data: String) -> Bool {
     return data == RawKeys.ctrlE || data == Keys.ctrlE || matchesKittySequence(data, expectedCodepoint: Codepoints.e, expectedModifier: Modifiers.ctrl)
+}
+
+/// Return true when input matches Ctrl+F (raw byte or Kitty protocol).
+public func isCtrlF(_ data: String) -> Bool {
+    return data == RawKeys.ctrlF || data == Keys.ctrlF || matchesKittySequence(data, expectedCodepoint: Codepoints.f, expectedModifier: Modifiers.ctrl)
 }
 
 /// Return true when input matches Ctrl+G (raw byte or Kitty protocol).
@@ -220,6 +254,11 @@ public func isCtrlK(_ data: String) -> Bool {
 /// Return true when input matches Ctrl+L (raw byte or Kitty protocol).
 public func isCtrlL(_ data: String) -> Bool {
     return data == RawKeys.ctrlL || data == Keys.ctrlL || matchesKittySequence(data, expectedCodepoint: Codepoints.l, expectedModifier: Modifiers.ctrl)
+}
+
+/// Return true when input matches Ctrl+N (raw byte or Kitty protocol).
+public func isCtrlN(_ data: String) -> Bool {
+    return data == RawKeys.ctrlN || data == Keys.ctrlN || matchesKittySequence(data, expectedCodepoint: Codepoints.n, expectedModifier: Modifiers.ctrl)
 }
 
 /// Return true when input matches Ctrl+O (raw byte or Kitty protocol).
@@ -260,6 +299,11 @@ public func isCtrlU(_ data: String) -> Bool {
 /// Return true when input matches Ctrl+W (raw byte or Kitty protocol).
 public func isCtrlW(_ data: String) -> Bool {
     return data == RawKeys.ctrlW || data == Keys.ctrlW || matchesKittySequence(data, expectedCodepoint: Codepoints.w, expectedModifier: Modifiers.ctrl)
+}
+
+/// Return true when input matches Ctrl+Y (raw byte or Kitty protocol).
+public func isCtrlY(_ data: String) -> Bool {
+    return data == RawKeys.ctrlY || data == Keys.ctrlY || matchesKittySequence(data, expectedCodepoint: Codepoints.y, expectedModifier: Modifiers.ctrl)
 }
 
 /// Return true when input matches Ctrl+Z (raw byte or Kitty protocol).

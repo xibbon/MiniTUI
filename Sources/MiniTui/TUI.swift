@@ -11,9 +11,16 @@ public final class TUI: Container {
 
     /// Optional handler for Shift+Ctrl+D debug trigger.
     public var onDebug: (() -> Void)?
+    /// When true, show and position the terminal cursor instead of rendering a custom cursor.
+    public var useSystemCursor = true {
+        didSet {
+            updateCursorMode()
+        }
+    }
 
     private var renderRequested = false
     private var cursorRow = 0
+    private var lastSystemCursor: CursorPosition?
     private var inputBuffer = ""
     private var cellSizeQueryPending = false
 
@@ -25,7 +32,14 @@ public final class TUI: Container {
 
     /// Set the component that receives keyboard input.
     public func setFocus(_ component: Component?) {
+        if let focusedComponent = focusedComponent as? SystemCursorAware {
+            focusedComponent.usesSystemCursor = false
+        }
         focusedComponent = component
+        if let focusedComponent = focusedComponent as? SystemCursorAware {
+            focusedComponent.usesSystemCursor = useSystemCursor
+        }
+        updateCursorMode()
     }
 
     /// Start terminal input and initial rendering.
@@ -39,7 +53,7 @@ public final class TUI: Container {
                 self?.requestRender()
             }
         })
-        terminal.hideCursor()
+        updateCursorMode()
         queryCellSize()
         requestRender()
     }
@@ -82,6 +96,11 @@ public final class TUI: Container {
         }
 
         if let focused = focusedComponent {
+            let shouldPreserveKillChain = focused is KillBufferAware
+                && (isCtrlK(input) || isCtrlW(input) || isAltBackspace(input) || isAltD(input))
+            if !shouldPreserveKillChain {
+                KillBuffer.shared.breakChain()
+            }
             focused.handleInput(input)
             requestRender()
         }
@@ -135,7 +154,17 @@ public final class TUI: Container {
         let height = terminal.rows
 
         let rawLines = render(width: width)
-        let newLines = clampLines(rawLines, width: width)
+        let cursorPosition: CursorPosition?
+        let cleanedLines: [String]
+        if useSystemCursor {
+            let extraction = extractCursorPosition(from: rawLines)
+            cleanedLines = extraction.lines
+            cursorPosition = extraction.cursor
+        } else {
+            cleanedLines = rawLines
+            cursorPosition = nil
+        }
+        let newLines = clampLines(cleanedLines, width: width)
         let widthChanged = previousWidth != 0 && previousWidth != width
 
         if previousLines.isEmpty {
@@ -149,6 +178,7 @@ public final class TUI: Container {
             cursorRow = newLines.count - 1
             previousLines = newLines
             previousWidth = width
+            positionCursorIfNeeded(cursorPosition, width: width)
             return
         }
 
@@ -164,6 +194,7 @@ public final class TUI: Container {
             cursorRow = newLines.count - 1
             previousLines = newLines
             previousWidth = width
+            positionCursorIfNeeded(cursorPosition, width: width)
             return
         }
 
@@ -178,6 +209,9 @@ public final class TUI: Container {
         }
 
         if firstChanged == -1 {
+            if useSystemCursor, cursorPosition != lastSystemCursor {
+                positionCursorIfNeeded(cursorPosition, width: width)
+            }
             return
         }
 
@@ -194,6 +228,7 @@ public final class TUI: Container {
             cursorRow = newLines.count - 1
             previousLines = newLines
             previousWidth = width
+            positionCursorIfNeeded(cursorPosition, width: width)
             return
         }
 
@@ -225,6 +260,66 @@ public final class TUI: Container {
         cursorRow = newLines.count - 1
         previousLines = newLines
         previousWidth = width
+        positionCursorIfNeeded(cursorPosition, width: width)
+    }
+
+    private func updateCursorMode() {
+        let shouldShowSystemCursor = useSystemCursor && focusedComponent is SystemCursorAware
+        if shouldShowSystemCursor {
+            terminal.showCursor()
+        } else {
+            terminal.hideCursor()
+            lastSystemCursor = nil
+        }
+
+        if let focusedComponent = focusedComponent as? SystemCursorAware {
+            focusedComponent.usesSystemCursor = useSystemCursor
+        }
+    }
+
+    private struct CursorPosition: Equatable {
+        let row: Int
+        let col: Int
+    }
+
+    private func extractCursorPosition(from lines: [String]) -> (lines: [String], cursor: CursorPosition?) {
+        var cursor: CursorPosition?
+        var cleaned: [String] = []
+        cleaned.reserveCapacity(lines.count)
+
+        for (row, line) in lines.enumerated() {
+            if let range = line.range(of: systemCursorMarker) {
+                let prefix = String(line[..<range.lowerBound])
+                let col = visibleWidth(prefix)
+                if cursor == nil {
+                    cursor = CursorPosition(row: row, col: col)
+                }
+                cleaned.append(line.replacingOccurrences(of: systemCursorMarker, with: ""))
+            } else {
+                cleaned.append(line)
+            }
+        }
+
+        return (cleaned, cursor)
+    }
+
+    private func positionCursorIfNeeded(_ cursor: CursorPosition?, width: Int) {
+        guard useSystemCursor, let cursor else { return }
+
+        let clampedCol = max(0, min(cursor.col, max(0, width - 1)))
+        var buffer = ""
+        let lineDiff = cursor.row - cursorRow
+        if lineDiff > 0 {
+            buffer += "\u{001B}[\(lineDiff)B"
+        } else if lineDiff < 0 {
+            buffer += "\u{001B}[\(-lineDiff)A"
+        }
+        buffer += "\r"
+        buffer += "\u{001B}[\(clampedCol + 1)G"
+
+        terminal.write(buffer)
+        cursorRow = cursor.row
+        lastSystemCursor = cursor
     }
 
     private func clampLines(_ lines: [String], width: Int) -> [String] {

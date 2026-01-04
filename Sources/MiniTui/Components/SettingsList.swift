@@ -63,13 +63,14 @@ public struct SettingsListTheme: Sendable {
 }
 
 /// List UI for editing and selecting setting values.
-public final class SettingsList: Component {
+public final class SettingsList: SystemCursorAware {
     private var items: [SettingItem]
     private let theme: SettingsListTheme
     private var selectedIndex = 0
     private let maxVisible: Int
     private let onChange: (String, String) -> Void
     private let onCancel: () -> Void
+    public var usesSystemCursor = false
 
     private var submenuComponent: Component?
     private var submenuItemIndex: Int?
@@ -104,6 +105,9 @@ public final class SettingsList: Component {
     /// Render the list or the active submenu.
     public func render(width: Int) -> [String] {
         if let submenuComponent {
+            if let submenuAware = submenuComponent as? SystemCursorAware {
+                submenuAware.usesSystemCursor = usesSystemCursor
+            }
             return submenuComponent.render(width: width)
         }
         return renderMainList(width: width)
@@ -116,9 +120,9 @@ public final class SettingsList: Component {
             return
         }
 
-        if isArrowUp(data) {
+        if isArrowUp(data) || isCtrlP(data) {
             selectedIndex = selectedIndex == 0 ? max(items.count - 1, 0) : selectedIndex - 1
-        } else if isArrowDown(data) {
+        } else if isArrowDown(data) || isCtrlN(data) {
             selectedIndex = selectedIndex == max(items.count - 1, 0) ? 0 : selectedIndex + 1
         } else if isEnter(data) || data == " " {
             activateItem()
@@ -142,8 +146,9 @@ public final class SettingsList: Component {
         for i in startIndex..<endIndex {
             let item = items[i]
             let isSelected = i == selectedIndex
-            let prefix = isSelected ? theme.cursor : "  "
-            let prefixWidth = visibleWidth(prefix)
+            let basePrefix = isSelected ? theme.cursor : "  "
+            let prefix = isSelected && usesSystemCursor ? basePrefix + systemCursorMarker : basePrefix
+            let prefixWidth = visibleWidth(basePrefix)
 
             let labelPadded = item.label + String(repeating: " ", count: max(0, maxLabelWidth - visibleWidth(item.label)))
             let labelText = theme.label(labelPadded, isSelected)
@@ -186,6 +191,9 @@ public final class SettingsList: Component {
                     self.onChange(item.id, selectedValue)
                 }
                 self.closeSubmenu()
+            }
+            if let submenuAware = submenuComponent as? SystemCursorAware {
+                submenuAware.usesSystemCursor = usesSystemCursor
             }
         } else if let values = item.values, !values.isEmpty {
             let currentIndex = values.firstIndex(of: item.currentValue) ?? 0
