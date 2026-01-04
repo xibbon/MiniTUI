@@ -1,7 +1,7 @@
 import Foundation
 
 /// Component that composes and renders a list of child components.
-public class Container: Component {
+open class Container: Component {
     /// Current child components in render order.
     public private(set) var children: [Component] = []
 
@@ -40,4 +40,7 @@ public class Container: Component {
         }
         return lines
     }
+
+    /// Default no-op input handler for containers.
+    open func handleInput(_ data: String) {}
 }

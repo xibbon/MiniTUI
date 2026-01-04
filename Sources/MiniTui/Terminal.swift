@@ -167,7 +167,11 @@ public final class ProcessTerminal: Terminal {
     private func terminalSize() -> (columns: Int, rows: Int) {
         var size = winsize()
         if ioctl(STDOUT_FILENO, TIOCGWINSZ, &size) == 0 {
-            return (columns: Int(size.ws_col), rows: Int(size.ws_row))
+            let columns = Int(size.ws_col)
+            let rows = Int(size.ws_row)
+            if columns > 0, rows > 0 {
+                return (columns: columns, rows: rows)
+            }
         }
         return (columns: 80, rows: 24)
     }

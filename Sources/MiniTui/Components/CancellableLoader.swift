@@ -45,13 +45,10 @@ public final class CancellableLoader: Loader {
     }
 
     /// Handle Escape to cancel the loader.
-    public override nonisolated func handleInput(_ data: String) {
-        Task { @MainActor [weak self] in
-            guard let self else { return }
-            if isEscape(data) {
-                self.cancellationSignal.cancel()
-                self.onAbort?()
-            }
+    public override func handleInput(_ data: String) {
+        if isEscape(data) {
+            cancellationSignal.cancel()
+            onAbort?()
         }
     }
 

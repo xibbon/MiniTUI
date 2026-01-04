@@ -32,7 +32,7 @@ public final class TUI: Container {
     public func start() {
         terminal.start(onInput: { [weak self] data in
             Task { @MainActor in
-                self?.handleInput(data)
+                self?.handleTerminalInput(data)
             }
         }, onResize: { [weak self] in
             Task { @MainActor in
@@ -66,7 +66,7 @@ public final class TUI: Container {
         }
     }
 
-    private func handleInput(_ data: String) {
+    private func handleTerminalInput(_ data: String) {
         var input = data
 
         if cellSizeQueryPending {
@@ -134,7 +134,8 @@ public final class TUI: Container {
         let width = terminal.columns
         let height = terminal.rows
 
-        let newLines = render(width: width)
+        let rawLines = render(width: width)
+        let newLines = clampLines(rawLines, width: width)
         let widthChanged = previousWidth != 0 && previousWidth != width
 
         if previousLines.isEmpty {
@@ -208,29 +209,7 @@ public final class TUI: Container {
         for i in firstChanged..<newLines.count {
             if i > firstChanged { buffer += "\r\n" }
             buffer += "\u{001B}[2K"
-            let line = newLines[i]
-            let isImageLine = containsImage(line)
-            if !isImageLine && visibleWidth(line) > width {
-                let crashPath = FileManager.default.homeDirectoryForCurrentUser
-                    .appendingPathComponent(".pi")
-                    .appendingPathComponent("agent")
-                    .appendingPathComponent("pi-crash.log")
-
-                let crashLines = [
-                    "Crash at \(ISO8601DateFormatter().string(from: Date()))",
-                    "Terminal width: \(width)",
-                    "Line \(i) visible width: \(visibleWidth(line))",
-                    "",
-                    "=== All rendered lines ===",
-                ] + newLines.enumerated().map { idx, value in
-                    "[\(idx)] (w=\(visibleWidth(value))) \(value)"
-                } + [""]
-
-                try? FileManager.default.createDirectory(at: crashPath.deletingLastPathComponent(), withIntermediateDirectories: true)
-                try? crashLines.joined(separator: "\n").write(to: crashPath, atomically: true, encoding: .utf8)
-                fatalError("Rendered line \(i) exceeds terminal width. Debug log written to \(crashPath.path)")
-            }
-            buffer += line
+            buffer += newLines[i]
         }
 
         if previousLines.count > newLines.count {
@@ -246,6 +225,22 @@ public final class TUI: Container {
         cursorRow = newLines.count - 1
         previousLines = newLines
         previousWidth = width
+    }
+
+    private func clampLines(_ lines: [String], width: Int) -> [String] {
+        guard width > 0 else { return lines }
+        var clamped: [String] = []
+        clamped.reserveCapacity(lines.count)
+
+        for line in lines {
+            if containsImage(line) || visibleWidth(line) <= width {
+                clamped.append(line)
+            } else {
+                clamped.append(truncateToWidth(line, maxWidth: width, ellipsis: ""))
+            }
+        }
+
+        return clamped
     }
 
     private func matchRegex(_ pattern: String, in text: String) -> [String]? {

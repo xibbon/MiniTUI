@@ -1,7 +1,7 @@
 import Foundation
 
 /// Container that adds padding and optional background styling.
-public final class Box: Component {
+open class Box: Component {
     /// Current child components.
     public private(set) var children: [Component] = []
     private let paddingX: Int

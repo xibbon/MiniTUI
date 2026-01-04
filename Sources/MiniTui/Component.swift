@@ -1,6 +1,7 @@
 import Foundation
 
 /// UI building block that can render lines and optionally handle input.
+@MainActor
 public protocol Component: AnyObject {
     /// Render the component into an array of terminal lines for the given width.
     func render(width: Int) -> [String]
