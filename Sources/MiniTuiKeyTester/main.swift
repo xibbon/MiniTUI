@@ -12,7 +12,7 @@ private final class KeyLogger: Component {
     }
 
     func handleInput(_ data: String) {
-        if isCtrlC(data) {
+        if matchesKey(data, Key.ctrl("c")) {
             terminal.showCursor()
             terminal.stop()
             print("\nExiting...")

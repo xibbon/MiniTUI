@@ -120,13 +120,14 @@ public final class SettingsList: SystemCursorAware {
             return
         }
 
-        if isArrowUp(data) || isCtrlP(data) {
+        let kb = getEditorKeybindings()
+        if kb.matches(data, .selectUp) {
             selectedIndex = selectedIndex == 0 ? max(items.count - 1, 0) : selectedIndex - 1
-        } else if isArrowDown(data) || isCtrlN(data) {
+        } else if kb.matches(data, .selectDown) {
             selectedIndex = selectedIndex == max(items.count - 1, 0) ? 0 : selectedIndex + 1
-        } else if isEnter(data) || data == " " {
+        } else if kb.matches(data, .selectConfirm) || data == " " {
             activateItem()
-        } else if isEscape(data) || isCtrlC(data) {
+        } else if kb.matches(data, .selectCancel) {
             onCancel()
         }
     }
@@ -168,7 +169,10 @@ public final class SettingsList: SystemCursorAware {
 
         if let description = items[safe: selectedIndex]?.description {
             lines.append("")
-            lines.append(theme.description("  \(truncateToWidth(description, maxWidth: width - 4, ellipsis: ""))"))
+            let wrappedDesc = wrapTextWithAnsi(description, width: width - 4)
+            for line in wrappedDesc {
+                lines.append(theme.description("  \(line)"))
+            }
         }
 
         lines.append("")

@@ -1,6 +1,7 @@
 import Testing
 import MiniTui
 
+@MainActor
 @Test("Ctrl-D triggers onEnd only when input is empty")
 func ctrlDEndsInputWhenEmpty() {
     let input = Input()
@@ -21,6 +22,7 @@ func ctrlDEndsInputWhenEmpty() {
     #expect(input.getValue() == "")
 }
 
+@MainActor
 @Test("Ctrl-D does nothing when input is not empty")
 func ctrlDIgnoredWhenNotEmpty() {
     let input = Input()

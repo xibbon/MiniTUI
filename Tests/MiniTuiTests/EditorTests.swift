@@ -1,6 +1,7 @@
 import Testing
 import MiniTui
 
+@MainActor
 @Test("does nothing on Up arrow when history is empty")
 func historyUpWhenEmpty() {
     let editor = Editor(theme: defaultEditorTheme)
@@ -8,6 +9,7 @@ func historyUpWhenEmpty() {
     #expect(editor.getText() == "")
 }
 
+@MainActor
 @Test("shows most recent history entry on Up arrow when editor is empty")
 func historyUpShowsMostRecent() {
     let editor = Editor(theme: defaultEditorTheme)
@@ -17,6 +19,7 @@ func historyUpShowsMostRecent() {
     #expect(editor.getText() == "second prompt")
 }
 
+@MainActor
 @Test("cycles through history entries on repeated Up arrow")
 func historyCyclesUp() {
     let editor = Editor(theme: defaultEditorTheme)
@@ -34,6 +37,7 @@ func historyCyclesUp() {
     #expect(editor.getText() == "first")
 }
 
+@MainActor
 @Test("returns to empty editor on Down arrow after browsing history")
 func historyDownClears() {
     let editor = Editor(theme: defaultEditorTheme)
@@ -44,6 +48,7 @@ func historyDownClears() {
     #expect(editor.getText() == "")
 }
 
+@MainActor
 @Test("navigates forward through history with Down arrow")
 func historyDownNavigates() {
     let editor = Editor(theme: defaultEditorTheme)
@@ -63,6 +68,7 @@ func historyDownNavigates() {
     #expect(editor.getText() == "")
 }
 
+@MainActor
 @Test("exits history mode when typing a character")
 func historyExitsOnTyping() {
     let editor = Editor(theme: defaultEditorTheme)
@@ -72,6 +78,7 @@ func historyExitsOnTyping() {
     #expect(editor.getText() == "old promptx")
 }
 
+@MainActor
 @Test("exits history mode on setText")
 func historyExitsOnSetText() {
     let editor = Editor(theme: defaultEditorTheme)
@@ -83,6 +90,7 @@ func historyExitsOnSetText() {
     #expect(editor.getText() == "second")
 }
 
+@MainActor
 @Test("does not add empty strings to history")
 func historyIgnoresEmpty() {
     let editor = Editor(theme: defaultEditorTheme)
@@ -95,6 +103,7 @@ func historyIgnoresEmpty() {
     #expect(editor.getText() == "valid")
 }
 
+@MainActor
 @Test("does not add consecutive duplicates to history")
 func historyNoConsecutiveDuplicates() {
     let editor = Editor(theme: defaultEditorTheme)
@@ -107,6 +116,7 @@ func historyNoConsecutiveDuplicates() {
     #expect(editor.getText() == "same")
 }
 
+@MainActor
 @Test("allows non-consecutive duplicates in history")
 func historyAllowsNonConsecutiveDuplicates() {
     let editor = Editor(theme: defaultEditorTheme)
@@ -121,6 +131,7 @@ func historyAllowsNonConsecutiveDuplicates() {
     #expect(editor.getText() == "first")
 }
 
+@MainActor
 @Test("uses cursor movement instead of history when editor has content")
 func historyNotWhenContentExists() {
     let editor = Editor(theme: defaultEditorTheme)
@@ -131,6 +142,7 @@ func historyNotWhenContentExists() {
     #expect(editor.getText() == "line1X\nline2")
 }
 
+@MainActor
 @Test("limits history to 100 entries")
 func historyLimit() {
     let editor = Editor(theme: defaultEditorTheme)
@@ -145,6 +157,7 @@ func historyLimit() {
     #expect(editor.getText() == "prompt 5")
 }
 
+@MainActor
 @Test("allows cursor movement within multi-line history entry with Down")
 func historyMultiLineDown() {
     let editor = Editor(theme: defaultEditorTheme)
@@ -155,6 +168,7 @@ func historyMultiLineDown() {
     #expect(editor.getText() == "")
 }
 
+@MainActor
 @Test("allows cursor movement within multi-line history entry with Up")
 func historyMultiLineUp() {
     let editor = Editor(theme: defaultEditorTheme)
@@ -169,6 +183,7 @@ func historyMultiLineUp() {
     #expect(editor.getText() == "older entry")
 }
 
+@MainActor
 @Test("navigates from multi-line entry back to newer via Down after cursor movement")
 func historyMultiLineDownAfterMove() {
     let editor = Editor(theme: defaultEditorTheme)
@@ -184,6 +199,7 @@ func historyMultiLineDownAfterMove() {
     #expect(editor.getText() == "")
 }
 
+@MainActor
 @Test("returns cursor position")
 func returnsCursorPosition() {
     let editor = Editor(theme: defaultEditorTheme)
@@ -198,6 +214,7 @@ func returnsCursorPosition() {
     #expect(editor.getCursor().col == 2)
 }
 
+@MainActor
 @Test("returns lines as a defensive copy")
 func returnsLinesCopy() {
     let editor = Editor(theme: defaultEditorTheme)
@@ -208,6 +225,7 @@ func returnsLinesCopy() {
     #expect(editor.getLines() == ["a", "b"])
 }
 
+@MainActor
 @Test("inserts mixed ASCII, umlauts, and emojis as literal text")
 func insertsUnicode() {
     let editor = Editor(theme: defaultEditorTheme)
@@ -217,6 +235,7 @@ func insertsUnicode() {
     #expect(editor.getText() == "Hello äöü 😀")
 }
 
+@MainActor
 @Test("deletes single-code-unit unicode characters with Backspace")
 func deletesUmlauts() {
     let editor = Editor(theme: defaultEditorTheme)
@@ -227,6 +246,7 @@ func deletesUmlauts() {
     #expect(editor.getText() == "äö")
 }
 
+@MainActor
 @Test("deletes multi-code-unit emojis with single Backspace")
 func deletesEmoji() {
     let editor = Editor(theme: defaultEditorTheme)
@@ -236,6 +256,7 @@ func deletesEmoji() {
     #expect(editor.getText() == "😀")
 }
 
+@MainActor
 @Test("inserts characters at the correct position after cursor movement over umlauts")
 func insertsAfterCursorMoveUmlaut() {
     let editor = Editor(theme: defaultEditorTheme)
@@ -248,6 +269,7 @@ func insertsAfterCursorMoveUmlaut() {
     #expect(editor.getText() == "äxöü")
 }
 
+@MainActor
 @Test("moves cursor across multi-code-unit emojis with single arrow key")
 func cursorMovesOverEmoji() {
     let editor = Editor(theme: defaultEditorTheme)
@@ -260,6 +282,7 @@ func cursorMovesOverEmoji() {
     #expect(editor.getText() == "😀x👍🎉")
 }
 
+@MainActor
 @Test("preserves umlauts across line breaks")
 func preservesUmlautsAcrossLines() {
     let editor = Editor(theme: defaultEditorTheme)
@@ -273,6 +296,7 @@ func preservesUmlautsAcrossLines() {
     #expect(editor.getText() == "äöü\nÄÖÜ")
 }
 
+@MainActor
 @Test("replaces the entire document with unicode text via setText")
 func setTextUnicode() {
     let editor = Editor(theme: defaultEditorTheme)
@@ -280,6 +304,7 @@ func setTextUnicode() {
     #expect(editor.getText() == "Hällö Wörld! 😀 äöüÄÖÜß")
 }
 
+@MainActor
 @Test("moves cursor to document start on Ctrl+A and inserts at the beginning")
 func ctrlAInsertsAtStart() {
     let editor = Editor(theme: defaultEditorTheme)
@@ -290,6 +315,7 @@ func ctrlAInsertsAtStart() {
     #expect(editor.getText() == "xab")
 }
 
+@MainActor
 @Test("deletes words correctly with Ctrl+W and Alt+Backspace")
 func deletesWords() {
     let editor = Editor(theme: defaultEditorTheme)
@@ -324,6 +350,7 @@ func deletesWords() {
     #expect(editor.getText() == "foo ")
 }
 
+@MainActor
 @Test("navigates words correctly with Ctrl+Left/Right")
 func navigatesWords() {
     let editor = Editor(theme: defaultEditorTheme)
@@ -349,6 +376,7 @@ func navigatesWords() {
     #expect(editor.getCursor().col == 6)
 }
 
+@MainActor
 @Test("wraps lines correctly when text contains wide emojis")
 func wrapsWideEmoji() {
     let editor = Editor(theme: defaultEditorTheme)
@@ -360,6 +388,7 @@ func wrapsWideEmoji() {
     }
 }
 
+@MainActor
 @Test("wraps long text with emojis at correct positions")
 func wrapsLongEmoji() {
     let editor = Editor(theme: defaultEditorTheme)
@@ -371,6 +400,7 @@ func wrapsLongEmoji() {
     }
 }
 
+@MainActor
 @Test("wraps CJK characters correctly")
 func wrapsCjk() {
     let editor = Editor(theme: defaultEditorTheme)
@@ -386,6 +416,7 @@ func wrapsCjk() {
     #expect(contentLines[1] == "ト")
 }
 
+@MainActor
 @Test("handles mixed ASCII and wide characters in wrapping")
 func wrapsMixedWidth() {
     let editor = Editor(theme: defaultEditorTheme)
@@ -397,6 +428,7 @@ func wrapsMixedWidth() {
     #expect(visibleWidth(contentLines[0]) == width)
 }
 
+@MainActor
 @Test("renders cursor correctly on wide characters")
 func rendersCursorOnWideChars() {
     let editor = Editor(theme: defaultEditorTheme)
@@ -408,6 +440,7 @@ func rendersCursorOnWideChars() {
     #expect(visibleWidth(contentLine) == width)
 }
 
+@MainActor
 @Test("does not exceed terminal width with emoji at wrap boundary")
 func emojiWrapBoundary() {
     let editor = Editor(theme: defaultEditorTheme)
@@ -417,4 +450,42 @@ func emojiWrapBoundary() {
     for line in lines.dropFirst().dropLast() {
         #expect(visibleWidth(line) <= width)
     }
+}
+
+@MainActor
+@Test("wraps at word boundaries without leading whitespace")
+func wrapsAtWordBoundaries() {
+    let editor = Editor(theme: defaultEditorTheme)
+    let width = 20
+    editor.setText("Word1 Word2 Word3 Word4 Word5 Word6")
+    let lines = editor.render(width: width)
+
+    for line in lines.dropFirst().dropLast() {
+        let stripped = stripVTControlCharacters(line).trimmingTrailingWhitespace()
+        if stripped.isEmpty { continue }
+        #expect(!stripped.first!.isWhitespace)
+    }
+}
+
+@MainActor
+@Test("breaks long words at character level")
+func breaksLongWords() {
+    let editor = Editor(theme: defaultEditorTheme)
+    let width = 30
+    editor.setText("Check https://example.com/very/long/path/that/exceeds/width here")
+    let lines = editor.render(width: width)
+    for line in lines.dropFirst().dropLast() {
+        #expect(visibleWidth(line) == width)
+    }
+}
+
+@MainActor
+@Test("preserves multiple spaces within a line")
+func preservesMultipleSpaces() {
+    let editor = Editor(theme: defaultEditorTheme)
+    let width = 50
+    editor.setText("Word1   Word2    Word3")
+    let lines = editor.render(width: width)
+    let contentLine = stripVTControlCharacters(lines[1]).trimmingCharacters(in: .whitespaces)
+    #expect(contentLine.contains("Word1   Word2"))
 }

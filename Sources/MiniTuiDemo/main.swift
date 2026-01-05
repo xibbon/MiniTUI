@@ -531,7 +531,7 @@ private final class DemoApp: SystemCursorAware {
 
     func handleInput(_ data: String) {
         if current == nil {
-            if isCtrlC(data) {
+            if matchesKey(data, Key.ctrl("c")) {
                 quit()
                 return
             }
@@ -539,7 +539,7 @@ private final class DemoApp: SystemCursorAware {
             return
         }
 
-        if isCtrlC(data) {
+        if matchesKey(data, Key.ctrl("c")) {
             showMenu()
             return
         }

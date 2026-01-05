@@ -156,17 +156,18 @@ public final class SelectList: SystemCursorAware {
 
     /// Handle navigation and selection input.
     public func handleInput(_ data: String) {
-        if isArrowUp(data) || isCtrlP(data) {
+        let kb = getEditorKeybindings()
+        if kb.matches(data, .selectUp) {
             selectedIndex = selectedIndex == 0 ? max(filteredItems.count - 1, 0) : selectedIndex - 1
             notifySelectionChange()
-        } else if isArrowDown(data) || isCtrlN(data) {
+        } else if kb.matches(data, .selectDown) {
             selectedIndex = selectedIndex == max(filteredItems.count - 1, 0) ? 0 : selectedIndex + 1
             notifySelectionChange()
-        } else if isEnter(data) {
+        } else if kb.matches(data, .selectConfirm) {
             if let selected = filteredItems[safe: selectedIndex] {
                 onSelect?(selected)
             }
-        } else if isEscape(data) || isCtrlC(data) {
+        } else if kb.matches(data, .selectCancel) {
             onCancel?()
         }
     }

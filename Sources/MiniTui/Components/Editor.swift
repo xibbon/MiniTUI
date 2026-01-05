@@ -14,6 +14,143 @@ public struct EditorTheme: Sendable {
     }
 }
 
+private struct TextChunk {
+    let text: String
+    let startIndex: Int
+    let endIndex: Int
+}
+
+private func trimTrailingWhitespace(_ text: String) -> String {
+    var trimmed = text
+    while let last = trimmed.last, isWhitespaceChar(last) {
+        trimmed.removeLast()
+    }
+    return trimmed
+}
+
+/// Split a line into word-wrapped chunks with original index information.
+private func wordWrapLine(_ line: String, maxWidth: Int) -> [TextChunk] {
+    if line.isEmpty || maxWidth <= 0 {
+        return [TextChunk(text: "", startIndex: 0, endIndex: 0)]
+    }
+
+    if visibleWidth(line) <= maxWidth {
+        return [TextChunk(text: line, startIndex: 0, endIndex: line.count)]
+    }
+
+    struct Token {
+        let text: String
+        let startIndex: Int
+        let endIndex: Int
+        let isWhitespace: Bool
+    }
+
+    var tokens: [Token] = []
+    var currentToken = ""
+    var tokenStart = 0
+    var inWhitespace = false
+    var charIndex = 0
+
+    for grapheme in line {
+        let graphemeIsWhitespace = isWhitespaceChar(grapheme)
+        if currentToken.isEmpty {
+            inWhitespace = graphemeIsWhitespace
+            tokenStart = charIndex
+        } else if graphemeIsWhitespace != inWhitespace {
+            tokens.append(Token(text: currentToken, startIndex: tokenStart, endIndex: charIndex, isWhitespace: inWhitespace))
+            currentToken = ""
+            tokenStart = charIndex
+            inWhitespace = graphemeIsWhitespace
+        }
+
+        currentToken.append(grapheme)
+        charIndex += 1
+    }
+
+    if !currentToken.isEmpty {
+        tokens.append(Token(text: currentToken, startIndex: tokenStart, endIndex: charIndex, isWhitespace: inWhitespace))
+    }
+
+    var chunks: [TextChunk] = []
+    var currentChunk = ""
+    var currentWidth = 0
+    var chunkStartIndex = 0
+    var atLineStart = true
+
+    for token in tokens {
+        let tokenWidth = visibleWidth(token.text)
+
+        if atLineStart && token.isWhitespace {
+            chunkStartIndex = token.endIndex
+            continue
+        }
+        atLineStart = false
+
+        if tokenWidth > maxWidth {
+            if !currentChunk.isEmpty {
+                chunks.append(TextChunk(text: currentChunk, startIndex: chunkStartIndex, endIndex: token.startIndex))
+                currentChunk = ""
+                currentWidth = 0
+                chunkStartIndex = token.startIndex
+            }
+
+            var tokenChunk = ""
+            var tokenChunkWidth = 0
+            var tokenChunkStart = token.startIndex
+            var tokenCharIndex = token.startIndex
+
+            for grapheme in token.text {
+                let graphemeWidth = visibleWidth(String(grapheme))
+                if tokenChunkWidth + graphemeWidth > maxWidth && !tokenChunk.isEmpty {
+                    chunks.append(TextChunk(text: tokenChunk, startIndex: tokenChunkStart, endIndex: tokenCharIndex))
+                    tokenChunk = String(grapheme)
+                    tokenChunkWidth = graphemeWidth
+                    tokenChunkStart = tokenCharIndex
+                } else {
+                    tokenChunk.append(grapheme)
+                    tokenChunkWidth += graphemeWidth
+                }
+                tokenCharIndex += 1
+            }
+
+            if !tokenChunk.isEmpty {
+                currentChunk = tokenChunk
+                currentWidth = tokenChunkWidth
+                chunkStartIndex = tokenChunkStart
+            }
+            continue
+        }
+
+        if currentWidth + tokenWidth > maxWidth {
+            let trimmedChunk = trimTrailingWhitespace(currentChunk)
+            if !trimmedChunk.isEmpty || chunks.isEmpty {
+                chunks.append(TextChunk(text: trimmedChunk, startIndex: chunkStartIndex, endIndex: chunkStartIndex + currentChunk.count))
+            }
+
+            atLineStart = true
+            if token.isWhitespace {
+                currentChunk = ""
+                currentWidth = 0
+                chunkStartIndex = token.endIndex
+            } else {
+                currentChunk = token.text
+                currentWidth = tokenWidth
+                chunkStartIndex = token.startIndex
+                atLineStart = false
+            }
+        } else {
+            currentChunk += token.text
+            currentWidth += tokenWidth
+        }
+    }
+
+    if !currentChunk.isEmpty {
+        chunks.append(TextChunk(text: currentChunk, startIndex: chunkStartIndex, endIndex: line.count))
+    }
+
+    return chunks.isEmpty ? [TextChunk(text: "", startIndex: 0, endIndex: 0)] : chunks
+}
+
 private struct EditorState {
     var lines: [String]
     var cursorLine: Int
@@ -145,7 +282,9 @@ public final class Editor: SystemCursorAware, KillBufferAware {
             pasteBuffer += input
             if let endRange = pasteBuffer.range(of: "\u{001B}[201~") {
                 let pasteContent = String(pasteBuffer[..<endRange.lowerBound])
-                handlePaste(pasteContent)
+                if !pasteContent.isEmpty {
+                    handlePaste(pasteContent)
+                }
                 isInPaste = false
                 let remaining = String(pasteBuffer[endRange.upperBound...])
                 pasteBuffer = ""
@@ -156,108 +295,133 @@ public final class Editor: SystemCursorAware, KillBufferAware {
             return
         }
 
-        if isCtrlZ(input) {
+        if matchesKey(input, Key.ctrl("z")) {
             sendSuspendSignal()
             return
         }
 
-        if isCtrlC(input) {
+        let kb = getEditorKeybindings()
+
+        if kb.matches(input, .copy) {
             return
         }
 
         if isAutocompleting, let autocompleteList {
-            if isEscape(input) {
+            if kb.matches(input, .selectCancel) {
                 cancelAutocomplete()
                 return
-            } else if isArrowUp(input) || isArrowDown(input) || isCtrlP(input) || isCtrlN(input) || isEnter(input) || isTab(input) {
-                if isArrowUp(input) || isArrowDown(input) || isCtrlP(input) || isCtrlN(input) {
-                    autocompleteList.handleInput(input)
-                    return
-                }
+            }
+            if kb.matches(input, .selectUp) || kb.matches(input, .selectDown) {
+                autocompleteList.handleInput(input)
+                return
+            }
 
-                if isTab(input) {
-                    if let selected = autocompleteList.getSelectedItem(), let provider = autocompleteProvider {
-                        let result = provider.applyCompletion(
-                            lines: state.lines,
-                            cursorLine: state.cursorLine,
-                            cursorCol: state.cursorCol,
-                            item: selected,
-                            prefix: autocompletePrefix
-                        )
-                        state.lines = result.lines
-                        state.cursorLine = result.cursorLine
-                        state.cursorCol = result.cursorCol
-                        cancelAutocomplete()
-                        onChange?(getText())
-                    }
-                    return
-                }
-
-                if isEnter(input) && autocompletePrefix.hasPrefix("/") {
-                    if let selected = autocompleteList.getSelectedItem(), let provider = autocompleteProvider {
-                        let result = provider.applyCompletion(
-                            lines: state.lines,
-                            cursorLine: state.cursorLine,
-                            cursorCol: state.cursorCol,
-                            item: selected,
-                            prefix: autocompletePrefix
-                        )
-                        state.lines = result.lines
-                        state.cursorLine = result.cursorLine
-                        state.cursorCol = result.cursorCol
-                    }
+            if kb.matches(input, .tab) {
+                if let selected = autocompleteList.getSelectedItem(), let provider = autocompleteProvider {
+                    let result = provider.applyCompletion(
+                        lines: state.lines,
+                        cursorLine: state.cursorLine,
+                        cursorCol: state.cursorCol,
+                        item: selected,
+                        prefix: autocompletePrefix
+                    )
+                    state.lines = result.lines
+                    state.cursorLine = result.cursorLine
+                    state.cursorCol = result.cursorCol
                     cancelAutocomplete()
-                } else if isEnter(input) {
-                    if let selected = autocompleteList.getSelectedItem(), let provider = autocompleteProvider {
-                        let result = provider.applyCompletion(
-                            lines: state.lines,
-                            cursorLine: state.cursorLine,
-                            cursorCol: state.cursorCol,
-                            item: selected,
-                            prefix: autocompletePrefix
-                        )
-                        state.lines = result.lines
-                        state.cursorLine = result.cursorLine
-                        state.cursorCol = result.cursorCol
+                    onChange?(getText())
+                }
+                return
+            }
+
+            if kb.matches(input, .selectConfirm) {
+                if let selected = autocompleteList.getSelectedItem(), let provider = autocompleteProvider {
+                    let result = provider.applyCompletion(
+                        lines: state.lines,
+                        cursorLine: state.cursorLine,
+                        cursorCol: state.cursorCol,
+                        item: selected,
+                        prefix: autocompletePrefix
+                    )
+                    state.lines = result.lines
+                    state.cursorLine = result.cursorLine
+                    state.cursorCol = result.cursorCol
+
+                    if autocompletePrefix.hasPrefix("/") {
+                        cancelAutocomplete()
+                    } else {
                         cancelAutocomplete()
                         onChange?(getText())
+                        return
                     }
-                    return
                 }
             }
         }
 
-        if isTab(input) && !isAutocompleting {
+        if kb.matches(input, .tab) && !isAutocompleting {
             handleTabCompletion()
             return
         }
 
-        if isCtrlK(input) {
+        if kb.matches(input, .deleteToLineEnd) {
             killToEndOfLine()
-        } else if isAltBackspace(input) {
-            killWordBackwards()
-        } else if isAltD(input) {
-            killWordForwards()
-        } else if isCtrlY(input) {
-            yankKillBuffer()
-        } else if isCtrlU(input) {
+            return
+        }
+        if kb.matches(input, .deleteToLineStart) {
             deleteToStartOfLine()
-        } else if isCtrlW(input) {
+            return
+        }
+        if kb.matches(input, .deleteWordBackward) {
             killWordBackwards()
-        } else if isCtrlA(input) {
+            return
+        }
+        if kb.matches(input, .deleteCharBackward) || matchesKey(input, Key.shift("backspace")) {
+            handleBackspace()
+            return
+        }
+        if kb.matches(input, .deleteCharForward) || matchesKey(input, Key.shift("delete")) {
+            handleForwardDelete()
+            return
+        }
+
+        if matchesKey(input, Key.alt("d")) {
+            killWordForwards()
+            return
+        }
+        if matchesKey(input, Key.ctrl("y")) {
+            yankKillBuffer()
+            return
+        }
+
+        if kb.matches(input, .cursorLineStart) {
             moveToLineStart()
-        } else if isCtrlE(input) {
+            return
+        }
+        if kb.matches(input, .cursorLineEnd) {
             moveToLineEnd()
-        } else if (input.first?.unicodeScalars.first?.value == 10 && input.count > 1)
+            return
+        }
+        if kb.matches(input, .cursorWordLeft) {
+            moveWordBackwards()
+            return
+        }
+        if kb.matches(input, .cursorWordRight) {
+            moveWordForwards()
+            return
+        }
+
+        if kb.matches(input, .newLine)
+            || (input.first?.unicodeScalars.first?.value == 10 && input.count > 1)
             || input == "\u{001B}\r"
             || input == "\u{001B}[13;2~"
-            || isShiftEnter(input)
-            || isAltEnter(input)
             || (input.count > 1 && input.contains("\u{001B}") && input.contains("\r"))
             || (input == "\n" && input.count == 1)
             || input == "\\\r" {
             addNewLine()
-        } else if isEnter(input) {
+            return
+        }
+
+        if kb.matches(input, .submit) {
             if disableSubmit {
                 return
             }
@@ -277,19 +441,10 @@ public final class Editor: SystemCursorAware, KillBufferAware {
             historyIndex = -1
             onChange?("")
             onSubmit?(result)
-        } else if isBackspace(input) || isShiftBackspace(input) {
-            handleBackspace()
-        } else if isHome(input) {
-            moveToLineStart()
-        } else if isEnd(input) {
-            moveToLineEnd()
-        } else if isDelete(input) || isShiftDelete(input) {
-            handleForwardDelete()
-        } else if isAltLeft(input) || isCtrlLeft(input) {
-            moveWordBackwards()
-        } else if isAltRight(input) || isCtrlRight(input) {
-            moveWordForwards()
-        } else if isArrowUp(input) || isCtrlP(input) {
+            return
+        }
+
+        if kb.matches(input, .cursorUp) {
             if isEditorEmpty() {
                 navigateHistory(direction: -1)
             } else if historyIndex > -1 && isOnFirstVisualLine() {
@@ -297,19 +452,30 @@ public final class Editor: SystemCursorAware, KillBufferAware {
             } else {
                 moveCursor(deltaLine: -1, deltaCol: 0)
             }
-        } else if isArrowDown(input) || isCtrlN(input) {
+            return
+        }
+        if kb.matches(input, .cursorDown) {
             if historyIndex > -1 && isOnLastVisualLine() {
                 navigateHistory(direction: 1)
             } else {
                 moveCursor(deltaLine: 1, deltaCol: 0)
             }
-        } else if isArrowRight(input) || isCtrlF(input) {
+            return
+        }
+        if kb.matches(input, .cursorRight) {
             moveCursor(deltaLine: 0, deltaCol: 1)
-        } else if isArrowLeft(input) || isCtrlB(input) {
+            return
+        }
+        if kb.matches(input, .cursorLeft) {
             moveCursor(deltaLine: 0, deltaCol: -1)
-        } else if isShiftSpace(input) {
+            return
+        }
+
+        if matchesKey(input, Key.shift("space")) {
             insertCharacter(" ")
-        } else if input.first?.unicodeScalars.first?.value ?? 0 >= 32 {
+            return
+        }
+        if input.first?.unicodeScalars.first?.value ?? 0 >= 32 {
             insertCharacter(input)
         }
     }
@@ -317,6 +483,19 @@ public final class Editor: SystemCursorAware, KillBufferAware {
     /// Return the full document text.
     public func getText() -> String {
         return state.lines.joined(separator: "\n")
+    }
+
+    /// Return the text with paste markers expanded to their actual content.
+    public func getExpandedText() -> String {
+        var result = state.lines.joined(separator: "\n")
+        for (pasteId, pasteContent) in pastes {
+            let pattern = "\\[paste #\(pasteId)( (\\+\\d+ lines|\\d+ chars))?\\]"
+            if let regex = try? NSRegularExpression(pattern: pattern, options: []) {
+                let range = NSRange(result.startIndex..<result.endIndex, in: result)
+                result = regex.stringByReplacingMatches(in: result, options: [], range: range, withTemplate: pasteContent)
+            }
+        }
+        return result
     }
 
     /// Return a copy of the document lines.
@@ -333,6 +512,13 @@ public final class Editor: SystemCursorAware, KillBufferAware {
     public func setText(_ text: String) {
         historyIndex = -1
         setTextInternal(text)
+    }
+
+    /// Insert text at the current cursor position.
+    public func insertTextAtCursor(_ text: String) {
+        for char in text {
+            insertCharacter(String(char))
+        }
     }
 
     /// Return true when the autocomplete list is visible.
@@ -356,6 +542,12 @@ public final class Editor: SystemCursorAware, KillBufferAware {
                 let currentLine = state.lines[safe: state.cursorLine] ?? ""
                 let textBeforeCursor = currentLine.prefixCharacters(max(0, state.cursorCol))
                 if textBeforeCursor.count == 1 || textBeforeCursor.suffixCharacters(2).first == " " {
+                    tryTriggerAutocomplete(explicitTab: false)
+                }
+            } else if text.range(of: "^[a-zA-Z0-9._-]$", options: .regularExpression) != nil {
+                let currentLine = state.lines[safe: state.cursorLine] ?? ""
+                let textBeforeCursor = currentLine.prefixCharacters(max(0, state.cursorCol))
+                if textBeforeCursor.trimmingCharacters(in: .whitespaces).hasPrefix("/") {
                     tryTriggerAutocomplete(explicitTab: false)
                 }
             }
@@ -731,24 +923,9 @@ public final class Editor: SystemCursorAware, KillBufferAware {
                 continue
             }
 
-            var currentWidth = 0
-            var chunkStartIndex = 0
-            var currentIndex = 0
-
-            for grapheme in line {
-                let graphemeWidth = visibleWidth(String(grapheme))
-                if currentWidth + graphemeWidth > width && currentIndex > chunkStartIndex {
-                    visualLines.append((logicalLine: index, startCol: chunkStartIndex, length: currentIndex - chunkStartIndex))
-                    chunkStartIndex = currentIndex
-                    currentWidth = graphemeWidth
-                } else {
-                    currentWidth += graphemeWidth
-                }
-                currentIndex += 1
-            }
-
-            if currentIndex > chunkStartIndex {
-                visualLines.append((logicalLine: index, startCol: chunkStartIndex, length: currentIndex - chunkStartIndex))
+            let chunks = wordWrapLine(line, maxWidth: width)
+            for chunk in chunks {
+                visualLines.append((logicalLine: index, startCol: chunk.startIndex, length: chunk.endIndex - chunk.startIndex))
             }
         }
 
@@ -788,37 +965,30 @@ public final class Editor: SystemCursorAware, KillBufferAware {
                     layoutLines.append(LayoutLine(text: line, hasCursor: false, cursorPos: nil))
                 }
             } else {
-                var chunks: [(text: String, startIndex: Int, endIndex: Int)] = []
-                var currentChunk = ""
-                var currentWidth = 0
-                var chunkStartIndex = 0
-                var currentIndex = 0
-
-                for grapheme in line {
-                    let graphemeWidth = visibleWidth(String(grapheme))
-                    if currentWidth + graphemeWidth > contentWidth && !currentChunk.isEmpty {
-                        chunks.append((text: currentChunk, startIndex: chunkStartIndex, endIndex: currentIndex))
-                        currentChunk = String(grapheme)
-                        currentWidth = graphemeWidth
-                        chunkStartIndex = currentIndex
-                    } else {
-                        currentChunk += String(grapheme)
-                        currentWidth += graphemeWidth
-                    }
-                    currentIndex += 1
-                }
-
-                if !currentChunk.isEmpty {
-                    chunks.append((text: currentChunk, startIndex: chunkStartIndex, endIndex: currentIndex))
-                }
-
+                let chunks = wordWrapLine(line, maxWidth: contentWidth)
                 for (chunkIndex, chunk) in chunks.enumerated() {
                     let cursorPos = state.cursorCol
                     let isLastChunk = chunkIndex == chunks.count - 1
-                    let hasCursorInChunk = isCurrentLine && cursorPos >= chunk.startIndex && (isLastChunk ? cursorPos <= chunk.endIndex : cursorPos < chunk.endIndex)
+                    var hasCursorInChunk = false
+                    var adjustedCursorPos = 0
+
+                    if isCurrentLine {
+                        if isLastChunk {
+                            hasCursorInChunk = cursorPos >= chunk.startIndex
+                            adjustedCursorPos = cursorPos - chunk.startIndex
+                        } else {
+                            hasCursorInChunk = cursorPos >= chunk.startIndex && cursorPos < chunk.endIndex
+                            if hasCursorInChunk {
+                                adjustedCursorPos = cursorPos - chunk.startIndex
+                                if adjustedCursorPos > chunk.text.count {
+                                    adjustedCursorPos = chunk.text.count
+                                }
+                            }
+                        }
+                    }
 
                     if hasCursorInChunk {
-                        layoutLines.append(LayoutLine(text: chunk.text, hasCursor: true, cursorPos: cursorPos - chunk.startIndex))
+                        layoutLines.append(LayoutLine(text: chunk.text, hasCursor: true, cursorPos: adjustedCursorPos))
                     } else {
                         layoutLines.append(LayoutLine(text: chunk.text, hasCursor: false, cursorPos: nil))
                     }

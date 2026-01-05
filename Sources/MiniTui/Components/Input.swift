@@ -54,24 +54,26 @@ public final class Input: SystemCursorAware, KillBufferAware {
             return
         }
 
-        if isCtrlZ(input) {
+        if matchesKey(input, Key.ctrl("z")) {
             sendSuspendSignal()
             return
         }
 
-        if isCtrlD(input) {
+        if matchesKey(input, Key.ctrl("d")) {
             if value.isEmpty {
                 onEnd?()
             }
             return
         }
 
-        if isEnter(input) || input == "\n" {
+        let kb = getEditorKeybindings()
+
+        if kb.matches(input, .submit) || input == "\n" {
             onSubmit?(value)
             return
         }
 
-        if isBackspace(input) {
+        if kb.matches(input, .deleteCharBackward) || matchesKey(input, Key.shift("backspace")) {
             if cursor > 0 {
                 let before = value.prefixCharacters(cursor - 1)
                 let after = value.substring(from: cursor, length: value.count - cursor)
@@ -81,21 +83,7 @@ public final class Input: SystemCursorAware, KillBufferAware {
             return
         }
 
-        if isArrowLeft(input) || isCtrlB(input) {
-            if cursor > 0 {
-                cursor -= 1
-            }
-            return
-        }
-
-        if isArrowRight(input) || isCtrlF(input) {
-            if cursor < value.count {
-                cursor += 1
-            }
-            return
-        }
-
-        if isDelete(input) {
+        if kb.matches(input, .deleteCharForward) || matchesKey(input, Key.shift("delete")) {
             if cursor < value.count {
                 let before = value.prefixCharacters(cursor)
                 let after = value.substring(from: cursor + 1, length: value.count - cursor - 1)
@@ -104,53 +92,62 @@ public final class Input: SystemCursorAware, KillBufferAware {
             return
         }
 
-        if isCtrlA(input) {
-            cursor = 0
-            return
-        }
-
-        if isCtrlE(input) {
-            cursor = value.count
-            return
-        }
-
-        if isCtrlY(input) {
-            yankKillBuffer()
-            return
-        }
-
-        if isAltBackspace(input) {
+        if kb.matches(input, .deleteWordBackward) {
             killWordBackwards()
             return
         }
 
-        if isAltD(input) {
-            killWordForwards()
-            return
-        }
-
-        if isCtrlW(input) {
-            killWordBackwards()
-            return
-        }
-
-        if isCtrlU(input) {
+        if kb.matches(input, .deleteToLineStart) {
             value = value.substring(from: cursor, length: value.count - cursor)
             cursor = 0
             return
         }
 
-        if isCtrlK(input) {
+        if kb.matches(input, .deleteToLineEnd) {
             killToEndOfLine()
             return
         }
 
-        if isCtrlLeft(input) || isAltLeft(input) {
+        if matchesKey(input, Key.ctrl("y")) {
+            yankKillBuffer()
+            return
+        }
+
+        if matchesKey(input, Key.alt("d")) {
+            killWordForwards()
+            return
+        }
+
+        if kb.matches(input, .cursorLeft) {
+            if cursor > 0 {
+                cursor -= 1
+            }
+            return
+        }
+
+        if kb.matches(input, .cursorRight) {
+            if cursor < value.count {
+                cursor += 1
+            }
+            return
+        }
+
+        if kb.matches(input, .cursorLineStart) {
+            cursor = 0
+            return
+        }
+
+        if kb.matches(input, .cursorLineEnd) {
+            cursor = value.count
+            return
+        }
+
+        if kb.matches(input, .cursorWordLeft) {
             moveWordBackwards()
             return
         }
 
-        if isCtrlRight(input) || isAltRight(input) {
+        if kb.matches(input, .cursorWordRight) {
             moveWordForwards()
             return
         }

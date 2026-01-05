@@ -1,6 +1,7 @@
 import Testing
 import MiniTui
 
+@MainActor
 @Test("underline styling does not apply before styled text")
 func underlineDoesNotLead() {
     let underlineOn = "\u{001B}[4m"
@@ -16,6 +17,7 @@ func underlineDoesNotLead() {
     }
 }
 
+@MainActor
 @Test("underline does not bleed to padding")
 func underlineDoesNotBleed() {
     let underlineOn = "\u{001B}[4m"
@@ -32,6 +34,7 @@ func underlineDoesNotBleed() {
     }
 }
 
+@MainActor
 @Test("preserves background color across wrapped lines")
 func preservesBackgroundColor() {
     let bgBlue = "\u{001B}[44m"
@@ -47,6 +50,7 @@ func preservesBackgroundColor() {
     }
 }
 
+@MainActor
 @Test("resets underline but preserves background")
 func resetsUnderlineButPreservesBackground() {
     let underlineOn = "\u{001B}[4m"
@@ -68,6 +72,7 @@ func resetsUnderlineButPreservesBackground() {
     }
 }
 
+@MainActor
 @Test("wraps plain text correctly")
 func wrapsPlainText() {
     let text = "hello world this is a test"
@@ -78,6 +83,7 @@ func wrapsPlainText() {
     }
 }
 
+@MainActor
 @Test("preserves color codes across wraps")
 func preservesColorCodes() {
     let red = "\u{001B}[31m"

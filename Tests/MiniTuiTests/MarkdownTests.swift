@@ -1,6 +1,7 @@
 import Testing
 import MiniTui
 
+@MainActor
 @Test("renders simple nested list")
 func rendersSimpleNestedList() {
     let markdown = Markdown(
@@ -23,6 +24,7 @@ func rendersSimpleNestedList() {
     #expect(plainLines.contains(where: { $0.contains("- Item 2") }))
 }
 
+@MainActor
 @Test("renders deeply nested list")
 func rendersDeepNestedList() {
     let markdown = Markdown(
@@ -45,6 +47,7 @@ func rendersDeepNestedList() {
     #expect(plainLines.contains(where: { $0.contains("      - Level 4") }))
 }
 
+@MainActor
 @Test("renders ordered nested list")
 func rendersOrderedNestedList() {
     let markdown = Markdown(
@@ -67,6 +70,7 @@ func rendersOrderedNestedList() {
     #expect(plainLines.contains(where: { $0.contains("2. Second") }))
 }
 
+@MainActor
 @Test("renders mixed ordered and unordered nested lists")
 func rendersMixedLists() {
     let markdown = Markdown(
@@ -89,6 +93,7 @@ func rendersMixedLists() {
     #expect(plainLines.contains(where: { $0.contains("2. Second ordered") }))
 }
 
+@MainActor
 @Test("renders simple table")
 func rendersSimpleTable() {
     let markdown = Markdown(
@@ -113,6 +118,7 @@ func rendersSimpleTable() {
     #expect(plainLines.contains(where: { $0.contains("─") }))
 }
 
+@MainActor
 @Test("renders table with alignment")
 func rendersTableWithAlignment() {
     let markdown = Markdown(
@@ -135,6 +141,7 @@ func rendersTableWithAlignment() {
     #expect(plainLines.contains(where: { $0.contains("Long text") }))
 }
 
+@MainActor
 @Test("handles tables with varying column widths")
 func handlesVaryingTableWidths() {
     let markdown = Markdown(
@@ -155,6 +162,7 @@ func handlesVaryingTableWidths() {
     #expect(plainLines.contains(where: { $0.contains("This is a much longer cell content") }))
 }
 
+@MainActor
 @Test("wraps table cells when table exceeds available width")
 func wrapsTableCells() {
     let markdown = Markdown(
@@ -183,6 +191,7 @@ func wrapsTableCells() {
     #expect(allText.contains("Install"))
 }
 
+@MainActor
 @Test("wraps long cell content to multiple lines")
 func wrapsLongCellContent() {
     let markdown = Markdown(
@@ -207,6 +216,7 @@ func wrapsLongCellContent() {
     #expect(allText.contains("should wrap"))
 }
 
+@MainActor
 @Test("wraps long unbroken tokens inside table cells")
 func wrapsLongTokensInTableCells() {
     let url = "https://example.com/this/is/a/very/long/url/that/should/wrap"
@@ -239,6 +249,7 @@ func wrapsLongTokensInTableCells() {
     #expect(extracted.contains(url))
 }
 
+@MainActor
 @Test("wraps styled inline code inside table cells")
 func wrapsStyledInlineCode() {
     let markdown = Markdown(
@@ -269,6 +280,7 @@ func wrapsStyledInlineCode() {
     }
 }
 
+@MainActor
 @Test("handles extremely narrow width gracefully")
 func handlesExtremelyNarrowWidth() {
     let markdown = Markdown(
@@ -290,6 +302,7 @@ func handlesExtremelyNarrowWidth() {
     }
 }
 
+@MainActor
 @Test("renders table correctly when it fits naturally")
 func rendersTableNaturally() {
     let markdown = Markdown(
@@ -317,6 +330,7 @@ func rendersTableNaturally() {
     #expect(dataLine != nil)
 }
 
+@MainActor
 @Test("respects paddingX when calculating table width")
 func respectsPaddingX() {
     let markdown = Markdown(
@@ -340,6 +354,7 @@ func respectsPaddingX() {
     #expect(tableRow?.hasPrefix("  ") == true)
 }
 
+@MainActor
 @Test("renders lists and tables together")
 func rendersListsAndTables() {
     let markdown = Markdown(
@@ -368,6 +383,7 @@ func rendersListsAndTables() {
     #expect(plainLines.contains(where: { $0.contains("│") }))
 }
 
+@MainActor
 @Test("preserves gray italic styling after inline code")
 func preservesGrayItalicAfterInlineCode() {
     let markdown = Markdown(
@@ -386,6 +402,7 @@ func preservesGrayItalicAfterInlineCode() {
     #expect(joinedOutput.contains("\u{001B}[33m"))
 }
 
+@MainActor
 @Test("preserves gray italic styling after bold text")
 func preservesGrayItalicAfterBold() {
     let markdown = Markdown(
@@ -404,6 +421,7 @@ func preservesGrayItalicAfterBold() {
     #expect(joinedOutput.contains("\u{001B}[1m"))
 }
 
+@MainActor
 @Test("has only one blank line between code block and following paragraph")
 func spacingAfterCodeBlock() {
     let markdown = Markdown(
@@ -432,6 +450,7 @@ again, hello world
     #expect(emptyLineCount == 1)
 }
 
+@MainActor
 @Test("has only one blank line between divider and following paragraph")
 func spacingAfterDivider() {
     let markdown = Markdown(
@@ -458,6 +477,7 @@ again, hello world
     }
 }
 
+@MainActor
 @Test("has only one blank line between heading and following paragraph")
 func spacingAfterHeading() {
     let markdown = Markdown(
@@ -482,6 +502,7 @@ This is a paragraph
     }
 }
 
+@MainActor
 @Test("has only one blank line between blockquote and following paragraph")
 func spacingAfterBlockquote() {
     let markdown = Markdown(
@@ -508,6 +529,7 @@ again, hello world
     }
 }
 
+@MainActor
 @Test("renders HTML-like tags as text")
 func rendersHtmlLikeTags() {
     let markdown = Markdown(
@@ -523,6 +545,7 @@ func rendersHtmlLikeTags() {
     #expect(joined.contains("hidden content") || joined.contains("<thinking>"))
 }
 
+@MainActor
 @Test("renders HTML tags in code blocks correctly")
 func rendersHtmlInCodeBlocks() {
     let markdown = Markdown("```html\n<div>Some HTML</div>\n```", paddingX: 0, paddingY: 0, theme: defaultMarkdownTheme)

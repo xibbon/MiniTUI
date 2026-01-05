@@ -10,7 +10,7 @@ private final class ExitOnCtrlC: Component {
     }
 
     func handleInput(_ data: String) {
-        if isCtrlC(data) {
+        if matchesKey(data, Key.ctrl("c")) {
             terminal.showCursor()
             terminal.stop()
             Darwin.exit(0)

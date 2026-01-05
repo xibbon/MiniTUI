@@ -1,6 +1,7 @@
 import Testing
 import MiniTui
 
+@MainActor
 @Test("pads output lines to exactly match width")
 func padsOutputLines() {
     let text = TruncatedText("Hello world", paddingX: 1, paddingY: 0)
@@ -9,6 +10,7 @@ func padsOutputLines() {
     #expect(visibleWidth(lines[0]) == 50)
 }
 
+@MainActor
 @Test("pads output with vertical padding lines to width")
 func padsOutputWithVerticalPadding() {
     let text = TruncatedText("Hello", paddingX: 0, paddingY: 2)
@@ -19,6 +21,7 @@ func padsOutputWithVerticalPadding() {
     }
 }
 
+@MainActor
 @Test("truncates long text and pads to width")
 func truncatesLongText() {
     let longText = "This is a very long piece of text that will definitely exceed the available width"
@@ -30,6 +33,7 @@ func truncatesLongText() {
     #expect(stripped.contains("..."))
 }
 
+@MainActor
 @Test("preserves ANSI codes in output and pads correctly")
 func preservesAnsiCodes() {
     let styledText = "\(Ansi.red("Hello")) \(Ansi.blue("world"))"
@@ -40,6 +44,7 @@ func preservesAnsiCodes() {
     #expect(lines[0].contains("\u{001B}["))
 }
 
+@MainActor
 @Test("truncates styled text and adds reset code before ellipsis")
 func truncatesStyledText() {
     let longStyledText = Ansi.red("This is a very long red text that will be truncated")
@@ -50,6 +55,7 @@ func truncatesStyledText() {
     #expect(lines[0].contains("\u{001B}[0m..."))
 }
 
+@MainActor
 @Test("handles text that fits exactly")
 func handlesExactText() {
     let text = TruncatedText("Hello world", paddingX: 1, paddingY: 0)
@@ -60,6 +66,7 @@ func handlesExactText() {
     #expect(!stripped.contains("..."))
 }
 
+@MainActor
 @Test("handles empty text")
 func handlesEmptyText() {
     let text = TruncatedText("", paddingX: 1, paddingY: 0)
@@ -68,6 +75,7 @@ func handlesEmptyText() {
     #expect(visibleWidth(lines[0]) == 30)
 }
 
+@MainActor
 @Test("stops at newline and only shows first line")
 func stopsAtNewline() {
     let multilineText = "First line\nSecond line\nThird line"
@@ -81,6 +89,7 @@ func stopsAtNewline() {
     #expect(!stripped.contains("Third line"))
 }
 
+@MainActor
 @Test("truncates first line even with newlines in text")
 func truncatesFirstLineWithNewlines() {
     let longMultilineText = "This is a very long first line that needs truncation\nSecond line"

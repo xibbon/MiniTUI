@@ -1,6 +1,7 @@
 import Testing
 import MiniTui
 
+@MainActor
 @Test("extracts / from 'hey /' when forced")
 func extractsRootPrefix() {
     let provider = CombinedAutocompleteProvider(commands: [], items: [], basePath: "/tmp")
@@ -10,6 +11,7 @@ func extractsRootPrefix() {
     #expect(result?.prefix == "/")
 }
 
+@MainActor
 @Test("extracts /A from '/A' when forced")
 func extractsAbsolutePrefix() {
     let provider = CombinedAutocompleteProvider(commands: [], items: [], basePath: "/tmp")
@@ -20,6 +22,7 @@ func extractsAbsolutePrefix() {
     }
 }
 
+@MainActor
 @Test("does not trigger for slash commands")
 func doesNotTriggerForSlashCommands() {
     let provider = CombinedAutocompleteProvider(commands: [], items: [], basePath: "/tmp")
@@ -28,6 +31,7 @@ func doesNotTriggerForSlashCommands() {
     #expect(result == nil)
 }
 
+@MainActor
 @Test("triggers for absolute paths after slash command argument")
 func triggersForAbsolutePathsInArgs() {
     let provider = CombinedAutocompleteProvider(commands: [], items: [], basePath: "/tmp")

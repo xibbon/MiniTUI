@@ -90,14 +90,17 @@ public final class TUI: Container {
             input = filtered
         }
 
-        if isShiftCtrlD(input), let onDebug {
+        if matchesKey(input, Key.shiftCtrl("d")), let onDebug {
             onDebug()
             return
         }
 
         if let focused = focusedComponent {
             let shouldPreserveKillChain = focused is KillBufferAware
-                && (isCtrlK(input) || isCtrlW(input) || isAltBackspace(input) || isAltD(input))
+                && (matchesKey(input, Key.ctrl("k"))
+                    || matchesKey(input, Key.ctrl("w"))
+                    || matchesKey(input, Key.alt("backspace"))
+                    || matchesKey(input, Key.alt("d")))
             if !shouldPreserveKillChain {
                 KillBuffer.shared.breakChain()
             }
