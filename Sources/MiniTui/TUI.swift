@@ -11,6 +11,9 @@ public final class TUI: Container {
 
     /// Optional handler for Shift+Ctrl+D debug trigger.
     public var onDebug: (() -> Void)?
+    /// Optional handler for global input before focused component handling.
+    /// Return true to stop propagation to the focused component.
+    public var onGlobalInput: ((String) -> Bool)?
     /// When true, show and position the terminal cursor instead of rendering a custom cursor.
     public var useSystemCursor = true {
         didSet {
@@ -92,6 +95,10 @@ public final class TUI: Container {
 
         if matchesKey(input, Key.shiftCtrl("d")), let onDebug {
             onDebug()
+            return
+        }
+
+        if let onGlobalInput, onGlobalInput(input) {
             return
         }
 
