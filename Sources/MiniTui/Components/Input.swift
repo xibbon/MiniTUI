@@ -6,6 +6,8 @@ public final class Input: SystemCursorAware, KillBufferAware {
     private var cursor: Int = 0
     /// Called when the user submits with Enter.
     public var onSubmit: ((String) -> Void)?
+    /// Called when the user cancels with Escape or Ctrl+C.
+    public var onEscape: (() -> Void)?
     /// Called when the user presses Ctrl-D on an empty input.
     public var onEnd: (() -> Void)?
     /// When true, do not render a custom cursor and rely on the system cursor.
@@ -67,6 +69,11 @@ public final class Input: SystemCursorAware, KillBufferAware {
         }
 
         let kb = getEditorKeybindings()
+
+        if kb.matches(input, .selectCancel) {
+            onEscape?()
+            return
+        }
 
         if kb.matches(input, .submit) || input == "\n" {
             onSubmit?(value)

@@ -10,11 +10,29 @@ func underlineDoesNotLead() {
     let text = "read this thread \(underlineOn)\(url)\(underlineOff)"
 
     let wrapped = wrapTextWithAnsi(text, width: 40)
-    #expect(wrapped.first == "read this thread ")
+    #expect(wrapped.first == "read this thread")
     if wrapped.count > 1 {
         #expect(wrapped[1].hasPrefix(underlineOn))
         #expect(wrapped[1].contains("https://"))
     }
+}
+
+@MainActor
+@Test("no whitespace before underline reset")
+func noWhitespaceBeforeUnderlineReset() {
+    let underlineOn = "\u{001B}[4m"
+    let underlineOff = "\u{001B}[24m"
+    let text = "\(underlineOn)underlined text here \(underlineOff)more"
+
+    let wrapped = wrapTextWithAnsi(text, width: 18)
+    #expect(!wrapped[0].contains(" \(underlineOff)"))
+}
+
+@MainActor
+@Test("trims trailing whitespace that exceeds width")
+func trimsTrailingWhitespaceThatExceedsWidth() {
+    let wrapped = wrapTextWithAnsi("  ", width: 1)
+    #expect(visibleWidth(wrapped[0]) <= 1)
 }
 
 @MainActor

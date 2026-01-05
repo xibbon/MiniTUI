@@ -207,7 +207,8 @@ private func wrapSingleLine(_ line: String, width: Int, tracker: AnsiCodeTracker
         wrapped.append(currentLine)
     }
 
-    return wrapped.isEmpty ? [""] : wrapped
+    let trimmed = wrapped.map { trimTrailingSpaces($0) }
+    return trimmed.isEmpty ? [""] : trimmed
 }
 
 /// Return true when a character is whitespace or a newline.
