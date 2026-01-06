@@ -23,6 +23,8 @@ public struct SelectListTheme: Sendable {
     public let selectedPrefix: @Sendable (String) -> String
     /// Style for selected item text.
     public let selectedText: @Sendable (String) -> String
+    /// Optional style for the selected line background.
+    public let selectedBackground: (@Sendable (String) -> String)?
     /// Style for item descriptions.
     public let description: @Sendable (String) -> String
     /// Style for scroll info text.
@@ -36,13 +38,15 @@ public struct SelectListTheme: Sendable {
         selectedText: @escaping @Sendable (String) -> String,
         description: @escaping @Sendable (String) -> String,
         scrollInfo: @escaping @Sendable (String) -> String,
-        noMatch: @escaping @Sendable (String) -> String
+        noMatch: @escaping @Sendable (String) -> String,
+        selectedBackground: (@Sendable (String) -> String)? = nil
     ) {
         self.selectedPrefix = selectedPrefix
         self.selectedText = selectedText
         self.description = description
         self.scrollInfo = scrollInfo
         self.noMatch = noMatch
+        self.selectedBackground = selectedBackground
     }
 }
 
@@ -101,6 +105,7 @@ public final class SelectList: SystemCursorAware {
             if isSelected {
                 let prefix = "→ " + (usesSystemCursor ? systemCursorMarker : "")
                 let prefixWidth = visibleWidth("→ ")
+                let styledPrefix = theme.selectedPrefix(prefix)
                 let displayValue = item.label.isEmpty ? item.value : item.label
                 if let description = item.description, width > 40 {
                     let maxValueWidth = min(30, width - prefixWidth - 4)
@@ -110,14 +115,14 @@ public final class SelectList: SystemCursorAware {
                     let remainingWidth = width - descriptionStart - 2
                     if remainingWidth > 10 {
                         let truncatedDesc = truncateToWidth(description, maxWidth: remainingWidth, ellipsis: "")
-                        line = theme.selectedText("\(prefix)\(truncatedValue)\(spacing)\(truncatedDesc)")
+                        line = styledPrefix + theme.selectedText("\(truncatedValue)\(spacing)\(truncatedDesc)")
                     } else {
                         let maxWidth = width - prefixWidth - 2
-                        line = theme.selectedText("\(prefix)\(truncateToWidth(displayValue, maxWidth: maxWidth, ellipsis: ""))")
+                        line = styledPrefix + theme.selectedText("\(truncateToWidth(displayValue, maxWidth: maxWidth, ellipsis: ""))")
                     }
                 } else {
                     let maxWidth = width - prefixWidth - 2
-                    line = theme.selectedText("\(prefix)\(truncateToWidth(displayValue, maxWidth: maxWidth, ellipsis: ""))")
+                    line = styledPrefix + theme.selectedText("\(truncateToWidth(displayValue, maxWidth: maxWidth, ellipsis: ""))")
                 }
             } else {
                 let displayValue = item.label.isEmpty ? item.value : item.label
@@ -143,7 +148,11 @@ public final class SelectList: SystemCursorAware {
                 }
             }
 
-            lines.append(line)
+            if isSelected, let selectedBackground = theme.selectedBackground {
+                lines.append(applyBackgroundToLine(line, width: width, bgFn: selectedBackground))
+            } else {
+                lines.append(line)
+            }
         }
 
         if startIndex > 0 || endIndex < filteredItems.count {
