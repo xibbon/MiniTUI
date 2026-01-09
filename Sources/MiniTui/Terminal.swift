@@ -19,6 +19,8 @@ public protocol Terminal: AnyObject {
     var columns: Int { get }
     /// Current terminal row count.
     var rows: Int { get }
+    /// Return true when Kitty keyboard protocol is active.
+    var kittyProtocolActive: Bool { get }
     /// Move the cursor by a number of lines.
     func moveBy(lines: Int)
     /// Hide the terminal cursor.
@@ -43,14 +45,25 @@ public final class ProcessTerminal: Terminal {
     private var resizeSource: DispatchSourceSignal?
     private var originalTermios = termios()
     private var hasOriginalTermios = false
+    private var kittyProtocolActiveFlag = false
+    private var kittyQueryResolved = false
+    private var kittyQueryBuffer = ""
+    private var kittyQueryWorkItem: DispatchWorkItem?
+    private var stdinBuffer: StdinBuffer?
 
     /// Create a new process-backed terminal.
     public init() {}
+
+    public var kittyProtocolActive: Bool {
+        return kittyProtocolActiveFlag
+    }
 
     /// Start raw input and hook resize notifications.
     public func start(onInput: @escaping (String) -> Void, onResize: @escaping () -> Void) {
         inputHandler = onInput
         resizeHandler = onResize
+        kittyProtocolActiveFlag = false
+        setKittyProtocolActive(false)
 
         if tcgetattr(STDIN_FILENO, &originalTermios) == 0 {
             hasOriginalTermios = true
@@ -70,8 +83,7 @@ public final class ProcessTerminal: Terminal {
             let count = read(STDIN_FILENO, &buffer, buffer.count)
             if count > 0 {
                 let data = Data(buffer[0..<count])
-                let text = String(decoding: data, as: UTF8.self)
-                self.inputHandler?(text)
+                self.handleStdinData(data)
             }
         }
         readSource.resume()
@@ -86,13 +98,25 @@ public final class ProcessTerminal: Terminal {
         self.resizeSource = resizeSource
 
         write("\u{001B}[?2004h")
-        write("\u{001B}[>1u")
+        setupStdinBuffer()
+        queryAndEnableKittyProtocol()
     }
 
     /// Stop raw input and restore the previous terminal state.
     public func stop() {
         write("\u{001B}[?2004l")
-        write("\u{001B}[<u")
+        if kittyProtocolActiveFlag {
+            write("\u{001B}[<u")
+            kittyProtocolActiveFlag = false
+            setKittyProtocolActive(false)
+        }
+
+        kittyQueryWorkItem?.cancel()
+        kittyQueryWorkItem = nil
+        kittyQueryResolved = false
+        kittyQueryBuffer = ""
+        stdinBuffer?.destroy()
+        stdinBuffer = nil
 
         readSource?.cancel()
         readSource = nil
@@ -106,6 +130,80 @@ public final class ProcessTerminal: Terminal {
             tcsetattr(STDIN_FILENO, TCSANOW, &termios)
             hasOriginalTermios = false
         }
+    }
+
+    private func setupStdinBuffer() {
+        let buffer = StdinBuffer(options: StdinBufferOptions(timeout: 0.01))
+        buffer.onData = { [weak self] sequence in
+            self?.inputHandler?(sequence)
+        }
+        buffer.onPaste = { [weak self] content in
+            self?.inputHandler?("\u{001B}[200~" + content + "\u{001B}[201~")
+        }
+        stdinBuffer = buffer
+    }
+
+    private func queryAndEnableKittyProtocol() {
+        kittyQueryResolved = false
+        kittyQueryBuffer = ""
+
+        let workItem = DispatchWorkItem { [weak self] in
+            guard let self, !self.kittyQueryResolved else { return }
+            self.kittyQueryResolved = true
+            self.kittyProtocolActiveFlag = false
+            setKittyProtocolActive(false)
+
+            if !self.kittyQueryBuffer.isEmpty {
+                self.stdinBuffer?.process(self.kittyQueryBuffer)
+                self.kittyQueryBuffer = ""
+            }
+            self.kittyQueryWorkItem = nil
+        }
+        kittyQueryWorkItem?.cancel()
+        kittyQueryWorkItem = workItem
+        DispatchQueue.global().asyncAfter(deadline: .now() + 0.1, execute: workItem)
+
+        write("\u{001B}[?u")
+    }
+
+    private func handleStdinData(_ data: Data) {
+        guard !kittyQueryResolved else {
+            stdinBuffer?.process(data)
+            return
+        }
+
+        let text = String(decoding: data, as: UTF8.self)
+        kittyQueryBuffer += text
+
+        if let range = kittyResponseRange(in: kittyQueryBuffer) {
+            kittyQueryResolved = true
+            kittyProtocolActiveFlag = true
+            setKittyProtocolActive(true)
+            write("\u{001B}[>3u")
+
+            kittyQueryBuffer.removeSubrange(range)
+            let remaining = kittyQueryBuffer
+            kittyQueryBuffer = ""
+
+            kittyQueryWorkItem?.cancel()
+            kittyQueryWorkItem = nil
+
+            if !remaining.isEmpty {
+                stdinBuffer?.process(remaining)
+            }
+        }
+    }
+
+    private func kittyResponseRange(in text: String) -> Range<String.Index>? {
+        let pattern = "\\u{001B}\\[\\?(\\d+)u"
+        guard let regex = try? NSRegularExpression(pattern: pattern, options: []) else {
+            return nil
+        }
+        let range = NSRange(text.startIndex..<text.endIndex, in: text)
+        guard let match = regex.firstMatch(in: text, options: [], range: range) else {
+            return nil
+        }
+        return Range(match.range(at: 0), in: text)
     }
 
     /// Write UTF-8 data to stdout.

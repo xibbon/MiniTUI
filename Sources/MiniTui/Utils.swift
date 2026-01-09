@@ -36,8 +36,9 @@ func stripAnsiCodes(_ text: String) -> String {
     // Strip SGR + cursor codes.
     result = result.replacingMatches(of: "\u{001B}\\[[0-9;]*[mGKHJ]", with: "")
 
-    // Strip OSC 8 hyperlinks.
-    result = result.replacingMatches(of: "\u{001B}\\]8;;[^\u{0007}]*\u{0007}", with: "")
+    // Strip OSC sequences (BEL or ST terminator).
+    result = result.replacingMatches(of: "\u{001B}\\][^\u{0007}]*\u{0007}", with: "")
+    result = result.replacingMatches(of: "\u{001B}\\][^\u{001B}]*\u{001B}\\\\", with: "")
 
     return result
 }
@@ -359,6 +360,148 @@ public func truncateToWidth(_ text: String, maxWidth: Int, ellipsis: String = ".
     return "\(result)\u{001B}[0m\(ellipsis)"
 }
 
+/// Extract a range of visible columns from a line. Handles ANSI codes and wide chars.
+public func sliceByColumn(_ line: String, startCol: Int, length: Int, strict: Bool = false) -> String {
+    return sliceWithWidth(line, startCol: startCol, length: length, strict: strict).text
+}
+
+/// Like sliceByColumn but also returns the actual visible width of the result.
+public func sliceWithWidth(
+    _ line: String,
+    startCol: Int,
+    length: Int,
+    strict: Bool = false
+) -> (text: String, width: Int) {
+    if length <= 0 {
+        return ("", 0)
+    }
+
+    let endCol = startCol + length
+    var result = ""
+    var resultWidth = 0
+    var currentCol = 0
+    var i = 0
+    var pendingAnsi = ""
+    let lineLength = line.count
+
+    while i < lineLength {
+        if let ansi = extractAnsiCode(line, at: i) {
+            if currentCol >= startCol && currentCol < endCol {
+                result += ansi.code
+            } else if currentCol < startCol {
+                pendingAnsi += ansi.code
+            }
+            i += ansi.length
+            continue
+        }
+
+        var textEnd = i
+        while textEnd < lineLength && extractAnsiCode(line, at: textEnd) == nil {
+            textEnd += 1
+        }
+
+        let textPortion = line.substring(from: i, length: textEnd - i)
+        for grapheme in textPortion {
+            let w = visibleWidth(String(grapheme))
+            let inRange = currentCol >= startCol && currentCol < endCol
+            let fits = !strict || currentCol + w <= endCol
+            if inRange && fits {
+                if !pendingAnsi.isEmpty {
+                    result += pendingAnsi
+                    pendingAnsi = ""
+                }
+                result.append(grapheme)
+                resultWidth += w
+            }
+            currentCol += w
+            if currentCol >= endCol {
+                break
+            }
+        }
+        i = textEnd
+        if currentCol >= endCol {
+            break
+        }
+    }
+
+    return (result, resultWidth)
+}
+
+/// Extract "before" and "after" segments from a line in a single pass.
+public func extractSegments(
+    _ line: String,
+    beforeEnd: Int,
+    afterStart: Int,
+    afterLen: Int,
+    strictAfter: Bool = false
+) -> (before: String, beforeWidth: Int, after: String, afterWidth: Int) {
+    var before = ""
+    var beforeWidth = 0
+    var after = ""
+    var afterWidth = 0
+    var currentCol = 0
+    var i = 0
+    var pendingAnsiBefore = ""
+    var afterStarted = false
+    let afterEnd = afterStart + afterLen
+    let lineLength = line.count
+
+    let pooledStyleTracker = AnsiCodeTracker()
+    pooledStyleTracker.clear()
+
+    while i < lineLength {
+        if let ansi = extractAnsiCode(line, at: i) {
+            pooledStyleTracker.process(ansi.code)
+            if currentCol < beforeEnd {
+                pendingAnsiBefore += ansi.code
+            } else if currentCol >= afterStart && currentCol < afterEnd && afterStarted {
+                after += ansi.code
+            }
+            i += ansi.length
+            continue
+        }
+
+        var textEnd = i
+        while textEnd < lineLength && extractAnsiCode(line, at: textEnd) == nil {
+            textEnd += 1
+        }
+
+        let textPortion = line.substring(from: i, length: textEnd - i)
+        for grapheme in textPortion {
+            let w = visibleWidth(String(grapheme))
+
+            if currentCol < beforeEnd {
+                if !pendingAnsiBefore.isEmpty {
+                    before += pendingAnsiBefore
+                    pendingAnsiBefore = ""
+                }
+                before.append(grapheme)
+                beforeWidth += w
+            } else if currentCol >= afterStart && currentCol < afterEnd {
+                let fits = !strictAfter || currentCol + w <= afterEnd
+                if fits {
+                    if !afterStarted {
+                        after += pooledStyleTracker.getActiveCodes()
+                        afterStarted = true
+                    }
+                    after.append(grapheme)
+                    afterWidth += w
+                }
+            }
+
+            currentCol += w
+            let done = afterLen <= 0 ? currentCol >= beforeEnd : currentCol >= afterEnd
+            if done { break }
+        }
+
+        i = textEnd
+        let done = afterLen <= 0 ? currentCol >= beforeEnd : currentCol >= afterEnd
+        if done { break }
+    }
+
+    return (before, beforeWidth, after, afterWidth)
+}
+
 private enum SegmentType {
     case ansi
     case grapheme
@@ -374,23 +517,47 @@ private func trimTrailingSpaces(_ text: String) -> String {
 }
 
 private func extractAnsiCode(_ text: String, at pos: Int) -> (code: String, length: Int)? {
-    guard text.character(at: pos) == "\u{001B}", text.character(at: pos + 1) == "[" else {
+    guard text.character(at: pos) == "\u{001B}" else {
+        return nil
+    }
+    guard let next = text.character(at: pos + 1) else {
         return nil
     }
 
-    var j = pos + 2
-    let length = text.count
+    if next == "[" {
+        var j = pos + 2
+        let length = text.count
+        while j < length {
+            guard let ch = text.character(at: j) else {
+                break
+            }
+            if ch == "m" || ch == "G" || ch == "K" || ch == "H" || ch == "J" {
+                let startIndex = text.index(at: pos)
+                let endIndex = text.index(at: j + 1)
+                return (String(text[startIndex..<endIndex]), j + 1 - pos)
+            }
+            j += 1
+        }
+        return nil
+    }
 
-    while j < length {
-        guard let ch = text.character(at: j) else {
-            break
+    if next == "]" {
+        var j = pos + 2
+        let length = text.count
+        while j < length {
+            if text.character(at: j) == "\u{0007}" {
+                let startIndex = text.index(at: pos)
+                let endIndex = text.index(at: j + 1)
+                return (String(text[startIndex..<endIndex]), j + 1 - pos)
+            }
+            if text.character(at: j) == "\u{001B}", text.character(at: j + 1) == "\\" {
+                let startIndex = text.index(at: pos)
+                let endIndex = text.index(at: j + 2)
+                return (String(text[startIndex..<endIndex]), j + 2 - pos)
+            }
+            j += 1
         }
-        if ch == "m" || ch == "G" || ch == "K" || ch == "H" || ch == "J" {
-            let startIndex = text.index(at: pos)
-            let endIndex = text.index(at: j + 1)
-            return (String(text[startIndex..<endIndex]), j + 1 - pos)
-        }
-        j += 1
+        return nil
     }
 
     return nil
@@ -557,6 +724,10 @@ private final class AnsiCodeTracker {
             }
             i += 1
         }
+    }
+
+    func clear() {
+        reset()
     }
 
     func getActiveCodes() -> String {

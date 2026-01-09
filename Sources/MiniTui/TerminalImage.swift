@@ -109,7 +109,7 @@ public func detectCapabilities() -> TerminalCapabilities {
     let term = env["TERM"]?.lowercased() ?? ""
     let colorTerm = env["COLORTERM"]?.lowercased() ?? ""
 
-    if env["KITTY_WINDOW_ID"] != nil || termProgram == "kitty" {
+    if env["KITTY_WINDOW_ID"] != nil || termProgram == "kitty" || term.contains("kitty") {
         return TerminalCapabilities(images: .kitty, trueColor: true, hyperlinks: true)
     }
 
@@ -117,7 +117,7 @@ public func detectCapabilities() -> TerminalCapabilities {
         return TerminalCapabilities(images: .kitty, trueColor: true, hyperlinks: true)
     }
 
-    if env["WEZTERM_PANE"] != nil || termProgram == "wezterm" {
+    if env["WEZTERM_PANE"] != nil || termProgram == "wezterm" || term.contains("wezterm") {
         return TerminalCapabilities(images: .kitty, trueColor: true, hyperlinks: true)
     }
 

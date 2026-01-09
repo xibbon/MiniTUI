@@ -7,6 +7,8 @@ public protocol Component: AnyObject {
     func render(width: Int) -> [String]
     /// Handle raw terminal input when the component is focused.
     func handleInput(_ data: String)
+    /// Return true to receive Kitty key release events.
+    var wantsKeyRelease: Bool { get }
     /// Clear any cached render state.
     func invalidate()
 }
@@ -14,6 +16,8 @@ public protocol Component: AnyObject {
 public extension Component {
     /// Default no-op input handler.
     func handleInput(_ data: String) {}
+    /// Default to filtering key release events.
+    var wantsKeyRelease: Bool { false }
     /// Default no-op invalidation.
     func invalidate() {}
 }

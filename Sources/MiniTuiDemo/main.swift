@@ -729,7 +729,7 @@ private final class DemoApp: SystemCursorAware {
         case .image:
             let container = Container()
             let instructions = Text("If your terminal supports images, one will render below.", paddingX: 1, paddingY: 0)
-            let base64Png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMB/6X+5e0AAAAASUVORK5CYII="
+            let base64Png = "iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAAEklEQVR4nGP4z8DwHwyBNBgAAEnICff5q7YNAAAAAElFTkSuQmCC"
             let image = Image(
                 base64Data: base64Png,
                 mimeType: "image/png",

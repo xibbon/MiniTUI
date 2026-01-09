@@ -1,5 +1,17 @@
 import Foundation
 
+public struct OverlayOptions: Sendable {
+    public var row: Int?
+    public var col: Int?
+    public var width: Int?
+
+    public init(row: Int? = nil, col: Int? = nil, width: Int? = nil) {
+        self.row = row
+        self.col = col
+        self.width = width
+    }
+}
+
 /// Top-level terminal UI container that manages rendering and input routing.
 @MainActor
 public final class TUI: Container {
@@ -26,6 +38,13 @@ public final class TUI: Container {
     private var lastSystemCursor: CursorPosition?
     private var inputBuffer = ""
     private var cellSizeQueryPending = false
+    private var overlayStack: [OverlayEntry] = []
+
+    private struct OverlayEntry {
+        let component: Component
+        let options: OverlayOptions?
+        let preFocus: Component?
+    }
 
     /// Create a TUI bound to a terminal.
     public init(terminal: Terminal) {
@@ -43,6 +62,31 @@ public final class TUI: Container {
             focusedComponent.usesSystemCursor = useSystemCursor
         }
         updateCursorMode()
+    }
+
+    /// Show an overlay component centered (or at specified position).
+    public func showOverlay(_ component: Component, options: OverlayOptions? = nil) {
+        overlayStack.append(OverlayEntry(component: component, options: options, preFocus: focusedComponent))
+        setFocus(component)
+        requestRender()
+    }
+
+    /// Hide the topmost overlay and restore previous focus.
+    public func hideOverlay() {
+        guard let overlay = overlayStack.popLast() else { return }
+        setFocus(overlay.preFocus)
+        requestRender()
+    }
+
+    public func hasOverlay() -> Bool {
+        return !overlayStack.isEmpty
+    }
+
+    public override func invalidate() {
+        super.invalidate()
+        for overlay in overlayStack {
+            overlay.component.invalidate()
+        }
     }
 
     /// Start terminal input and initial rendering.
@@ -103,6 +147,9 @@ public final class TUI: Container {
         }
 
         if let focused = focusedComponent {
+            if isKeyRelease(input), !focused.wantsKeyRelease {
+                return
+            }
             let shouldPreserveKillChain = focused is KillBufferAware
                 && (matchesKey(input, Key.ctrl("k"))
                     || matchesKey(input, Key.ctrl("w"))
@@ -159,19 +206,100 @@ public final class TUI: Container {
         return line.contains("\u{001B}_G") || line.contains("\u{001B}]1337;File=")
     }
 
+    private static let segmentReset = "\u{001B}[0m\u{001B}]8;;\u{0007}"
+
+    private func compositeOverlays(_ lines: [String], termWidth: Int, termHeight: Int) -> [String] {
+        if overlayStack.isEmpty { return lines }
+        var result = lines
+        let viewportStart = max(0, result.count - termHeight)
+
+        for overlay in overlayStack {
+            let requestedWidth = overlay.options?.width ?? 80
+            let maxWidth = max(1, min(requestedWidth, termWidth - 4))
+            let overlayLines = overlay.component.render(width: maxWidth)
+            let height = overlayLines.count
+
+            let row = max(0, min(overlay.options?.row ?? (termHeight - height) / 2, termHeight - height))
+            let col = max(0, min(overlay.options?.col ?? (termWidth - maxWidth) / 2, termWidth - maxWidth))
+
+            for i in 0..<height {
+                let idx = viewportStart + row + i
+                if idx >= 0 && idx < result.count {
+                    result[idx] = compositeLineAt(
+                        baseLine: result[idx],
+                        overlayLine: overlayLines[i],
+                        startCol: col,
+                        overlayWidth: maxWidth,
+                        totalWidth: termWidth
+                    )
+                }
+            }
+        }
+
+        return result
+    }
+
+    private func compositeLineAt(
+        baseLine: String,
+        overlayLine: String,
+        startCol: Int,
+        overlayWidth: Int,
+        totalWidth: Int
+    ) -> String {
+        if containsImage(baseLine) { return baseLine }
+
+        let afterStart = startCol + overlayWidth
+        let base = extractSegments(
+            baseLine,
+            beforeEnd: startCol,
+            afterStart: afterStart,
+            afterLen: max(0, totalWidth - afterStart),
+            strictAfter: true
+        )
+
+        let overlay = sliceWithWidth(overlayLine, startCol: 0, length: overlayWidth)
+
+        let beforePad = max(0, startCol - base.beforeWidth)
+        let overlayPad = max(0, overlayWidth - overlay.width)
+        let actualBeforeWidth = max(startCol, base.beforeWidth)
+        let actualOverlayWidth = max(overlayWidth, overlay.width)
+        let afterTarget = max(0, totalWidth - actualBeforeWidth - actualOverlayWidth)
+        let afterPad = max(0, afterTarget - base.afterWidth)
+
+        let r = TUI.segmentReset
+        let result = base.before
+            + String(repeating: " ", count: beforePad)
+            + r
+            + overlay.text
+            + String(repeating: " ", count: overlayPad)
+            + r
+            + base.after
+            + String(repeating: " ", count: afterPad)
+
+        let resultWidth = actualBeforeWidth + actualOverlayWidth + max(afterTarget, base.afterWidth)
+        if resultWidth <= totalWidth {
+            return result
+        }
+
+        return sliceByColumn(result, startCol: 0, length: totalWidth, strict: true)
+    }
+
     private func doRender() {
         let width = terminal.columns
         let height = terminal.rows
 
-        let rawLines = render(width: width)
+        var renderedLines = render(width: width)
+        if !overlayStack.isEmpty {
+            renderedLines = compositeOverlays(renderedLines, termWidth: width, termHeight: height)
+        }
         let cursorPosition: CursorPosition?
         let cleanedLines: [String]
         if useSystemCursor {
-            let extraction = extractCursorPosition(from: rawLines)
+            let extraction = extractCursorPosition(from: renderedLines)
             cleanedLines = extraction.lines
             cursorPosition = extraction.cursor
         } else {
-            cleanedLines = rawLines
+            cleanedLines = renderedLines
             cursorPosition = nil
         }
         let newLines = clampLines(cleanedLines, width: width)
@@ -274,7 +402,8 @@ public final class TUI: Container {
     }
 
     private func updateCursorMode() {
-        let shouldShowSystemCursor = useSystemCursor && focusedComponent is SystemCursorAware
+        let overlayActive = !overlayStack.isEmpty
+        let shouldShowSystemCursor = !overlayActive && useSystemCursor && focusedComponent is SystemCursorAware
         if shouldShowSystemCursor {
             terminal.showCursor()
         } else {
@@ -314,7 +443,7 @@ public final class TUI: Container {
     }
 
     private func positionCursorIfNeeded(_ cursor: CursorPosition?, width: Int) {
-        guard useSystemCursor, let cursor else { return }
+        guard useSystemCursor, overlayStack.isEmpty, let cursor else { return }
 
         let clampedCol = max(0, min(cursor.col, max(0, width - 1)))
         var buffer = ""

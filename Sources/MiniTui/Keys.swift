@@ -2,6 +2,39 @@ import Foundation
 
 public typealias KeyId = String
 
+private final class LockedBool: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value: Bool
+
+    init(_ value: Bool) {
+        self.value = value
+    }
+
+    func get() -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return value
+    }
+
+    func set(_ newValue: Bool) {
+        lock.lock()
+        value = newValue
+        lock.unlock()
+    }
+}
+
+private let kittyProtocolState = LockedBool(false)
+
+/// Set whether Kitty keyboard protocol is active.
+public func setKittyProtocolActive(_ active: Bool) {
+    kittyProtocolState.set(active)
+}
+
+/// Return true when Kitty keyboard protocol is active.
+public func isKittyProtocolActive() -> Bool {
+    return kittyProtocolState.get()
+}
+
 /// Helper for building key identifiers with autocomplete.
 public enum Key {
     // Special keys
@@ -137,29 +170,57 @@ private enum FunctionalCodepoints {
     static let end = -15
 }
 
+public enum KeyEventType: String, Sendable {
+    case press
+    case `repeat`
+    case release
+}
+
 private struct ParsedKittySequence {
     let codepoint: Int
     let modifier: Int
 }
 
+/// Return true when the Kitty key event is a key release.
+public func isKeyRelease(_ data: String) -> Bool {
+    if data.contains(":3u") || data.contains(":3~") || data.contains(":3A") || data.contains(":3B") {
+        return true
+    }
+    if data.contains(":3C") || data.contains(":3D") || data.contains(":3H") || data.contains(":3F") {
+        return true
+    }
+    return false
+}
+
+/// Return true when the Kitty key event is a key repeat.
+public func isKeyRepeat(_ data: String) -> Bool {
+    if data.contains(":2u") || data.contains(":2~") || data.contains(":2A") || data.contains(":2B") {
+        return true
+    }
+    if data.contains(":2C") || data.contains(":2D") || data.contains(":2H") || data.contains(":2F") {
+        return true
+    }
+    return false
+}
+
 private func parseKittySequence(_ data: String) -> ParsedKittySequence? {
-    if let match = matchRegex("^\\u{001B}\\[(\\d+)(?:;(\\d+))?u$", in: data) {
+    if let match = matchRegex("^\\u{001B}\\[(\\d+)(?:;(\\d+))?(?::(\\d+))?u$", in: data) {
         let codepoint = Int(match[1]) ?? 0
         let modString = match.count > 2 && !match[2].isEmpty ? match[2] : "1"
         let modValue = Int(modString) ?? 1
         return ParsedKittySequence(codepoint: codepoint, modifier: modValue - 1)
     }
 
-    if let match = matchRegex("^\\u{001B}\\[1;(\\d+)([ABCD])$", in: data) {
+    if let match = matchRegex("^\\u{001B}\\[1;(\\d+)(?::(\\d+))?([ABCD])$", in: data) {
         let modValue = Int(match[1]) ?? 1
-        let letter = match[2]
+        let letter = match.last ?? ""
         let arrowCodes: [String: Int] = ["A": -1, "B": -2, "C": -3, "D": -4]
         if let codepoint = arrowCodes[letter] {
             return ParsedKittySequence(codepoint: codepoint, modifier: modValue - 1)
         }
     }
 
-    if let match = matchRegex("^\\u{001B}\\[(\\d+)(?:;(\\d+))?~$", in: data) {
+    if let match = matchRegex("^\\u{001B}\\[(\\d+)(?:;(\\d+))?(?::(\\d+))?~$", in: data) {
         let keyNum = Int(match[1]) ?? 0
         let modString = match.count > 2 && !match[2].isEmpty ? match[2] : "1"
         let modValue = Int(modString) ?? 1
@@ -176,9 +237,9 @@ private func parseKittySequence(_ data: String) -> ParsedKittySequence? {
         }
     }
 
-    if let match = matchRegex("^\\u{001B}\\[1;(\\d+)([HF])$", in: data) {
+    if let match = matchRegex("^\\u{001B}\\[1;(\\d+)(?::(\\d+))?([HF])$", in: data) {
         let modValue = Int(match[1]) ?? 1
-        let letter = match[2]
+        let letter = match.last ?? ""
         let codepoint = letter == "H" ? FunctionalCodepoints.home : FunctionalCodepoints.end
         return ParsedKittySequence(codepoint: codepoint, modifier: modValue - 1)
     }
@@ -235,6 +296,7 @@ public func matchesKey(_ data: String, _ keyId: KeyId) -> Bool {
     if shift { modifier |= Modifiers.shift }
     if alt { modifier |= Modifiers.alt }
     if ctrl { modifier |= Modifiers.ctrl }
+    let kittyActive = isKittyProtocolActive()
 
     switch key {
     case "escape", "esc":
@@ -255,13 +317,24 @@ public func matchesKey(_ data: String, _ keyId: KeyId) -> Bool {
         return matchesKittySequence(data, expectedCodepoint: Codepoints.tab, expectedModifier: modifier)
     case "enter", "return":
         if shift && !ctrl && !alt {
-            return matchesKittySequence(data, expectedCodepoint: Codepoints.enter, expectedModifier: Modifiers.shift)
-                || matchesKittySequence(data, expectedCodepoint: Codepoints.kpEnter, expectedModifier: Modifiers.shift)
+            if matchesKittySequence(data, expectedCodepoint: Codepoints.enter, expectedModifier: Modifiers.shift)
+                || matchesKittySequence(data, expectedCodepoint: Codepoints.kpEnter, expectedModifier: Modifiers.shift) {
+                return true
+            }
+            if kittyActive {
+                return data == "\u{001B}\r" || data == "\n"
+            }
+            return false
         }
         if alt && !ctrl && !shift {
-            return data == "\u{001B}\r"
-                || matchesKittySequence(data, expectedCodepoint: Codepoints.enter, expectedModifier: Modifiers.alt)
-                || matchesKittySequence(data, expectedCodepoint: Codepoints.kpEnter, expectedModifier: Modifiers.alt)
+            if matchesKittySequence(data, expectedCodepoint: Codepoints.enter, expectedModifier: Modifiers.alt)
+                || matchesKittySequence(data, expectedCodepoint: Codepoints.kpEnter, expectedModifier: Modifiers.alt) {
+                return true
+            }
+            if !kittyActive {
+                return data == "\u{001B}\r"
+            }
+            return false
         }
         if modifier == 0 {
             return data == "\r"
@@ -369,7 +442,7 @@ public func matchesKey(_ data: String, _ keyId: KeyId) -> Bool {
                 return matchesKittySequence(data, expectedCodepoint: codepoint, expectedModifier: modifier)
             }
 
-            return data == key
+            return data == key || matchesKittySequence(data, expectedCodepoint: codepoint, expectedModifier: 0)
         }
     }
 
@@ -378,6 +451,8 @@ public func matchesKey(_ data: String, _ keyId: KeyId) -> Bool {
 
 /// Parse input data into a key identifier, if recognized.
 public func parseKey(_ data: String) -> KeyId? {
+    let kittyActive = isKittyProtocolActive()
+
     if let kitty = parseKittySequence(data) {
         let effectiveMod = kitty.modifier & ~lockMask
         var mods: [String] = []
@@ -427,13 +502,17 @@ public func parseKey(_ data: String) -> KeyId? {
         }
     }
 
+    if kittyActive {
+        if data == "\u{001B}\r" || data == "\n" { return "shift+enter" }
+    }
+
     if data == "\u{001B}" { return "escape" }
     if data == "\t" { return "tab" }
     if data == "\r" || data == "\u{001B}OM" { return "enter" }
     if data == " " { return "space" }
     if data == "\u{007F}" || data == "\u{0008}" { return "backspace" }
     if data == "\u{001B}[Z" { return "shift+tab" }
-    if data == "\u{001B}\r" { return "alt+enter" }
+    if !kittyActive && data == "\u{001B}\r" { return "alt+enter" }
     if data == "\u{001B}\u{007F}" { return "alt+backspace" }
     if data == "\u{001B}[A" { return "up" }
     if data == "\u{001B}[B" { return "down" }

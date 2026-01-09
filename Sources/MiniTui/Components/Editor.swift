@@ -164,7 +164,7 @@ private struct LayoutLine {
 }
 
 /// Multi-line editor with history and autocomplete support.
-public final class Editor: SystemCursorAware, KillBufferAware {
+public final class Editor: SystemCursorAware, KillBufferAware, EditorComponent {
     private var state = EditorState(lines: [""], cursorLine: 0, cursorCol: 0)
     private let theme: EditorTheme
     private var lastWidth: Int = 80

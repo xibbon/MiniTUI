@@ -65,7 +65,7 @@ public let DEFAULT_EDITOR_KEYBINDINGS: [EditorAction: [KeyId]] = [
     .deleteToLineStart: [Key.ctrl("u")],
     .deleteToLineEnd: [Key.ctrl("k")],
     // Text input
-    .newLine: [Key.shift("enter"), Key.alt("enter")],
+    .newLine: [Key.shift("enter")],
     .submit: [Key.enter],
     .tab: [Key.tab],
     // Selection/autocomplete
