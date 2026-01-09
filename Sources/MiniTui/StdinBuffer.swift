@@ -172,6 +172,51 @@ public struct StdinBufferOptions: Sendable {
     }
 }
 
+public enum StdinBufferEvent: String, Sendable {
+    case data
+    case paste
+}
+
+private final class StdinBufferListeners {
+    private let lock = NSLock()
+    private var listeners: [StdinBufferEvent: [UUID: (String) -> Void]] = [
+        .data: [:],
+        .paste: [:],
+    ]
+
+    func add(_ event: StdinBufferEvent, _ listener: @escaping (String) -> Void) -> UUID {
+        let id = UUID()
+        lock.lock()
+        var eventListeners = listeners[event] ?? [:]
+        eventListeners[id] = listener
+        listeners[event] = eventListeners
+        lock.unlock()
+        return id
+    }
+
+    func remove(_ event: StdinBufferEvent, id: UUID) {
+        lock.lock()
+        var eventListeners = listeners[event] ?? [:]
+        eventListeners[id] = nil
+        listeners[event] = eventListeners
+        lock.unlock()
+    }
+
+    func emit(_ event: StdinBufferEvent, payload: String) {
+        let handlers: [(String) -> Void]
+        lock.lock()
+        if let values = listeners[event]?.values {
+            handlers = Array(values)
+        } else {
+            handlers = []
+        }
+        lock.unlock()
+        for handler in handlers {
+            handler(payload)
+        }
+    }
+}
+
 public final class StdinBuffer {
     public var onData: ((String) -> Void)?
     public var onPaste: ((String) -> Void)?
@@ -181,6 +226,7 @@ public final class StdinBuffer {
     private let timeoutSeconds: TimeInterval
     private var pasteMode = false
     private var pasteBuffer = ""
+    private let listeners = StdinBufferListeners()
 
     public init(options: StdinBufferOptions = StdinBufferOptions()) {
         self.timeoutSeconds = options.timeout
@@ -197,7 +243,7 @@ public final class StdinBuffer {
         }
 
         if text.isEmpty && buffer.isEmpty {
-            onData?("")
+            emit(.data, payload: "")
             return
         }
 
@@ -214,7 +260,7 @@ public final class StdinBuffer {
                 pasteMode = false
                 pasteBuffer = ""
 
-                onPaste?(pastedContent)
+                emit(.paste, payload: pastedContent)
 
                 if !remaining.isEmpty {
                     process(remaining)
@@ -228,7 +274,7 @@ public final class StdinBuffer {
                 let beforePaste = String(buffer[..<startRange.lowerBound])
                 let result = extractCompleteSequences(beforePaste)
                 for sequence in result.sequences {
-                    onData?(sequence)
+                    emit(.data, payload: sequence)
                 }
             }
 
@@ -244,7 +290,7 @@ public final class StdinBuffer {
                 pasteMode = false
                 pasteBuffer = ""
 
-                onPaste?(pastedContent)
+                emit(.paste, payload: pastedContent)
 
                 if !remaining.isEmpty {
                     process(remaining)
@@ -257,7 +303,7 @@ public final class StdinBuffer {
         buffer = result.remainder
 
         for sequence in result.sequences {
-            onData?(sequence)
+            emit(.data, payload: sequence)
         }
 
         if !buffer.isEmpty {
@@ -265,7 +311,7 @@ public final class StdinBuffer {
                 guard let self else { return }
                 let flushed = self.flush()
                 for sequence in flushed {
-                    self.onData?(sequence)
+                    self.emit(.data, payload: sequence)
                 }
             }
             timeoutWorkItem = workItem
@@ -303,6 +349,14 @@ public final class StdinBuffer {
         clear()
     }
 
+    public func on(_ event: StdinBufferEvent, _ listener: @escaping (String) -> Void) -> UUID {
+        return listeners.add(event, listener)
+    }
+
+    public func off(_ event: StdinBufferEvent, _ token: UUID) {
+        listeners.remove(event, id: token)
+    }
+
     private func decode(_ data: Data) -> String {
         if data.count == 1, let byte = data.first, byte > 127 {
             let value = byte - 128
@@ -311,5 +365,15 @@ public final class StdinBuffer {
             }
         }
         return String(decoding: data, as: UTF8.self)
+    }
+
+    private func emit(_ event: StdinBufferEvent, payload: String) {
+        switch event {
+        case .data:
+            onData?(payload)
+        case .paste:
+            onPaste?(payload)
+        }
+        listeners.emit(event, payload: payload)
     }
 }
