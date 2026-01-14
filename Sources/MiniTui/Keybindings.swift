@@ -24,6 +24,8 @@ public enum EditorAction: String, Sendable {
     // Selection/autocomplete
     case selectUp
     case selectDown
+    case selectPageUp
+    case selectPageDown
     case selectConfirm
     case selectCancel
     // Clipboard
@@ -71,6 +73,8 @@ public let DEFAULT_EDITOR_KEYBINDINGS: [EditorAction: [KeyId]] = [
     // Selection/autocomplete
     .selectUp: [Key.up],
     .selectDown: [Key.down],
+    .selectPageUp: [Key.pageUp],
+    .selectPageDown: [Key.pageDown],
     .selectConfirm: [Key.enter],
     .selectCancel: [Key.escape, Key.ctrl("c")],
     // Clipboard

@@ -298,16 +298,25 @@ public func applyBackgroundToLine(_ line: String, width: Int, bgFn: (String) -> 
 }
 
 /// Truncate text to a visible width, preserving ANSI codes and adding an ellipsis.
-public func truncateToWidth(_ text: String, maxWidth: Int, ellipsis: String = "...") -> String {
+/// Optionally pad the result with spaces to reach exactly maxWidth.
+public func truncateToWidth(_ text: String, maxWidth: Int, ellipsis: String = "...", pad: Bool = false) -> String {
     let textVisibleWidth = visibleWidth(text)
     if textVisibleWidth <= maxWidth {
+        if pad {
+            return text + String(repeating: " ", count: maxWidth - textVisibleWidth)
+        }
         return text
     }
 
     let ellipsisWidth = visibleWidth(ellipsis)
     let targetWidth = maxWidth - ellipsisWidth
     if targetWidth <= 0 {
-        return String(ellipsis.prefix(maxWidth))
+        let truncated = String(ellipsis.prefix(maxWidth))
+        if pad {
+            let truncatedWidth = visibleWidth(truncated)
+            return truncated + String(repeating: " ", count: max(0, maxWidth - truncatedWidth))
+        }
+        return truncated
     }
 
     var segments: [(type: SegmentType, value: String)] = []
@@ -357,7 +366,12 @@ public func truncateToWidth(_ text: String, maxWidth: Int, ellipsis: String = ".
         }
     }
 
-    return "\(result)\u{001B}[0m\(ellipsis)"
+    let truncated = "\(result)\u{001B}[0m\(ellipsis)"
+    if pad {
+        let truncatedWidth = visibleWidth(truncated)
+        return truncated + String(repeating: " ", count: max(0, maxWidth - truncatedWidth))
+    }
+    return truncated
 }
 
 /// Extract a range of visible columns from a line. Handles ANSI codes and wide chars.

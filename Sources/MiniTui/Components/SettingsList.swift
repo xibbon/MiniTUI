@@ -62,9 +62,19 @@ public struct SettingsListTheme: Sendable {
     }
 }
 
+/// Options to configure SettingsList behavior.
+public struct SettingsListOptions: Sendable {
+    public var enableSearch: Bool
+
+    public init(enableSearch: Bool = false) {
+        self.enableSearch = enableSearch
+    }
+}
+
 /// List UI for editing and selecting setting values.
 public final class SettingsList: SystemCursorAware {
     private var items: [SettingItem]
+    private var filteredItems: [SettingItem]
     private let theme: SettingsListTheme
     private var selectedIndex = 0
     private let maxVisible: Int
@@ -74,6 +84,8 @@ public final class SettingsList: SystemCursorAware {
 
     private var submenuComponent: Component?
     private var submenuItemIndex: Int?
+    private var searchInput: Input?
+    private var searchEnabled: Bool
 
     /// Create a settings list.
     public init(
@@ -81,13 +93,19 @@ public final class SettingsList: SystemCursorAware {
         maxVisible: Int,
         theme: SettingsListTheme,
         onChange: @escaping (String, String) -> Void,
-        onCancel: @escaping () -> Void
+        onCancel: @escaping () -> Void,
+        options: SettingsListOptions = SettingsListOptions()
     ) {
         self.items = items
+        self.filteredItems = items
         self.maxVisible = maxVisible
         self.theme = theme
         self.onChange = onChange
         self.onCancel = onCancel
+        self.searchEnabled = options.enableSearch
+        if self.searchEnabled {
+            self.searchInput = Input()
+        }
     }
 
     /// Update a setting value by id.
@@ -95,11 +113,15 @@ public final class SettingsList: SystemCursorAware {
         if let index = items.firstIndex(where: { $0.id == id }) {
             items[index].currentValue = newValue
         }
+        if let index = filteredItems.firstIndex(where: { $0.id == id }) {
+            filteredItems[index].currentValue = newValue
+        }
     }
 
     /// Invalidate the active submenu, if present.
     public func invalidate() {
         submenuComponent?.invalidate()
+        searchInput?.invalidate()
     }
 
     /// Render the list or the active submenu.
@@ -121,31 +143,55 @@ public final class SettingsList: SystemCursorAware {
         }
 
         let kb = getEditorKeybindings()
+        let displayItems = searchEnabled ? filteredItems : items
         if kb.matches(data, .selectUp) {
-            selectedIndex = selectedIndex == 0 ? max(items.count - 1, 0) : selectedIndex - 1
+            guard !displayItems.isEmpty else { return }
+            selectedIndex = selectedIndex == 0 ? max(displayItems.count - 1, 0) : selectedIndex - 1
         } else if kb.matches(data, .selectDown) {
-            selectedIndex = selectedIndex == max(items.count - 1, 0) ? 0 : selectedIndex + 1
+            guard !displayItems.isEmpty else { return }
+            selectedIndex = selectedIndex == max(displayItems.count - 1, 0) ? 0 : selectedIndex + 1
         } else if kb.matches(data, .selectConfirm) || data == " " {
             activateItem()
         } else if kb.matches(data, .selectCancel) {
             onCancel()
+        } else if searchEnabled, let searchInput {
+            let sanitized = data.replacingOccurrences(of: " ", with: "")
+            guard !sanitized.isEmpty else { return }
+            searchInput.handleInput(sanitized)
+            applyFilter(query: searchInput.getValue())
         }
     }
 
     private func renderMainList(width: Int) -> [String] {
         var lines: [String] = []
 
+        if searchEnabled, let searchInput {
+            searchInput.usesSystemCursor = usesSystemCursor
+            lines.append(contentsOf: searchInput.render(width: width))
+            lines.append("")
+        }
+
         guard !items.isEmpty else {
             lines.append(theme.hint("  No settings available"))
+            if searchEnabled {
+                addHintLine(into: &lines)
+            }
             return lines
         }
 
-        let startIndex = max(0, min(selectedIndex - maxVisible / 2, items.count - maxVisible))
-        let endIndex = min(startIndex + maxVisible, items.count)
+        let displayItems = searchEnabled ? filteredItems : items
+        if displayItems.isEmpty {
+            lines.append(theme.hint("  No matching settings"))
+            addHintLine(into: &lines)
+            return lines
+        }
+
+        let startIndex = max(0, min(selectedIndex - maxVisible / 2, displayItems.count - maxVisible))
+        let endIndex = min(startIndex + maxVisible, displayItems.count)
         let maxLabelWidth = min(30, items.map { visibleWidth($0.label) }.max() ?? 0)
 
         for i in startIndex..<endIndex {
-            let item = items[i]
+            let item = displayItems[i]
             let isSelected = i == selectedIndex
             let basePrefix = isSelected ? theme.cursor : "  "
             let prefix = isSelected && usesSystemCursor ? basePrefix + systemCursorMarker : basePrefix
@@ -162,12 +208,12 @@ public final class SettingsList: SystemCursorAware {
             lines.append(prefix + labelText + separator + valueText)
         }
 
-        if startIndex > 0 || endIndex < items.count {
-            let scrollText = "  (\(selectedIndex + 1)/\(items.count))"
+        if startIndex > 0 || endIndex < displayItems.count {
+            let scrollText = "  (\(selectedIndex + 1)/\(displayItems.count))"
             lines.append(theme.hint(truncateToWidth(scrollText, maxWidth: width - 2, ellipsis: "")))
         }
 
-        if let description = items[safe: selectedIndex]?.description {
+        if let description = displayItems[safe: selectedIndex]?.description {
             lines.append("")
             let wrappedDesc = wrapTextWithAnsi(description, width: width - 4)
             for line in wrappedDesc {
@@ -175,14 +221,14 @@ public final class SettingsList: SystemCursorAware {
             }
         }
 
-        lines.append("")
-        lines.append(theme.hint("  Enter/Space to change · Esc to cancel"))
+        addHintLine(into: &lines)
 
         return lines
     }
 
     private func activateItem() {
-        guard let item = items[safe: selectedIndex] else { return }
+        let displayItems = searchEnabled ? filteredItems : items
+        guard let item = displayItems[safe: selectedIndex] else { return }
 
         if let submenu = item.submenu {
             submenuItemIndex = selectedIndex
@@ -191,6 +237,9 @@ public final class SettingsList: SystemCursorAware {
                 if let selectedValue {
                     if let index = self.items.firstIndex(where: { $0.id == item.id }) {
                         self.items[index].currentValue = selectedValue
+                    }
+                    if let index = self.filteredItems.firstIndex(where: { $0.id == item.id }) {
+                        self.filteredItems[index].currentValue = selectedValue
                     }
                     self.onChange(item.id, selectedValue)
                 }
@@ -206,6 +255,9 @@ public final class SettingsList: SystemCursorAware {
             if let index = items.firstIndex(where: { $0.id == item.id }) {
                 items[index].currentValue = newValue
             }
+            if let index = filteredItems.firstIndex(where: { $0.id == item.id }) {
+                filteredItems[index].currentValue = newValue
+            }
             onChange(item.id, newValue)
         }
     }
@@ -216,6 +268,19 @@ public final class SettingsList: SystemCursorAware {
             selectedIndex = submenuItemIndex
             self.submenuItemIndex = nil
         }
+    }
+
+    private func applyFilter(query: String) {
+        filteredItems = fuzzyFilter(items, query: query) { $0.label }
+        selectedIndex = 0
+    }
+
+    private func addHintLine(into lines: inout [String]) {
+        lines.append("")
+        let hint = searchEnabled
+            ? "  Type to search · Enter/Space to change · Esc to cancel"
+            : "  Enter/Space to change · Esc to cancel"
+        lines.append(theme.hint(hint))
     }
 }
 

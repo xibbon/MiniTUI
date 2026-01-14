@@ -1,14 +1,121 @@
 import Foundation
 
-public struct OverlayOptions: Sendable {
-    public var row: Int?
-    public var col: Int?
-    public var width: Int?
+/// Anchor position for overlays.
+public enum OverlayAnchor: String, Sendable {
+    case center
+    case topLeft = "top-left"
+    case topRight = "top-right"
+    case bottomLeft = "bottom-left"
+    case bottomRight = "bottom-right"
+    case topCenter = "top-center"
+    case bottomCenter = "bottom-center"
+    case leftCenter = "left-center"
+    case rightCenter = "right-center"
+}
 
-    public init(row: Int? = nil, col: Int? = nil, width: Int? = nil) {
+/// Margin configuration for overlays.
+public struct OverlayMargin: Sendable, Equatable {
+    public var top: Int?
+    public var right: Int?
+    public var bottom: Int?
+    public var left: Int?
+
+    public init(top: Int? = nil, right: Int? = nil, bottom: Int? = nil, left: Int? = nil) {
+        self.top = top
+        self.right = right
+        self.bottom = bottom
+        self.left = left
+    }
+
+    public init(all value: Int) {
+        self.top = value
+        self.right = value
+        self.bottom = value
+        self.left = value
+    }
+}
+
+/// Value that can be absolute or percentage.
+public enum SizeValue: Sendable, Equatable, ExpressibleByIntegerLiteral {
+    case absolute(Int)
+    case percent(Double)
+
+    public init(integerLiteral value: Int) {
+        self = .absolute(value)
+    }
+
+    public init(_ value: Int) {
+        self = .absolute(value)
+    }
+
+    public init(percent: Double) {
+        self = .percent(percent)
+    }
+
+}
+
+/// Options for overlay positioning and sizing.
+public struct OverlayOptions: Sendable {
+    public var width: SizeValue?
+    public var minWidth: Int?
+    public var maxHeight: SizeValue?
+    public var anchor: OverlayAnchor?
+    public var offsetX: Int?
+    public var offsetY: Int?
+    public var row: SizeValue?
+    public var col: SizeValue?
+    public var margin: OverlayMargin?
+    public var visible: (@Sendable (Int, Int) -> Bool)?
+
+    public init(
+        width: SizeValue? = nil,
+        minWidth: Int? = nil,
+        maxHeight: SizeValue? = nil,
+        anchor: OverlayAnchor? = nil,
+        offsetX: Int? = nil,
+        offsetY: Int? = nil,
+        row: SizeValue? = nil,
+        col: SizeValue? = nil,
+        margin: OverlayMargin? = nil,
+        visible: (@Sendable (Int, Int) -> Bool)? = nil
+    ) {
+        self.width = width
+        self.minWidth = minWidth
+        self.maxHeight = maxHeight
+        self.anchor = anchor
+        self.offsetX = offsetX
+        self.offsetY = offsetY
         self.row = row
         self.col = col
-        self.width = width
+        self.margin = margin
+        self.visible = visible
+    }
+}
+
+/// Handle returned by showOverlay for controlling the overlay.
+@MainActor
+public final class OverlayHandle {
+    private weak var tui: TUI?
+    private let entry: TUI.OverlayEntry
+
+    fileprivate init(tui: TUI, entry: TUI.OverlayEntry) {
+        self.tui = tui
+        self.entry = entry
+    }
+
+    /// Permanently remove the overlay.
+    public func hide() {
+        tui?.removeOverlay(entry)
+    }
+
+    /// Temporarily hide or show the overlay.
+    public func setHidden(_ hidden: Bool) {
+        tui?.setOverlayHidden(entry, hidden: hidden)
+    }
+
+    /// Check if the overlay is temporarily hidden.
+    public func isHidden() -> Bool {
+        return entry.hidden
     }
 }
 
@@ -40,10 +147,18 @@ public final class TUI: Container {
     private var cellSizeQueryPending = false
     private var overlayStack: [OverlayEntry] = []
 
-    private struct OverlayEntry {
+    fileprivate final class OverlayEntry {
         let component: Component
         let options: OverlayOptions?
         let preFocus: Component?
+        var hidden: Bool
+
+        init(component: Component, options: OverlayOptions?, preFocus: Component?, hidden: Bool) {
+            self.component = component
+            self.options = options
+            self.preFocus = preFocus
+            self.hidden = hidden
+        }
     }
 
     /// Create a TUI bound to a terminal.
@@ -64,22 +179,74 @@ public final class TUI: Container {
         updateCursorMode()
     }
 
-    /// Show an overlay component centered (or at specified position).
-    public func showOverlay(_ component: Component, options: OverlayOptions? = nil) {
-        overlayStack.append(OverlayEntry(component: component, options: options, preFocus: focusedComponent))
-        setFocus(component)
+    /// Show an overlay component with configurable positioning and sizing.
+    @discardableResult
+    public func showOverlay(_ component: Component, options: OverlayOptions? = nil) -> OverlayHandle {
+        let entry = OverlayEntry(component: component, options: options, preFocus: focusedComponent, hidden: false)
+        overlayStack.append(entry)
+        if isOverlayVisible(entry) {
+            setFocus(component)
+        }
+        updateCursorMode()
         requestRender()
+        return OverlayHandle(tui: self, entry: entry)
     }
 
     /// Hide the topmost overlay and restore previous focus.
     public func hideOverlay() {
         guard let overlay = overlayStack.popLast() else { return }
-        setFocus(overlay.preFocus)
+        let topVisible = getTopmostVisibleOverlay()
+        setFocus(topVisible?.component ?? overlay.preFocus)
+        updateCursorMode()
         requestRender()
     }
 
+    /// Return true if any overlays are visible.
     public func hasOverlay() -> Bool {
-        return !overlayStack.isEmpty
+        return overlayStack.contains { isOverlayVisible($0) }
+    }
+
+    fileprivate func removeOverlay(_ entry: OverlayEntry) {
+        guard let index = overlayStack.firstIndex(where: { $0 === entry }) else { return }
+        overlayStack.remove(at: index)
+        if focusedComponent === entry.component {
+            let topVisible = getTopmostVisibleOverlay()
+            setFocus(topVisible?.component ?? entry.preFocus)
+        }
+        updateCursorMode()
+        requestRender()
+    }
+
+    fileprivate func setOverlayHidden(_ entry: OverlayEntry, hidden: Bool) {
+        guard entry.hidden != hidden else { return }
+        entry.hidden = hidden
+        if hidden {
+            if focusedComponent === entry.component {
+                let topVisible = getTopmostVisibleOverlay()
+                setFocus(topVisible?.component ?? entry.preFocus)
+            }
+        } else if isOverlayVisible(entry) {
+            setFocus(entry.component)
+        }
+        updateCursorMode()
+        requestRender()
+    }
+
+    private func isOverlayVisible(_ entry: OverlayEntry) -> Bool {
+        if entry.hidden { return false }
+        if let visible = entry.options?.visible {
+            return visible(terminal.columns, terminal.rows)
+        }
+        return true
+    }
+
+    private func getTopmostVisibleOverlay() -> OverlayEntry? {
+        for entry in overlayStack.reversed() {
+            if isOverlayVisible(entry) {
+                return entry
+            }
+        }
+        return nil
     }
 
     public override func invalidate() {
@@ -107,6 +274,16 @@ public final class TUI: Container {
 
     /// Stop terminal input and restore terminal state.
     public func stop() {
+        if !previousLines.isEmpty {
+            let targetRow = previousLines.count
+            let lineDiff = targetRow - cursorRow
+            if lineDiff > 0 {
+                terminal.write("\u{001B}[\(lineDiff)B")
+            } else if lineDiff < 0 {
+                terminal.write("\u{001B}[\(-lineDiff)A")
+            }
+            terminal.write("\r\n")
+        }
         terminal.showCursor()
         terminal.stop()
     }
@@ -115,7 +292,7 @@ public final class TUI: Container {
     public func requestRender(force: Bool = false) {
         if force {
             previousLines = []
-            previousWidth = 0
+            previousWidth = -1
             cursorRow = 0
         }
         if renderRequested { return }
@@ -144,6 +321,16 @@ public final class TUI: Container {
 
         if let onGlobalInput, onGlobalInput(input) {
             return
+        }
+
+        if let focused = focusedComponent,
+           let focusedOverlay = overlayStack.first(where: { $0.component === focused }),
+           !isOverlayVisible(focusedOverlay) {
+            if let topVisible = getTopmostVisibleOverlay() {
+                setFocus(topVisible.component)
+            } else {
+                setFocus(focusedOverlay.preFocus)
+            }
         }
 
         if let focused = focusedComponent {
@@ -208,35 +395,171 @@ public final class TUI: Container {
 
     private static let segmentReset = "\u{001B}[0m\u{001B}]8;;\u{0007}"
 
+    private func parseSizeValue(_ value: SizeValue?, reference: Int) -> Int? {
+        guard let value else { return nil }
+        switch value {
+        case .absolute(let absolute):
+            return absolute
+        case .percent(let percent):
+            return Int((Double(reference) * percent / 100.0).rounded(.down))
+        }
+    }
+
+    private func resolveOverlayLayout(
+        options: OverlayOptions?,
+        overlayHeight: Int,
+        termWidth: Int,
+        termHeight: Int
+    ) -> (width: Int, row: Int, col: Int, maxHeight: Int?) {
+        let opt = options ?? OverlayOptions()
+
+        let marginTop = max(0, opt.margin?.top ?? 0)
+        let marginRight = max(0, opt.margin?.right ?? 0)
+        let marginBottom = max(0, opt.margin?.bottom ?? 0)
+        let marginLeft = max(0, opt.margin?.left ?? 0)
+
+        let availWidth = max(1, termWidth - marginLeft - marginRight)
+        let availHeight = max(1, termHeight - marginTop - marginBottom)
+
+        var width = parseSizeValue(opt.width, reference: termWidth) ?? min(80, availWidth)
+        if let minWidth = opt.minWidth {
+            width = max(width, minWidth)
+        }
+        width = max(1, min(width, availWidth))
+
+        var maxHeight = parseSizeValue(opt.maxHeight, reference: termHeight)
+        if let value = maxHeight {
+            maxHeight = max(1, min(value, availHeight))
+        }
+
+        let effectiveHeight = maxHeight.map { min(overlayHeight, $0) } ?? overlayHeight
+
+        var row: Int
+        if let rowValue = opt.row {
+            switch rowValue {
+            case .absolute(let absolute):
+                row = absolute
+            case .percent(let percent):
+                let maxRow = max(0, availHeight - effectiveHeight)
+                row = marginTop + Int((Double(maxRow) * percent / 100.0).rounded(.down))
+            }
+        } else {
+            row = resolveAnchorRow(opt.anchor ?? .center, height: effectiveHeight, availHeight: availHeight, marginTop: marginTop)
+        }
+
+        var col: Int
+        if let colValue = opt.col {
+            switch colValue {
+            case .absolute(let absolute):
+                col = absolute
+            case .percent(let percent):
+                let maxCol = max(0, availWidth - width)
+                col = marginLeft + Int((Double(maxCol) * percent / 100.0).rounded(.down))
+            }
+        } else {
+            col = resolveAnchorCol(opt.anchor ?? .center, width: width, availWidth: availWidth, marginLeft: marginLeft)
+        }
+
+        if let offsetY = opt.offsetY {
+            row += offsetY
+        }
+        if let offsetX = opt.offsetX {
+            col += offsetX
+        }
+
+        row = max(marginTop, min(row, termHeight - marginBottom - effectiveHeight))
+        col = max(marginLeft, min(col, termWidth - marginRight - width))
+
+        return (width, row, col, maxHeight)
+    }
+
+    private func resolveAnchorRow(_ anchor: OverlayAnchor, height: Int, availHeight: Int, marginTop: Int) -> Int {
+        switch anchor {
+        case .topLeft, .topCenter, .topRight:
+            return marginTop
+        case .bottomLeft, .bottomCenter, .bottomRight:
+            return marginTop + availHeight - height
+        case .leftCenter, .center, .rightCenter:
+            return marginTop + (availHeight - height) / 2
+        }
+    }
+
+    private func resolveAnchorCol(_ anchor: OverlayAnchor, width: Int, availWidth: Int, marginLeft: Int) -> Int {
+        switch anchor {
+        case .topLeft, .leftCenter, .bottomLeft:
+            return marginLeft
+        case .topRight, .rightCenter, .bottomRight:
+            return marginLeft + availWidth - width
+        case .topCenter, .center, .bottomCenter:
+            return marginLeft + (availWidth - width) / 2
+        }
+    }
+
     private func compositeOverlays(_ lines: [String], termWidth: Int, termHeight: Int) -> [String] {
         if overlayStack.isEmpty { return lines }
         var result = lines
+        var rendered: [(lines: [String], row: Int, col: Int, width: Int)] = []
+        var minLinesNeeded = result.count
+
+        for entry in overlayStack {
+            if !isOverlayVisible(entry) { continue }
+
+            let baseLayout = resolveOverlayLayout(options: entry.options, overlayHeight: 0, termWidth: termWidth, termHeight: termHeight)
+            var overlayLines = entry.component.render(width: baseLayout.width)
+            if let maxHeight = baseLayout.maxHeight, overlayLines.count > maxHeight {
+                overlayLines = Array(overlayLines.prefix(maxHeight))
+            }
+            let layout = resolveOverlayLayout(options: entry.options, overlayHeight: overlayLines.count, termWidth: termWidth, termHeight: termHeight)
+
+            rendered.append((lines: overlayLines, row: layout.row, col: layout.col, width: layout.width))
+            minLinesNeeded = max(minLinesNeeded, layout.row + overlayLines.count)
+        }
+
+        if rendered.isEmpty {
+            return lines
+        }
+
+        while result.count < minLinesNeeded {
+            result.append("")
+        }
+
         let viewportStart = max(0, result.count - termHeight)
+        var modifiedLines = Set<Int>()
 
-        for overlay in overlayStack {
-            let requestedWidth = overlay.options?.width ?? 80
-            let maxWidth = max(1, min(requestedWidth, termWidth - 4))
-            let overlayLines = overlay.component.render(width: maxWidth)
-            let height = overlayLines.count
-
-            let row = max(0, min(overlay.options?.row ?? (termHeight - height) / 2, termHeight - height))
-            let col = max(0, min(overlay.options?.col ?? (termWidth - maxWidth) / 2, termWidth - maxWidth))
-
-            for i in 0..<height {
-                let idx = viewportStart + row + i
+        for overlay in rendered {
+            for i in 0..<overlay.lines.count {
+                let idx = viewportStart + overlay.row + i
                 if idx >= 0 && idx < result.count {
+                    let overlayLine = overlay.lines[i]
+                    let truncatedOverlay = visibleWidth(overlayLine) > overlay.width
+                        ? sliceByColumn(overlayLine, startCol: 0, length: overlay.width, strict: true)
+                        : overlayLine
                     result[idx] = compositeLineAt(
                         baseLine: result[idx],
-                        overlayLine: overlayLines[i],
-                        startCol: col,
-                        overlayWidth: maxWidth,
+                        overlayLine: truncatedOverlay,
+                        startCol: overlay.col,
+                        overlayWidth: overlay.width,
                         totalWidth: termWidth
                     )
+                    modifiedLines.insert(idx)
                 }
             }
         }
 
+        for idx in modifiedLines {
+            if visibleWidth(result[idx]) > termWidth {
+                result[idx] = sliceByColumn(result[idx], startCol: 0, length: termWidth, strict: true)
+            }
+        }
+
         return result
+    }
+
+    private func applyLineResets(_ lines: [String]) -> [String] {
+        let reset = TUI.segmentReset
+        return lines.map { line in
+            containsImage(line) ? line : line + reset
+        }
     }
 
     private func compositeLineAt(
@@ -257,7 +580,7 @@ public final class TUI: Container {
             strictAfter: true
         )
 
-        let overlay = sliceWithWidth(overlayLine, startCol: 0, length: overlayWidth)
+        let overlay = sliceWithWidth(overlayLine, startCol: 0, length: overlayWidth, strict: true)
 
         let beforePad = max(0, startCol - base.beforeWidth)
         let overlayPad = max(0, overlayWidth - overlay.width)
@@ -276,8 +599,7 @@ public final class TUI: Container {
             + base.after
             + String(repeating: " ", count: afterPad)
 
-        let resultWidth = actualBeforeWidth + actualOverlayWidth + max(afterTarget, base.afterWidth)
-        if resultWidth <= totalWidth {
+        if visibleWidth(result) <= totalWidth {
             return result
         }
 
@@ -292,6 +614,7 @@ public final class TUI: Container {
         if !overlayStack.isEmpty {
             renderedLines = compositeOverlays(renderedLines, termWidth: width, termHeight: height)
         }
+        renderedLines = applyLineResets(renderedLines)
         let cursorPosition: CursorPosition?
         let cleanedLines: [String]
         if useSystemCursor {
@@ -305,7 +628,7 @@ public final class TUI: Container {
         let newLines = clampLines(cleanedLines, width: width)
         let widthChanged = previousWidth != 0 && previousWidth != width
 
-        if previousLines.isEmpty {
+        if previousLines.isEmpty && !widthChanged {
             var buffer = "\u{001B}[?2026h"
             for i in 0..<newLines.count {
                 if i > 0 { buffer += "\r\n" }
@@ -313,7 +636,7 @@ public final class TUI: Container {
             }
             buffer += "\u{001B}[?2026l"
             terminal.write(buffer)
-            cursorRow = newLines.count - 1
+            cursorRow = max(0, newLines.count - 1)
             previousLines = newLines
             previousWidth = width
             positionCursorIfNeeded(cursorPosition, width: width)
@@ -329,7 +652,7 @@ public final class TUI: Container {
             }
             buffer += "\u{001B}[?2026l"
             terminal.write(buffer)
-            cursorRow = newLines.count - 1
+            cursorRow = max(0, newLines.count - 1)
             previousLines = newLines
             previousWidth = width
             positionCursorIfNeeded(cursorPosition, width: width)
@@ -337,12 +660,16 @@ public final class TUI: Container {
         }
 
         var firstChanged = -1
+        var lastChanged = -1
         let maxLines = max(newLines.count, previousLines.count)
         for i in 0..<maxLines {
             let oldLine = i < previousLines.count ? previousLines[i] : ""
             let newLine = i < newLines.count ? newLines[i] : ""
-            if oldLine != newLine, firstChanged == -1 {
-                firstChanged = i
+            if oldLine != newLine {
+                if firstChanged == -1 {
+                    firstChanged = i
+                }
+                lastChanged = i
             }
         }
 
@@ -350,6 +677,32 @@ public final class TUI: Container {
             if useSystemCursor, cursorPosition != lastSystemCursor {
                 positionCursorIfNeeded(cursorPosition, width: width)
             }
+            return
+        }
+
+        if firstChanged >= newLines.count {
+            if previousLines.count > newLines.count {
+                var buffer = "\u{001B}[?2026h"
+                let targetRow = max(0, newLines.count - 1)
+                let lineDiff = targetRow - cursorRow
+                if lineDiff > 0 {
+                    buffer += "\u{001B}[\(lineDiff)B"
+                } else if lineDiff < 0 {
+                    buffer += "\u{001B}[\(-lineDiff)A"
+                }
+                buffer += "\r"
+                let extraLines = previousLines.count - newLines.count
+                for _ in 0..<extraLines {
+                    buffer += "\r\n\u{001B}[2K"
+                }
+                buffer += "\u{001B}[\(extraLines)A"
+                buffer += "\u{001B}[?2026l"
+                terminal.write(buffer)
+                cursorRow = targetRow
+            }
+            previousLines = newLines
+            previousWidth = width
+            positionCursorIfNeeded(cursorPosition, width: width)
             return
         }
 
@@ -363,7 +716,7 @@ public final class TUI: Container {
             }
             buffer += "\u{001B}[?2026l"
             terminal.write(buffer)
-            cursorRow = newLines.count - 1
+            cursorRow = max(0, newLines.count - 1)
             previousLines = newLines
             previousWidth = width
             positionCursorIfNeeded(cursorPosition, width: width)
@@ -379,13 +732,23 @@ public final class TUI: Container {
         }
         buffer += "\r"
 
-        for i in firstChanged..<newLines.count {
-            if i > firstChanged { buffer += "\r\n" }
-            buffer += "\u{001B}[2K"
-            buffer += newLines[i]
+        let renderEnd = min(lastChanged, newLines.count - 1)
+        if renderEnd >= firstChanged {
+            for i in firstChanged...renderEnd {
+                if i > firstChanged { buffer += "\r\n" }
+                buffer += "\u{001B}[2K"
+                buffer += newLines[i]
+            }
         }
 
+        var finalCursorRow = renderEnd
+
         if previousLines.count > newLines.count {
+            if renderEnd < newLines.count - 1 {
+                let moveDown = newLines.count - 1 - renderEnd
+                buffer += "\u{001B}[\(moveDown)B"
+                finalCursorRow = newLines.count - 1
+            }
             let extraLines = previousLines.count - newLines.count
             for _ in newLines.count..<previousLines.count {
                 buffer += "\r\n\u{001B}[2K"
@@ -395,14 +758,14 @@ public final class TUI: Container {
 
         buffer += "\u{001B}[?2026l"
         terminal.write(buffer)
-        cursorRow = newLines.count - 1
+        cursorRow = finalCursorRow
         previousLines = newLines
         previousWidth = width
         positionCursorIfNeeded(cursorPosition, width: width)
     }
 
     private func updateCursorMode() {
-        let overlayActive = !overlayStack.isEmpty
+        let overlayActive = hasOverlay()
         let shouldShowSystemCursor = !overlayActive && useSystemCursor && focusedComponent is SystemCursorAware
         if shouldShowSystemCursor {
             terminal.showCursor()
@@ -443,7 +806,7 @@ public final class TUI: Container {
     }
 
     private func positionCursorIfNeeded(_ cursor: CursorPosition?, width: Int) {
-        guard useSystemCursor, overlayStack.isEmpty, let cursor else { return }
+        guard useSystemCursor, !hasOverlay(), let cursor else { return }
 
         let clampedCol = max(0, min(cursor.col, max(0, width - 1)))
         var buffer = ""

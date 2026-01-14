@@ -97,6 +97,10 @@ public final class ProcessTerminal: Terminal {
         resizeSource.resume()
         self.resizeSource = resizeSource
 
+        #if !os(Windows)
+        kill(getpid(), SIGWINCH)
+        #endif
+
         write("\u{001B}[?2004h")
         setupStdinBuffer()
         queryAndEnableKittyProtocol()

@@ -152,7 +152,7 @@ public final class CombinedAutocompleteProvider: AutocompleteProvider {
                 return (suggestions, argumentText)
             } else {
                 let prefix = String(textBeforeCursor.dropFirst())
-                let filtered = commands.filter { $0.name.lowercased().hasPrefix(prefix.lowercased()) }
+                let filtered = fuzzyFilter(commands, query: prefix) { $0.name }
                 if filtered.isEmpty { return nil }
                 let items = filtered.map { command in
                     AutocompleteItem(value: command.name, label: command.label, description: command.description)

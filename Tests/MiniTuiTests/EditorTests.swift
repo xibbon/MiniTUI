@@ -236,6 +236,24 @@ func insertsUnicode() {
 }
 
 @MainActor
+@Test("treats split Shift+Enter as a newline")
+func shiftEnterSplitNewline() {
+    let editor = Editor(theme: defaultEditorTheme)
+    editor.handleInput("\\")
+    editor.handleInput("\r")
+    #expect(editor.getText() == "\n")
+}
+
+@MainActor
+@Test("inserts a literal backslash when not followed by Enter")
+func shiftEnterBackslashLiteral() {
+    let editor = Editor(theme: defaultEditorTheme)
+    editor.handleInput("\\")
+    editor.handleInput("x")
+    #expect(editor.getText() == "\\x")
+}
+
+@MainActor
 @Test("deletes single-code-unit unicode characters with Backspace")
 func deletesUmlauts() {
     let editor = Editor(theme: defaultEditorTheme)

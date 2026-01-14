@@ -46,7 +46,7 @@ open class Box: Component {
     }
 
     /// Invalidate cached lines and child state.
-    public func invalidate() {
+    open func invalidate() {
         invalidateCache()
         for child in children {
             child.invalidate()

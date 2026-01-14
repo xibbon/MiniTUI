@@ -26,7 +26,7 @@ open class Container: Component {
     }
 
     /// Invalidate all child components.
-    public func invalidate() {
+    open func invalidate() {
         for child in children {
             child.invalidate()
         }

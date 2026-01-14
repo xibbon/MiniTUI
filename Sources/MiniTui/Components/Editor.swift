@@ -184,6 +184,7 @@ public final class Editor: SystemCursorAware, KillBufferAware, EditorComponent {
 
     private var pasteBuffer = ""
     private var isInPaste = false
+    private var pendingShiftEnter = false
 
     private var history: [String] = []
     private var historyIndex = -1
@@ -292,6 +293,21 @@ public final class Editor: SystemCursorAware, KillBufferAware, EditorComponent {
                     handleInput(remaining)
                 }
             }
+            return
+        }
+
+        if pendingShiftEnter {
+            if input == "\r" {
+                pendingShiftEnter = false
+                addNewLine()
+                return
+            }
+            pendingShiftEnter = false
+            insertCharacter("\\")
+        }
+
+        if input == "\\" {
+            pendingShiftEnter = true
             return
         }
 

@@ -48,6 +48,8 @@ public enum Key {
     public static let delete: KeyId = "delete"
     public static let home: KeyId = "home"
     public static let end: KeyId = "end"
+    public static let pageUp: KeyId = "pageUp"
+    public static let pageDown: KeyId = "pageDown"
     public static let up: KeyId = "up"
     public static let down: KeyId = "down"
     public static let left: KeyId = "left"
@@ -183,6 +185,9 @@ private struct ParsedKittySequence {
 
 /// Return true when the Kitty key event is a key release.
 public func isKeyRelease(_ data: String) -> Bool {
+    if data.contains("\u{001B}[200~") {
+        return false
+    }
     if data.contains(":3u") || data.contains(":3~") || data.contains(":3A") || data.contains(":3B") {
         return true
     }
@@ -194,6 +199,9 @@ public func isKeyRelease(_ data: String) -> Bool {
 
 /// Return true when the Kitty key event is a key repeat.
 public func isKeyRepeat(_ data: String) -> Bool {
+    if data.contains("\u{001B}[200~") {
+        return false
+    }
     if data.contains(":2u") || data.contains(":2~") || data.contains(":2A") || data.contains(":2B") {
         return true
     }
@@ -256,6 +264,16 @@ private func matchesKittySequence(_ data: String, expectedCodepoint: Int, expect
     let expectedMod = expectedModifier & ~lockMask
 
     return parsed.codepoint == expectedCodepoint && actualMod == expectedMod
+}
+
+private func matchesModifyOtherKeys(_ data: String, expectedKeycode: Int, expectedModifier: Int) -> Bool {
+    if let match = matchRegex("^\\u{001B}\\[27;(\\d+);(\\d+)~$", in: data) {
+        let modValue = Int(match[1]) ?? 1
+        let keycode = Int(match[2]) ?? 0
+        let actualMod = modValue - 1
+        return keycode == expectedKeycode && actualMod == expectedModifier
+    }
+    return false
 }
 
 private func rawCtrlChar(_ key: String) -> String? {
@@ -321,6 +339,9 @@ public func matchesKey(_ data: String, _ keyId: KeyId) -> Bool {
                 || matchesKittySequence(data, expectedCodepoint: Codepoints.kpEnter, expectedModifier: Modifiers.shift) {
                 return true
             }
+            if matchesModifyOtherKeys(data, expectedKeycode: Codepoints.enter, expectedModifier: Modifiers.shift) {
+                return true
+            }
             if kittyActive {
                 return data == "\u{001B}\r" || data == "\n"
             }
@@ -329,6 +350,9 @@ public func matchesKey(_ data: String, _ keyId: KeyId) -> Bool {
         if alt && !ctrl && !shift {
             if matchesKittySequence(data, expectedCodepoint: Codepoints.enter, expectedModifier: Modifiers.alt)
                 || matchesKittySequence(data, expectedCodepoint: Codepoints.kpEnter, expectedModifier: Modifiers.alt) {
+                return true
+            }
+            if matchesModifyOtherKeys(data, expectedKeycode: Codepoints.enter, expectedModifier: Modifiers.alt) {
                 return true
             }
             if !kittyActive {
@@ -373,6 +397,16 @@ public func matchesKey(_ data: String, _ keyId: KeyId) -> Bool {
                 || matchesKittySequence(data, expectedCodepoint: FunctionalCodepoints.end, expectedModifier: 0)
         }
         return matchesKittySequence(data, expectedCodepoint: FunctionalCodepoints.end, expectedModifier: modifier)
+    case "pageup":
+        if modifier == 0 {
+            return data == "\u{001B}[5~" || matchesKittySequence(data, expectedCodepoint: FunctionalCodepoints.pageUp, expectedModifier: 0)
+        }
+        return matchesKittySequence(data, expectedCodepoint: FunctionalCodepoints.pageUp, expectedModifier: modifier)
+    case "pagedown":
+        if modifier == 0 {
+            return data == "\u{001B}[6~" || matchesKittySequence(data, expectedCodepoint: FunctionalCodepoints.pageDown, expectedModifier: 0)
+        }
+        return matchesKittySequence(data, expectedCodepoint: FunctionalCodepoints.pageDown, expectedModifier: modifier)
     case "up":
         if modifier == 0 {
             return data == "\u{001B}[A" || matchesKittySequence(data, expectedCodepoint: ArrowCodepoints.up, expectedModifier: 0)
@@ -478,6 +512,10 @@ public func parseKey(_ data: String) -> KeyId? {
             keyName = "home"
         case FunctionalCodepoints.end:
             keyName = "end"
+        case FunctionalCodepoints.pageUp:
+            keyName = "pageUp"
+        case FunctionalCodepoints.pageDown:
+            keyName = "pageDown"
         case ArrowCodepoints.up:
             keyName = "up"
         case ArrowCodepoints.down:
@@ -521,6 +559,8 @@ public func parseKey(_ data: String) -> KeyId? {
     if data == "\u{001B}[H" { return "home" }
     if data == "\u{001B}[F" { return "end" }
     if data == "\u{001B}[3~" { return "delete" }
+    if data == "\u{001B}[5~" { return "pageUp" }
+    if data == "\u{001B}[6~" { return "pageDown" }
 
     if data.count == 1, let scalar = data.unicodeScalars.first {
         let code = Int(scalar.value)

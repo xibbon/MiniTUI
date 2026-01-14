@@ -15,6 +15,7 @@ public final class Input: SystemCursorAware, KillBufferAware {
 
     private var pasteBuffer: String = ""
     private var isInPaste = false
+    private var pendingShiftEnter = false
 
     /// Create an empty input.
     public init() {}
@@ -53,6 +54,24 @@ public final class Input: SystemCursorAware, KillBufferAware {
                     handleInput(remaining)
                 }
             }
+            return
+        }
+
+        if pendingShiftEnter {
+            if input == "\r" {
+                pendingShiftEnter = false
+                onSubmit?(value)
+                return
+            }
+            pendingShiftEnter = false
+            let before = value.prefixCharacters(cursor)
+            let after = value.substring(from: cursor, length: value.count - cursor)
+            value = "\(before)\\\(after)"
+            cursor += 1
+        }
+
+        if input == "\\" {
+            pendingShiftEnter = true
             return
         }
 
