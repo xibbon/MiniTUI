@@ -530,47 +530,56 @@ private func trimTrailingSpaces(_ text: String) -> String {
     return result
 }
 
-private func extractAnsiCode(_ text: String, at index: String.Index) -> (code: String, endIndex: String.Index)? {
-    guard index < text.endIndex, text[index] == "\u{001B}" else {
+private func extractAnsiCode(_ text: String, at index: Int) -> (code: String, length: Int)? {
+    guard index >= 0, index < text.count else {
         return nil
     }
 
-    let nextIndex = text.index(after: index)
-    guard nextIndex < text.endIndex else {
+    let startIndex = text.index(at: index)
+    guard startIndex < text.endIndex, text[startIndex] == "\u{001B}" else {
         return nil
     }
 
+    let nextOffset = index + 1
+    guard nextOffset < text.count else {
+        return nil
+    }
+
+    let nextIndex = text.index(at: nextOffset)
     let next = text[nextIndex]
 
     if next == "[" {
-        var j = text.index(after: nextIndex)
-        while j < text.endIndex {
-            let ch = text[j]
+        var j = nextOffset + 1
+        while j < text.count {
+            let ch = text[text.index(at: j)]
             if ch == "m" || ch == "G" || ch == "K" || ch == "H" || ch == "J" {
-                let endIndex = text.index(after: j)
-                return (String(text[index..<endIndex]), endIndex)
+                let endOffset = j + 1
+                let endIndex = text.index(at: endOffset)
+                return (String(text[startIndex..<endIndex]), endOffset - index)
             }
-            j = text.index(after: j)
+            j += 1
         }
         return nil
     }
 
     if next == "]" {
-        var j = text.index(after: nextIndex)
-        while j < text.endIndex {
-            let ch = text[j]
+        var j = nextOffset + 1
+        while j < text.count {
+            let ch = text[text.index(at: j)]
             if ch == "\u{0007}" {
-                let endIndex = text.index(after: j)
-                return (String(text[index..<endIndex]), endIndex)
+                let endOffset = j + 1
+                let endIndex = text.index(at: endOffset)
+                return (String(text[startIndex..<endIndex]), endOffset - index)
             }
             if ch == "\u{001B}" {
-                let escNext = text.index(after: j)
-                if escNext < text.endIndex, text[escNext] == "\\" {
-                    let endIndex = text.index(after: escNext)
-                    return (String(text[index..<endIndex]), endIndex)
+                let escNext = j + 1
+                if escNext < text.count, text[text.index(at: escNext)] == "\\" {
+                    let endOffset = escNext + 1
+                    let endIndex = text.index(at: endOffset)
+                    return (String(text[startIndex..<endIndex]), endOffset - index)
                 }
             }
-            j = text.index(after: j)
+            j += 1
         }
         return nil
     }
@@ -579,13 +588,14 @@ private func extractAnsiCode(_ text: String, at index: String.Index) -> (code: S
 }
 
 private func updateTrackerFromText(_ text: String, tracker: AnsiCodeTracker) {
-    var index = text.startIndex
-    while index < text.endIndex {
+    var index = 0
+    let length = text.count
+    while index < length {
         if let ansiResult = extractAnsiCode(text, at: index) {
             tracker.process(ansiResult.code)
-            index = ansiResult.endIndex
+            index += ansiResult.length
         } else {
-            index = text.index(after: index)
+            index += 1
         }
     }
 }
@@ -596,15 +606,16 @@ private func splitIntoTokensWithAnsi(_ text: String) -> [String] {
     var pendingAnsi = ""
     var inWhitespace = false
 
-    var index = text.startIndex
-    while index < text.endIndex {
+    var index = 0
+    let length = text.count
+    while index < length {
         if let ansiResult = extractAnsiCode(text, at: index) {
             pendingAnsi += ansiResult.code
-            index = ansiResult.endIndex
+            index += ansiResult.length
             continue
         }
 
-        let char = text[index]
+        let char = text[text.index(at: index)]
         let charIsSpace = char == " "
 
         if charIsSpace != inWhitespace, !current.isEmpty {
@@ -619,7 +630,7 @@ private func splitIntoTokensWithAnsi(_ text: String) -> [String] {
 
         inWhitespace = charIsSpace
         current.append(char)
-        index = text.index(after: index)
+        index += 1
     }
 
     if !pendingAnsi.isEmpty {
