@@ -172,6 +172,14 @@ public final class SelectList: SystemCursorAware {
         } else if kb.matches(data, .selectDown) {
             selectedIndex = selectedIndex == max(filteredItems.count - 1, 0) ? 0 : selectedIndex + 1
             notifySelectionChange()
+        } else if kb.matches(data, .selectPageUp) {
+            guard !filteredItems.isEmpty else { return }
+            selectedIndex = max(0, selectedIndex - maxVisible)
+            notifySelectionChange()
+        } else if kb.matches(data, .selectPageDown) {
+            guard !filteredItems.isEmpty else { return }
+            selectedIndex = min(max(filteredItems.count - 1, 0), selectedIndex + maxVisible)
+            notifySelectionChange()
         } else if kb.matches(data, .selectConfirm) {
             if let selected = filteredItems[safe: selectedIndex] {
                 onSelect?(selected)

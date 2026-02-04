@@ -83,8 +83,8 @@ public final class Input: SystemCursorAware, KillBufferAware {
         if matchesKey(input, Key.ctrl("d")) {
             if value.isEmpty {
                 onEnd?()
+                return
             }
-            return
         }
 
         let kb = getEditorKeybindings()
@@ -134,12 +134,12 @@ public final class Input: SystemCursorAware, KillBufferAware {
             return
         }
 
-        if matchesKey(input, Key.ctrl("y")) {
+        if kb.matches(input, .yank) {
             yankKillBuffer()
             return
         }
 
-        if matchesKey(input, Key.alt("d")) {
+        if kb.matches(input, .deleteWordForward) {
             killWordForwards()
             return
         }

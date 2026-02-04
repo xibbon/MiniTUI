@@ -150,6 +150,12 @@ public final class SettingsList: SystemCursorAware {
         } else if kb.matches(data, .selectDown) {
             guard !displayItems.isEmpty else { return }
             selectedIndex = selectedIndex == max(displayItems.count - 1, 0) ? 0 : selectedIndex + 1
+        } else if kb.matches(data, .selectPageUp) {
+            guard !displayItems.isEmpty else { return }
+            selectedIndex = max(0, selectedIndex - maxVisible)
+        } else if kb.matches(data, .selectPageDown) {
+            guard !displayItems.isEmpty else { return }
+            selectedIndex = min(max(displayItems.count - 1, 0), selectedIndex + maxVisible)
         } else if kb.matches(data, .selectConfirm) || data == " " {
             activateItem()
         } else if kb.matches(data, .selectCancel) {

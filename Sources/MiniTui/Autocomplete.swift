@@ -1,12 +1,88 @@
 import Foundation
 
+private let pathDelimiters: Set<Character> = [" ", "\t", "\"", "'", "="]
+
+private func findLastDelimiter(_ text: String) -> Int {
+    guard !text.isEmpty else { return -1 }
+    let chars = Array(text)
+    for i in stride(from: chars.count - 1, through: 0, by: -1) {
+        if pathDelimiters.contains(chars[i]) {
+            return i
+        }
+    }
+    return -1
+}
+
+private func findUnclosedQuoteStart(_ text: String) -> Int? {
+    let chars = Array(text)
+    var inQuotes = false
+    var quoteStart = -1
+    for i in 0..<chars.count {
+        if chars[i] == "\"" {
+            inQuotes.toggle()
+            if inQuotes {
+                quoteStart = i
+            }
+        }
+    }
+    return inQuotes ? quoteStart : nil
+}
+
+private func isTokenStart(_ text: String, _ index: Int) -> Bool {
+    if index == 0 { return true }
+    let chars = Array(text)
+    return pathDelimiters.contains(chars[index - 1])
+}
+
+private func substring(_ text: String, from offset: Int) -> String {
+    let idx = text.index(text.startIndex, offsetBy: max(0, offset))
+    return String(text[idx...])
+}
+
+private func extractQuotedPrefix(_ text: String) -> String? {
+    guard let quoteStart = findUnclosedQuoteStart(text) else { return nil }
+    let chars = Array(text)
+    if quoteStart > 0, chars[quoteStart - 1] == "@" {
+        guard isTokenStart(text, quoteStart - 1) else { return nil }
+        return substring(text, from: quoteStart - 1)
+    }
+    guard isTokenStart(text, quoteStart) else { return nil }
+    return substring(text, from: quoteStart)
+}
+
+private func parsePathPrefix(_ prefix: String) -> (rawPrefix: String, isAtPrefix: Bool, isQuotedPrefix: Bool) {
+    if prefix.hasPrefix("@\"") {
+        return (String(prefix.dropFirst(2)), true, true)
+    }
+    if prefix.hasPrefix("\"") {
+        return (String(prefix.dropFirst(1)), false, true)
+    }
+    if prefix.hasPrefix("@") {
+        return (String(prefix.dropFirst(1)), true, false)
+    }
+    return (prefix, false, false)
+}
+
+private func buildCompletionValue(
+    _ path: String,
+    isAtPrefix: Bool,
+    isQuotedPrefix: Bool
+) -> String {
+    let needsQuotes = isQuotedPrefix || path.contains(" ")
+    let prefix = isAtPrefix ? "@" : ""
+    if !needsQuotes {
+        return "\(prefix)\(path)"
+    }
+    return "\(prefix)\"\(path)\""
+}
+
 private func walkDirectoryWithFd(
     baseDir: String,
     fdPath: String,
     query: String,
     maxResults: Int
 ) -> [(path: String, isDirectory: Bool)] {
-    var args = ["--base-directory", baseDir, "--max-results", String(maxResults), "--type", "f", "--type", "d"]
+    var args = ["--base-directory", baseDir, "--max-results", String(maxResults), "--type", "f", "--type", "d", "--full-path"]
     if !query.isEmpty {
         args.append(query)
     }
@@ -131,12 +207,11 @@ public final class CombinedAutocompleteProvider: AutocompleteProvider {
         let currentLine = lines[safe: cursorLine] ?? ""
         let textBeforeCursor = currentLine.substring(from: 0, length: cursorCol)
 
-        if let atMatch = textBeforeCursor.range(of: "(?:^|\\s)(@[\\S]*)$", options: .regularExpression) {
-            let prefix = String(textBeforeCursor[atMatch]).trimmingCharacters(in: .whitespaces)
-            let query = String(prefix.dropFirst())
-            let suggestions = getFuzzyFileSuggestions(query: query)
+        if let atPrefix = extractAtPrefix(textBeforeCursor) {
+            let parsed = parsePathPrefix(atPrefix)
+            let suggestions = getFuzzyFileSuggestions(query: parsed.rawPrefix, isQuotedPrefix: parsed.isQuotedPrefix)
             if suggestions.isEmpty { return nil }
-            return (suggestions, prefix)
+            return (suggestions, atPrefix)
         }
 
         if textBeforeCursor.hasPrefix("/") {
@@ -181,32 +256,47 @@ public final class CombinedAutocompleteProvider: AutocompleteProvider {
         let beforePrefix = currentLine.substring(from: 0, length: max(0, cursorCol - prefix.count))
         let afterCursor = currentLine.substring(from: cursorCol, length: max(0, currentLine.count - cursorCol))
 
+        let isQuotedPrefix = prefix.hasPrefix("\"") || prefix.hasPrefix("@\"")
+        let hasLeadingQuoteAfterCursor = afterCursor.hasPrefix("\"")
+        let hasTrailingQuoteInItem = item.value.hasSuffix("\"")
+        let adjustedAfterCursor = isQuotedPrefix && hasTrailingQuoteInItem && hasLeadingQuoteAfterCursor
+            ? String(afterCursor.dropFirst())
+            : afterCursor
+
         let isSlashCommand = prefix.hasPrefix("/") && beforePrefix.trimmingCharacters(in: .whitespaces).isEmpty && !prefix.dropFirst().contains("/")
         if isSlashCommand {
-            let newLine = "\(beforePrefix)/\(item.value) \(afterCursor)"
+            let newLine = "\(beforePrefix)/\(item.value) \(adjustedAfterCursor)"
             var newLines = lines
             newLines[cursorLine] = newLine
             return (newLines, cursorLine, beforePrefix.count + item.value.count + 2)
         }
 
         if prefix.hasPrefix("@") {
-            let newLine = "\(beforePrefix)\(item.value) \(afterCursor)"
+            let isDirectory = item.label.hasSuffix("/")
+            let suffix = isDirectory ? "" : " "
+            let newLine = "\(beforePrefix)\(item.value)\(suffix)\(adjustedAfterCursor)"
             var newLines = lines
             newLines[cursorLine] = newLine
-            return (newLines, cursorLine, beforePrefix.count + item.value.count + 1)
+            let cursorOffset = isDirectory && hasTrailingQuoteInItem ? item.value.count - 1 : item.value.count
+            return (newLines, cursorLine, beforePrefix.count + cursorOffset + suffix.count)
         }
 
-        if currentLine.prefixCharacters(cursorCol).contains("/") && currentLine.prefixCharacters(cursorCol).contains(" ") {
-            let newLine = beforePrefix + item.value + afterCursor
+        let textBeforeCursor = currentLine.prefixCharacters(cursorCol)
+        if textBeforeCursor.contains("/") && textBeforeCursor.contains(" ") {
+            let newLine = beforePrefix + item.value + adjustedAfterCursor
             var newLines = lines
             newLines[cursorLine] = newLine
-            return (newLines, cursorLine, beforePrefix.count + item.value.count)
+            let isDirectory = item.label.hasSuffix("/")
+            let cursorOffset = isDirectory && hasTrailingQuoteInItem ? item.value.count - 1 : item.value.count
+            return (newLines, cursorLine, beforePrefix.count + cursorOffset)
         }
 
-        let newLine = beforePrefix + item.value + afterCursor
+        let newLine = beforePrefix + item.value + adjustedAfterCursor
         var newLines = lines
         newLines[cursorLine] = newLine
-        return (newLines, cursorLine, beforePrefix.count + item.value.count)
+        let isDirectory = item.label.hasSuffix("/")
+        let cursorOffset = isDirectory && hasTrailingQuoteInItem ? item.value.count - 1 : item.value.count
+        return (newLines, cursorLine, beforePrefix.count + cursorOffset)
     }
 
     /// Force file suggestions even when the prefix is not obviously a path.
@@ -237,14 +327,25 @@ public final class CombinedAutocompleteProvider: AutocompleteProvider {
         return true
     }
 
-    private func extractPathPrefix(_ text: String, forceExtract: Bool) -> String? {
-        if let atMatch = text.range(of: "@[\\S]*$", options: .regularExpression) {
-            return String(text[atMatch])
+    private func extractAtPrefix(_ text: String) -> String? {
+        if let quoted = extractQuotedPrefix(text), quoted.hasPrefix("@\"") {
+            return quoted
         }
 
-        let delimiters: [Character] = [" ", "\t", "\"", "'", "="]
-        let lastDelimiterIndex = text.lastIndex(where: { delimiters.contains($0) })
-        let pathPrefix = lastDelimiterIndex == nil ? text : String(text[text.index(after: lastDelimiterIndex!)...])
+        let lastDelimiterIndex = findLastDelimiter(text)
+        let tokenStart = lastDelimiterIndex == -1 ? 0 : lastDelimiterIndex + 1
+        let chars = Array(text)
+        guard tokenStart < chars.count, chars[tokenStart] == "@" else { return nil }
+        return substring(text, from: tokenStart)
+    }
+
+    private func extractPathPrefix(_ text: String, forceExtract: Bool) -> String? {
+        if let quoted = extractQuotedPrefix(text) {
+            return quoted
+        }
+
+        let lastDelimiterIndex = findLastDelimiter(text)
+        let pathPrefix = lastDelimiterIndex == -1 ? text : substring(text, from: lastDelimiterIndex + 1)
 
         if forceExtract {
             return pathPrefix
@@ -254,7 +355,7 @@ public final class CombinedAutocompleteProvider: AutocompleteProvider {
             return pathPrefix
         }
 
-        if pathPrefix.isEmpty && (text.isEmpty || text.hasSuffix(" ")) {
+        if pathPrefix.isEmpty && text.hasSuffix(" ") {
             return pathPrefix
         }
 
@@ -276,29 +377,33 @@ public final class CombinedAutocompleteProvider: AutocompleteProvider {
 
     private func getFileSuggestions(prefix: String) -> [AutocompleteItem] {
         do {
+            let parsed = parsePathPrefix(prefix)
             var searchDir = ""
             var searchPrefix = ""
-            var expandedPrefix = prefix
-            var isAtPrefix = false
-
-            if prefix.hasPrefix("@") {
-                isAtPrefix = true
-                expandedPrefix = String(prefix.dropFirst())
-            }
+            var expandedPrefix = parsed.rawPrefix
 
             if expandedPrefix.hasPrefix("~") {
                 expandedPrefix = expandHomePath(expandedPrefix)
             }
 
-            if expandedPrefix.isEmpty || expandedPrefix == "./" || expandedPrefix == "../" || expandedPrefix == "~" || expandedPrefix == "~/" || expandedPrefix == "/" || prefix == "@" {
-                if prefix.hasPrefix("~") || expandedPrefix == "/" {
+            let isRootPrefix =
+                parsed.rawPrefix.isEmpty ||
+                parsed.rawPrefix == "./" ||
+                parsed.rawPrefix == "../" ||
+                parsed.rawPrefix == "~" ||
+                parsed.rawPrefix == "~/" ||
+                parsed.rawPrefix == "/" ||
+                (parsed.isAtPrefix && parsed.rawPrefix.isEmpty)
+
+            if isRootPrefix {
+                if parsed.rawPrefix.hasPrefix("~") || expandedPrefix.hasPrefix("/") {
                     searchDir = expandedPrefix
                 } else {
                     searchDir = joinPath(basePath, expandedPrefix)
                 }
                 searchPrefix = ""
-            } else if expandedPrefix.hasSuffix("/") {
-                if prefix.hasPrefix("~") || expandedPrefix.hasPrefix("/") {
+            } else if parsed.rawPrefix.hasSuffix("/") {
+                if parsed.rawPrefix.hasPrefix("~") || expandedPrefix.hasPrefix("/") {
                     searchDir = expandedPrefix
                 } else {
                     searchDir = joinPath(basePath, expandedPrefix)
@@ -307,7 +412,7 @@ public final class CombinedAutocompleteProvider: AutocompleteProvider {
             } else {
                 let dir = dirname(expandedPrefix)
                 let file = basename(expandedPrefix)
-                if prefix.hasPrefix("~") || expandedPrefix.hasPrefix("/") {
+                if parsed.rawPrefix.hasPrefix("~") || expandedPrefix.hasPrefix("/") {
                     searchDir = dir
                 } else {
                     searchDir = joinPath(basePath, dir)
@@ -324,56 +429,38 @@ public final class CombinedAutocompleteProvider: AutocompleteProvider {
                 }
 
                 let fullPath = joinPath(searchDir, entry)
-                var isDirectory: Bool
                 var isDirFlag: ObjCBool = false
-                if FileManager.default.fileExists(atPath: fullPath, isDirectory: &isDirFlag) {
-                    isDirectory = isDirFlag.boolValue
-                } else {
-                    isDirectory = false
+                guard FileManager.default.fileExists(atPath: fullPath, isDirectory: &isDirFlag) else {
+                    continue
                 }
 
+                let isDirectory = isDirFlag.boolValue
+                let displayPrefix = parsed.rawPrefix
                 var relativePath = ""
-                if isAtPrefix {
-                    let pathWithoutAt = expandedPrefix
-                    if pathWithoutAt.hasSuffix("/") {
-                        relativePath = "@" + pathWithoutAt + entry
-                    } else if pathWithoutAt.contains("/") {
-                        if pathWithoutAt.hasPrefix("~/") {
-                            let homeRelativeDir = String(pathWithoutAt.dropFirst(2))
-                            let dir = dirname(homeRelativeDir)
-                            relativePath = "@~/" + (dir == "." ? entry : joinPath(dir, entry))
-                        } else {
-                            relativePath = "@" + joinPath(dirname(pathWithoutAt), entry)
-                        }
-                    } else {
-                        if pathWithoutAt.hasPrefix("~") {
-                            relativePath = "@~/" + entry
-                        } else {
-                            relativePath = "@" + entry
-                        }
-                    }
-                } else if prefix.hasSuffix("/") {
-                    relativePath = prefix + entry
-                } else if prefix.contains("/") {
-                    if prefix.hasPrefix("~/") {
-                        let homeRelativeDir = String(prefix.dropFirst(2))
+
+                if displayPrefix.hasSuffix("/") {
+                    relativePath = displayPrefix + entry
+                } else if displayPrefix.contains("/") {
+                    if displayPrefix.hasPrefix("~/") {
+                        let homeRelativeDir = String(displayPrefix.dropFirst(2))
                         let dir = dirname(homeRelativeDir)
                         relativePath = "~/" + (dir == "." ? entry : joinPath(dir, entry))
-                    } else if prefix.hasPrefix("/") {
-                        let dir = dirname(prefix)
+                    } else if displayPrefix.hasPrefix("/") {
+                        let dir = dirname(displayPrefix)
                         relativePath = dir == "/" ? "/\(entry)" : "\(dir)/\(entry)"
                     } else {
-                        relativePath = joinPath(dirname(prefix), entry)
+                        relativePath = joinPath(dirname(displayPrefix), entry)
                     }
                 } else {
-                    if prefix.hasPrefix("~") {
+                    if displayPrefix.hasPrefix("~") {
                         relativePath = "~/" + entry
                     } else {
                         relativePath = entry
                     }
                 }
 
-                let value = isDirectory ? relativePath + "/" : relativePath
+                let pathValue = isDirectory ? "\(relativePath)/" : relativePath
+                let value = buildCompletionValue(pathValue, isAtPrefix: parsed.isAtPrefix, isQuotedPrefix: parsed.isQuotedPrefix)
                 let label = entry + (isDirectory ? "/" : "")
                 suggestions.append(AutocompleteItem(value: value, label: label, description: nil))
             }
@@ -416,7 +503,7 @@ public final class CombinedAutocompleteProvider: AutocompleteProvider {
         return score
     }
 
-    private func getFuzzyFileSuggestions(query: String) -> [AutocompleteItem] {
+    private func getFuzzyFileSuggestions(query: String, isQuotedPrefix: Bool) -> [AutocompleteItem] {
         guard let fdPath, !fdPath.isEmpty else {
             return []
         }
@@ -435,7 +522,8 @@ public final class CombinedAutocompleteProvider: AutocompleteProvider {
             let isDirectory = scoredEntry.entry.isDirectory
             let pathWithoutSlash = isDirectory ? String(entryPath.dropLast()) : entryPath
             let entryName = basename(pathWithoutSlash)
-            return AutocompleteItem(value: "@\(entryPath)", label: entryName + (isDirectory ? "/" : ""), description: pathWithoutSlash)
+            let value = buildCompletionValue(entryPath, isAtPrefix: true, isQuotedPrefix: isQuotedPrefix)
+            return AutocompleteItem(value: value, label: entryName + (isDirectory ? "/" : ""), description: pathWithoutSlash)
         }
     }
 }

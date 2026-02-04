@@ -14,6 +14,15 @@ public struct EditorTheme: Sendable {
     }
 }
 
+/// Options for configuring the editor.
+public struct EditorOptions: Sendable {
+    public var autocompleteMaxVisible: Int?
+
+    public init(autocompleteMaxVisible: Int? = nil) {
+        self.autocompleteMaxVisible = autocompleteMaxVisible
+    }
+}
+
 private struct TextChunk {
     let text: String
     let startIndex: Int
@@ -178,6 +187,12 @@ public final class Editor: SystemCursorAware, KillBufferAware, EditorComponent {
     private var autocompleteList: SelectList?
     private var isAutocompleting = false
     private var autocompletePrefix = ""
+    private var autocompleteMaxVisible: Int = 5
+    private enum JumpMode {
+        case forward
+        case backward
+    }
+    private var jumpMode: JumpMode? = nil
 
     private var pastes: [Int: String] = [:]
     private var pasteCounter = 0
@@ -188,6 +203,13 @@ public final class Editor: SystemCursorAware, KillBufferAware, EditorComponent {
 
     private var history: [String] = []
     private var historyIndex = -1
+    private var undoStack: [EditorState] = []
+    private enum LastAction {
+        case typingWord
+        case kill
+        case yank
+    }
+    private var lastAction: LastAction? = nil
 
     /// Called when the user submits with Enter.
     public var onSubmit: ((String) -> Void)?
@@ -197,9 +219,24 @@ public final class Editor: SystemCursorAware, KillBufferAware, EditorComponent {
     public var disableSubmit = false
 
     /// Create an editor with a theme.
-    public init(theme: EditorTheme) {
+    public init(theme: EditorTheme, options: EditorOptions = EditorOptions()) {
         self.theme = theme
         self.borderColor = theme.borderColor
+        if let maxVisible = options.autocompleteMaxVisible {
+            let clamped = max(3, min(20, maxVisible))
+            self.autocompleteMaxVisible = clamped
+        }
+    }
+
+    /// Return the max visible autocomplete items.
+    public func getAutocompleteMaxVisible() -> Int {
+        autocompleteMaxVisible
+    }
+
+    /// Set the max visible autocomplete items.
+    public func setAutocompleteMaxVisible(_ maxVisible: Int) {
+        let clamped = max(3, min(20, maxVisible))
+        autocompleteMaxVisible = clamped
     }
 
     /// Provide an autocomplete provider for slash commands and file suggestions.
@@ -318,7 +355,26 @@ public final class Editor: SystemCursorAware, KillBufferAware, EditorComponent {
 
         let kb = getEditorKeybindings()
 
+        if let activeJump = jumpMode {
+            if kb.matches(input, .jumpForward) || kb.matches(input, .jumpBackward) {
+                jumpMode = nil
+                return
+            }
+
+            if let scalar = input.unicodeScalars.first, scalar.value >= 32 {
+                jumpMode = nil
+                jumpToChar(input, direction: activeJump)
+                return
+            }
+
+            jumpMode = nil
+        }
+
         if kb.matches(input, .copy) {
+            return
+        }
+        if kb.matches(input, .undo) {
+            undo()
             return
         }
 
@@ -327,13 +383,18 @@ public final class Editor: SystemCursorAware, KillBufferAware, EditorComponent {
                 cancelAutocomplete()
                 return
             }
-            if kb.matches(input, .selectUp) || kb.matches(input, .selectDown) {
+            if kb.matches(input, .selectUp)
+                || kb.matches(input, .selectDown)
+                || kb.matches(input, .selectPageUp)
+                || kb.matches(input, .selectPageDown) {
                 autocompleteList.handleInput(input)
                 return
             }
 
             if kb.matches(input, .tab) {
                 if let selected = autocompleteList.getSelectedItem(), let provider = autocompleteProvider {
+                    pushUndoSnapshot()
+                    setLastAction(nil)
                     let result = provider.applyCompletion(
                         lines: state.lines,
                         cursorLine: state.cursorLine,
@@ -352,6 +413,8 @@ public final class Editor: SystemCursorAware, KillBufferAware, EditorComponent {
 
             if kb.matches(input, .selectConfirm) {
                 if let selected = autocompleteList.getSelectedItem(), let provider = autocompleteProvider {
+                    pushUndoSnapshot()
+                    setLastAction(nil)
                     let result = provider.applyCompletion(
                         lines: state.lines,
                         cursorLine: state.cursorLine,
@@ -391,6 +454,10 @@ public final class Editor: SystemCursorAware, KillBufferAware, EditorComponent {
             killWordBackwards()
             return
         }
+        if kb.matches(input, .deleteWordForward) {
+            killWordForwards()
+            return
+        }
         if kb.matches(input, .deleteCharBackward) || matchesKey(input, Key.shift("backspace")) {
             handleBackspace()
             return
@@ -400,12 +467,12 @@ public final class Editor: SystemCursorAware, KillBufferAware, EditorComponent {
             return
         }
 
-        if matchesKey(input, Key.alt("d")) {
-            killWordForwards()
+        if kb.matches(input, .yank) {
+            yankKillBuffer()
             return
         }
-        if matchesKey(input, Key.ctrl("y")) {
-            yankKillBuffer()
+        if kb.matches(input, .yankPop) {
+            yankPop()
             return
         }
 
@@ -418,10 +485,12 @@ public final class Editor: SystemCursorAware, KillBufferAware, EditorComponent {
             return
         }
         if kb.matches(input, .cursorWordLeft) {
+            setLastAction(nil)
             moveWordBackwards()
             return
         }
         if kb.matches(input, .cursorWordRight) {
+            setLastAction(nil)
             moveWordForwards()
             return
         }
@@ -455,6 +524,8 @@ public final class Editor: SystemCursorAware, KillBufferAware, EditorComponent {
             pastes.removeAll()
             pasteCounter = 0
             historyIndex = -1
+            undoStack.removeAll()
+            setLastAction(nil)
             onChange?("")
             onSubmit?(result)
             return
@@ -465,6 +536,8 @@ public final class Editor: SystemCursorAware, KillBufferAware, EditorComponent {
                 navigateHistory(direction: -1)
             } else if historyIndex > -1 && isOnFirstVisualLine() {
                 navigateHistory(direction: -1)
+            } else if isOnFirstVisualLine() {
+                moveToLineStart()
             } else {
                 moveCursor(deltaLine: -1, deltaCol: 0)
             }
@@ -473,6 +546,8 @@ public final class Editor: SystemCursorAware, KillBufferAware, EditorComponent {
         if kb.matches(input, .cursorDown) {
             if historyIndex > -1 && isOnLastVisualLine() {
                 navigateHistory(direction: 1)
+            } else if isOnLastVisualLine() {
+                moveToLineEnd()
             } else {
                 moveCursor(deltaLine: 1, deltaCol: 0)
             }
@@ -484,6 +559,26 @@ public final class Editor: SystemCursorAware, KillBufferAware, EditorComponent {
         }
         if kb.matches(input, .cursorLeft) {
             moveCursor(deltaLine: 0, deltaCol: -1)
+            return
+        }
+
+        if kb.matches(input, .pageUp) {
+            pageScroll(direction: -1)
+            return
+        }
+        if kb.matches(input, .pageDown) {
+            pageScroll(direction: 1)
+            return
+        }
+
+        if kb.matches(input, .jumpForward) {
+            setLastAction(nil)
+            jumpMode = .forward
+            return
+        }
+        if kb.matches(input, .jumpBackward) {
+            setLastAction(nil)
+            jumpMode = .backward
             return
         }
 
@@ -526,15 +621,55 @@ public final class Editor: SystemCursorAware, KillBufferAware, EditorComponent {
 
     /// Replace the document text and reset history navigation.
     public func setText(_ text: String) {
+        if getText() != text {
+            pushUndoSnapshot()
+        }
+        setLastAction(nil)
         historyIndex = -1
         setTextInternal(text)
     }
 
     /// Insert text at the current cursor position.
     public func insertTextAtCursor(_ text: String) {
-        for char in text {
-            insertCharacter(String(char))
+        guard !text.isEmpty else { return }
+        pushUndoSnapshot()
+        setLastAction(nil)
+        historyIndex = -1
+        insertTextAtCursorInternal(text)
+    }
+
+    private func insertTextAtCursorInternal(_ text: String) {
+        guard !text.isEmpty else { return }
+        historyIndex = -1
+        let normalized = text.replacingOccurrences(of: "\r\n", with: "\n").replacingOccurrences(of: "\r", with: "\n")
+        let insertedLines = normalized.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+
+        let currentLine = state.lines[safe: state.cursorLine] ?? ""
+        let beforeCursor = currentLine.prefixCharacters(state.cursorCol)
+        let afterCursor = currentLine.substring(from: state.cursorCol, length: max(0, currentLine.count - state.cursorCol))
+
+        if insertedLines.count == 1 {
+            state.lines[state.cursorLine] = beforeCursor + normalized + afterCursor
+            state.cursorCol += normalized.count
+        } else {
+            var newLines: [String] = []
+            if state.cursorLine > 0 {
+                newLines.append(contentsOf: state.lines[0..<state.cursorLine])
+            }
+            newLines.append(beforeCursor + (insertedLines.first ?? ""))
+            if insertedLines.count > 2 {
+                newLines.append(contentsOf: insertedLines[1..<(insertedLines.count - 1)])
+            }
+            newLines.append((insertedLines.last ?? "") + afterCursor)
+            if state.cursorLine + 1 < state.lines.count {
+                newLines.append(contentsOf: state.lines[(state.cursorLine + 1)..<state.lines.count])
+            }
+            state.lines = newLines
+            state.cursorLine += insertedLines.count - 1
+            state.cursorCol = insertedLines.last?.count ?? 0
         }
+
+        onChange?(getText())
     }
 
     /// Return true when the autocomplete list is visible.
@@ -542,8 +677,14 @@ public final class Editor: SystemCursorAware, KillBufferAware, EditorComponent {
         return isAutocompleting
     }
 
-    private func insertCharacter(_ text: String) {
+    private func insertCharacter(_ text: String, skipUndoSnapshot: Bool = false) {
         historyIndex = -1
+        if !skipUndoSnapshot {
+            if let first = text.first, isWhitespaceChar(first) || lastAction != .typingWord {
+                pushUndoSnapshot()
+            }
+            setLastAction(.typingWord)
+        }
         let line = state.lines[safe: state.cursorLine] ?? ""
         let before = line.prefixCharacters(state.cursorCol)
         let after = line.substring(from: state.cursorCol, length: max(0, line.count - state.cursorCol))
@@ -574,6 +715,8 @@ public final class Editor: SystemCursorAware, KillBufferAware, EditorComponent {
 
     private func addNewLine() {
         historyIndex = -1
+        setLastAction(nil)
+        pushUndoSnapshot()
         let currentLine = state.lines[safe: state.cursorLine] ?? ""
         let before = currentLine.prefixCharacters(state.cursorCol)
         let after = currentLine.substring(from: state.cursorCol, length: max(0, currentLine.count - state.cursorCol))
@@ -586,14 +729,17 @@ public final class Editor: SystemCursorAware, KillBufferAware, EditorComponent {
 
     private func handleBackspace() {
         historyIndex = -1
+        setLastAction(nil)
 
         if state.cursorCol > 0 {
+            pushUndoSnapshot()
             let line = state.lines[safe: state.cursorLine] ?? ""
             let before = line.prefixCharacters(state.cursorCol - 1)
             let after = line.substring(from: state.cursorCol, length: max(0, line.count - state.cursorCol))
             state.lines[state.cursorLine] = before + after
             state.cursorCol -= 1
         } else if state.cursorLine > 0 {
+            pushUndoSnapshot()
             let currentLine = state.lines[state.cursorLine]
             let previousLine = state.lines[state.cursorLine - 1]
             state.lines[state.cursorLine - 1] = previousLine + currentLine
@@ -619,13 +765,16 @@ public final class Editor: SystemCursorAware, KillBufferAware, EditorComponent {
 
     private func handleForwardDelete() {
         historyIndex = -1
+        setLastAction(nil)
         let currentLine = state.lines[safe: state.cursorLine] ?? ""
 
         if state.cursorCol < currentLine.count {
+            pushUndoSnapshot()
             let before = currentLine.prefixCharacters(state.cursorCol)
             let after = currentLine.substring(from: state.cursorCol + 1, length: max(0, currentLine.count - state.cursorCol - 1))
             state.lines[state.cursorLine] = before + after
         } else if state.cursorLine < state.lines.count - 1 {
+            pushUndoSnapshot()
             let nextLine = state.lines[state.cursorLine + 1]
             state.lines[state.cursorLine] = currentLine + nextLine
             state.lines.remove(at: state.cursorLine + 1)
@@ -646,22 +795,27 @@ public final class Editor: SystemCursorAware, KillBufferAware, EditorComponent {
     }
 
     private func moveToLineStart() {
+        setLastAction(nil)
         state.cursorCol = 0
     }
 
     private func moveToLineEnd() {
+        setLastAction(nil)
         let currentLine = state.lines[safe: state.cursorLine] ?? ""
         state.cursorCol = currentLine.count
     }
 
     private func deleteToStartOfLine() {
         historyIndex = -1
+        setLastAction(nil)
         let currentLine = state.lines[safe: state.cursorLine] ?? ""
 
         if state.cursorCol > 0 {
+            pushUndoSnapshot()
             state.lines[state.cursorLine] = currentLine.substring(from: state.cursorCol, length: max(0, currentLine.count - state.cursorCol))
             state.cursorCol = 0
         } else if state.cursorLine > 0 {
+            pushUndoSnapshot()
             let previousLine = state.lines[state.cursorLine - 1]
             state.lines[state.cursorLine - 1] = previousLine + currentLine
             state.lines.remove(at: state.cursorLine)
@@ -674,11 +828,14 @@ public final class Editor: SystemCursorAware, KillBufferAware, EditorComponent {
 
     private func deleteToEndOfLine() {
         historyIndex = -1
+        setLastAction(nil)
         let currentLine = state.lines[safe: state.cursorLine] ?? ""
 
         if state.cursorCol < currentLine.count {
+            pushUndoSnapshot()
             state.lines[state.cursorLine] = currentLine.prefixCharacters(state.cursorCol)
         } else if state.cursorLine < state.lines.count - 1 {
+            pushUndoSnapshot()
             let nextLine = state.lines[state.cursorLine + 1]
             state.lines[state.cursorLine] = currentLine + nextLine
             state.lines.remove(at: state.cursorLine + 1)
@@ -690,44 +847,99 @@ public final class Editor: SystemCursorAware, KillBufferAware, EditorComponent {
     private func killToEndOfLine() {
         historyIndex = -1
         let currentLine = state.lines[safe: state.cursorLine] ?? ""
-        let killText: String
+        var killText = ""
 
         if state.cursorCol < currentLine.count {
+            pushUndoSnapshot()
             killText = currentLine.substring(from: state.cursorCol, length: max(0, currentLine.count - state.cursorCol))
             state.lines[state.cursorLine] = currentLine.prefixCharacters(state.cursorCol)
         } else if state.cursorLine < state.lines.count - 1 {
+            pushUndoSnapshot()
             killText = "\n"
             let nextLine = state.lines[state.cursorLine + 1]
             state.lines[state.cursorLine] = currentLine + nextLine
             state.lines.remove(at: state.cursorLine + 1)
-        } else {
-            killText = ""
         }
 
+        guard !killText.isEmpty else { return }
         KillBuffer.shared.registerKill(killText, append: true)
+        setLastAction(.kill)
         onChange?(getText())
     }
 
     private func yankKillBuffer() {
         let killBuffer = KillBuffer.shared.yank()
         guard !killBuffer.isEmpty else { return }
+        pushUndoSnapshot()
+        setLastAction(.yank)
+        insertTextAtCursorInternal(killBuffer)
+    }
 
-        if killBuffer.contains("\n") {
-            handlePaste(killBuffer)
-            return
+    private func yankPop() {
+        guard lastAction == .yank, KillBuffer.shared.hasMultipleEntries() else { return }
+        pushUndoSnapshot()
+        let previousText = KillBuffer.shared.yank()
+        deleteYankedText(previousText)
+        let nextText = KillBuffer.shared.rotate()
+        insertTextAtCursorInternal(nextText)
+        setLastAction(.yank)
+    }
+
+    private func deleteYankedText(_ text: String) {
+        guard !text.isEmpty else { return }
+        let yankLines = text.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+
+        if yankLines.count == 1 {
+            let currentLine = state.lines[safe: state.cursorLine] ?? ""
+            let deleteLen = min(text.count, state.cursorCol)
+            let before = currentLine.prefixCharacters(max(0, state.cursorCol - deleteLen))
+            let after = currentLine.substring(from: state.cursorCol, length: max(0, currentLine.count - state.cursorCol))
+            state.lines[state.cursorLine] = before + after
+            state.cursorCol = max(0, state.cursorCol - deleteLen)
+        } else {
+            let startLine = state.cursorLine - (yankLines.count - 1)
+            guard startLine >= 0 else { return }
+            let startLineText = state.lines[safe: startLine] ?? ""
+            let firstLine = yankLines.first ?? ""
+            let startCol = max(0, startLineText.count - firstLine.count)
+            let currentLine = state.lines[safe: state.cursorLine] ?? ""
+            let afterCursor = currentLine.substring(from: state.cursorCol, length: max(0, currentLine.count - state.cursorCol))
+            let beforeYank = startLineText.prefixCharacters(startCol)
+            state.lines.replaceSubrange(startLine...state.cursorLine, with: [beforeYank + afterCursor])
+            state.cursorLine = startLine
+            state.cursorCol = startCol
         }
 
-        for char in killBuffer {
-            insertCharacter(String(char))
+        onChange?(getText())
+    }
+
+    private func setLastAction(_ action: LastAction?) {
+        lastAction = action
+        if action != .kill {
+            KillBuffer.shared.breakChain()
         }
+    }
+
+    private func pushUndoSnapshot() {
+        undoStack.append(state)
+    }
+
+    private func undo() {
+        historyIndex = -1
+        guard let snapshot = undoStack.popLast() else { return }
+        state = snapshot
+        setLastAction(nil)
+        onChange?(getText())
     }
 
     private func deleteWordBackwards() {
         historyIndex = -1
+        setLastAction(nil)
         let currentLine = state.lines[safe: state.cursorLine] ?? ""
 
         if state.cursorCol == 0 {
             if state.cursorLine > 0 {
+                pushUndoSnapshot()
                 let previousLine = state.lines[state.cursorLine - 1]
                 state.lines[state.cursorLine - 1] = previousLine + currentLine
                 state.lines.remove(at: state.cursorLine)
@@ -735,6 +947,7 @@ public final class Editor: SystemCursorAware, KillBufferAware, EditorComponent {
                 state.cursorCol = previousLine.count
             }
         } else {
+            pushUndoSnapshot()
             let oldCursor = state.cursorCol
             moveWordBackwards()
             let deleteFrom = state.cursorCol
@@ -754,14 +967,17 @@ public final class Editor: SystemCursorAware, KillBufferAware, EditorComponent {
 
         if state.cursorCol == 0 {
             if state.cursorLine > 0 {
+                pushUndoSnapshot()
                 let previousLine = state.lines[state.cursorLine - 1]
                 state.lines[state.cursorLine - 1] = previousLine + currentLine
                 state.lines.remove(at: state.cursorLine)
                 state.cursorLine -= 1
                 state.cursorCol = previousLine.count
                 KillBuffer.shared.registerKill("\n", append: true, prepend: true)
+                setLastAction(.kill)
             }
         } else {
+            pushUndoSnapshot()
             let oldCursor = state.cursorCol
             moveWordBackwards()
             let deleteFrom = state.cursorCol
@@ -772,6 +988,7 @@ public final class Editor: SystemCursorAware, KillBufferAware, EditorComponent {
             state.lines[state.cursorLine] = before + after
             state.cursorCol = deleteFrom
             KillBuffer.shared.registerKill(deleted, append: true, prepend: true)
+            setLastAction(.kill)
         }
 
         onChange?(getText())
@@ -853,7 +1070,18 @@ public final class Editor: SystemCursorAware, KillBufferAware, EditorComponent {
         historyIndex = -1
         let currentLine = state.lines[safe: state.cursorLine] ?? ""
 
-        guard state.cursorCol < currentLine.count else { return }
+        if state.cursorCol >= currentLine.count {
+            if state.cursorLine < state.lines.count - 1 {
+                pushUndoSnapshot()
+                let nextLine = state.lines[state.cursorLine + 1]
+                state.lines[state.cursorLine] = currentLine + nextLine
+                state.lines.remove(at: state.cursorLine + 1)
+                KillBuffer.shared.registerKill("\n", append: true)
+                setLastAction(.kill)
+                onChange?(getText())
+            }
+            return
+        }
 
         let textAfterCursor = Array(currentLine.substring(from: state.cursorCol, length: max(0, currentLine.count - state.cursorCol)))
         var index = 0
@@ -878,15 +1106,19 @@ public final class Editor: SystemCursorAware, KillBufferAware, EditorComponent {
         }
 
         let deleteTo = state.cursorCol + index
+        guard deleteTo > state.cursorCol else { return }
+        pushUndoSnapshot()
         let before = currentLine.prefixCharacters(state.cursorCol)
         let after = currentLine.substring(from: deleteTo, length: max(0, currentLine.count - deleteTo))
         let deleted = currentLine.substring(from: state.cursorCol, length: max(0, deleteTo - state.cursorCol))
         state.lines[state.cursorLine] = before + after
         KillBuffer.shared.registerKill(deleted, append: true)
+        setLastAction(.kill)
         onChange?(getText())
     }
 
     private func moveCursor(deltaLine: Int, deltaCol: Int) {
+        setLastAction(nil)
         let width = lastWidth
 
         if deltaLine != 0 {
@@ -923,6 +1155,22 @@ public final class Editor: SystemCursorAware, KillBufferAware, EditorComponent {
                 }
             }
         }
+    }
+
+    private func pageScroll(direction: Int) {
+        setLastAction(nil)
+        let visualLines = buildVisualLineMap(width: lastWidth)
+        guard !visualLines.isEmpty else { return }
+        let currentVisualLine = findCurrentVisualLine(visualLines)
+        let pageSize = 5
+        let targetVisualLine = max(0, min(visualLines.count - 1, currentVisualLine + direction * pageSize))
+        let currentVL = visualLines[safe: currentVisualLine]
+        let visualCol = currentVL.map { state.cursorCol - $0.startCol } ?? 0
+        let targetVL = visualLines[targetVisualLine]
+        state.cursorLine = targetVL.logicalLine
+        let targetCol = targetVL.startCol + min(visualCol, targetVL.length)
+        let logicalLine = state.lines[safe: targetVL.logicalLine] ?? ""
+        state.cursorCol = min(targetCol, logicalLine.count)
     }
 
     private func buildVisualLineMap(width: Int) -> [(logicalLine: Int, startCol: Int, length: Int)] {
@@ -1016,6 +1264,9 @@ public final class Editor: SystemCursorAware, KillBufferAware, EditorComponent {
     }
 
     private func handlePaste(_ pastedText: String) {
+        historyIndex = -1
+        setLastAction(nil)
+        pushUndoSnapshot()
         let pastedLines = pastedText.replacingOccurrences(of: "\r\n", with: "\n").replacingOccurrences(of: "\r", with: "\n").split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
 
         if pastedLines.count > 10 {
@@ -1024,39 +1275,18 @@ public final class Editor: SystemCursorAware, KillBufferAware, EditorComponent {
             pastes[pasteId] = pastedText
             let marker = "[paste #\(pasteId) +\(pastedLines.count) lines]"
             for char in marker {
-                insertCharacter(String(char))
+                insertCharacter(String(char), skipUndoSnapshot: true)
             }
             return
         }
 
         if pastedLines.count == 1 {
             for char in pastedLines[0] {
-                insertCharacter(String(char))
+                insertCharacter(String(char), skipUndoSnapshot: true)
             }
             return
         }
-
-        let currentLine = state.lines[state.cursorLine]
-        let beforeCursor = currentLine.prefixCharacters(state.cursorCol)
-        let afterCursor = currentLine.substring(from: state.cursorCol, length: max(0, currentLine.count - state.cursorCol))
-
-        var newLines: [String] = []
-        for i in 0..<state.cursorLine {
-            newLines.append(state.lines[i])
-        }
-        newLines.append(beforeCursor + (pastedLines.first ?? ""))
-        if pastedLines.count > 2 {
-            newLines.append(contentsOf: pastedLines[1..<pastedLines.count - 1])
-        }
-        newLines.append((pastedLines.last ?? "") + afterCursor)
-        for i in (state.cursorLine + 1)..<state.lines.count {
-            newLines.append(state.lines[i])
-        }
-
-        state.lines = newLines
-        state.cursorLine += pastedLines.count - 1
-        state.cursorCol = pastedLines.last?.count ?? 0
-        onChange?(getText())
+        insertTextAtCursorInternal(pastedText)
     }
 
     private func isEditorEmpty() -> Bool {
@@ -1077,6 +1307,7 @@ public final class Editor: SystemCursorAware, KillBufferAware, EditorComponent {
 
     private func navigateHistory(direction: Int) {
         guard !history.isEmpty else { return }
+        setLastAction(nil)
         let newIndex = historyIndex - direction
         if newIndex < -1 || newIndex >= history.count {
             return
@@ -1104,6 +1335,67 @@ public final class Editor: SystemCursorAware, KillBufferAware, EditorComponent {
         return trimmed.isEmpty || trimmed == "/"
     }
 
+    private func jumpToChar(_ char: String, direction: JumpMode) {
+        setLastAction(nil)
+        guard let target = char.first else { return }
+        let isForward = direction == .forward
+        let end = isForward ? state.lines.count : -1
+        let step = isForward ? 1 : -1
+
+        var lineIndex = state.cursorLine
+        while lineIndex != end {
+            let line = state.lines[safe: lineIndex] ?? ""
+            let isCurrentLine = lineIndex == state.cursorLine
+            let startIndex: Int?
+            if isCurrentLine {
+                startIndex = isForward ? state.cursorCol + 1 : state.cursorCol - 1
+            } else {
+                startIndex = nil
+            }
+
+            let matchIndex: Int?
+            if isForward {
+                let start = max(0, startIndex ?? 0)
+                matchIndex = indexOfChar(line, target, from: start)
+            } else {
+                let start = startIndex ?? (line.count - 1)
+                matchIndex = lastIndexOfChar(line, target, from: start)
+            }
+
+            if let matchIndex {
+                state.cursorLine = lineIndex
+                state.cursorCol = matchIndex
+                return
+            }
+
+            lineIndex += step
+        }
+    }
+
+    private func indexOfChar(_ line: String, _ target: Character, from start: Int) -> Int? {
+        guard start >= 0 else { return nil }
+        var idx = start
+        while idx < line.count {
+            if line.character(at: idx) == target {
+                return idx
+            }
+            idx += 1
+        }
+        return nil
+    }
+
+    private func lastIndexOfChar(_ line: String, _ target: Character, from start: Int) -> Int? {
+        guard !line.isEmpty else { return nil }
+        var idx = min(start, line.count - 1)
+        while idx >= 0 {
+            if line.character(at: idx) == target {
+                return idx
+            }
+            idx -= 1
+        }
+        return nil
+    }
+
     private func tryTriggerAutocomplete(explicitTab: Bool) {
         guard let provider = autocompleteProvider else { return }
 
@@ -1115,7 +1407,7 @@ public final class Editor: SystemCursorAware, KillBufferAware, EditorComponent {
 
         if let suggestions = provider.getSuggestions(lines: state.lines, cursorLine: state.cursorLine, cursorCol: state.cursorCol), !suggestions.items.isEmpty {
             autocompletePrefix = suggestions.prefix
-            autocompleteList = SelectList(items: suggestions.items, maxVisible: 5, theme: theme.selectList)
+            autocompleteList = SelectList(items: suggestions.items, maxVisible: autocompleteMaxVisible, theme: theme.selectList)
             isAutocompleting = true
         } else {
             cancelAutocomplete()
@@ -1145,7 +1437,7 @@ public final class Editor: SystemCursorAware, KillBufferAware, EditorComponent {
         if let combined = provider as? CombinedAutocompleteProvider {
             if let suggestions = combined.getForceFileSuggestions(lines: state.lines, cursorLine: state.cursorLine, cursorCol: state.cursorCol), !suggestions.items.isEmpty {
                 autocompletePrefix = suggestions.prefix
-                autocompleteList = SelectList(items: suggestions.items, maxVisible: 5, theme: theme.selectList)
+                autocompleteList = SelectList(items: suggestions.items, maxVisible: autocompleteMaxVisible, theme: theme.selectList)
                 isAutocompleting = true
                 return
             }
@@ -1164,7 +1456,7 @@ public final class Editor: SystemCursorAware, KillBufferAware, EditorComponent {
         guard isAutocompleting, let provider = autocompleteProvider else { return }
         if let suggestions = provider.getSuggestions(lines: state.lines, cursorLine: state.cursorLine, cursorCol: state.cursorCol), !suggestions.items.isEmpty {
             autocompletePrefix = suggestions.prefix
-            autocompleteList = SelectList(items: suggestions.items, maxVisible: 5, theme: theme.selectList)
+            autocompleteList = SelectList(items: suggestions.items, maxVisible: autocompleteMaxVisible, theme: theme.selectList)
         } else {
             cancelAutocomplete()
         }

@@ -11,10 +11,13 @@ public enum EditorAction: String, Sendable {
     case cursorWordRight
     case cursorLineStart
     case cursorLineEnd
+    case pageUp
+    case pageDown
     // Deletion
     case deleteCharBackward
     case deleteCharForward
     case deleteWordBackward
+    case deleteWordForward
     case deleteToLineStart
     case deleteToLineEnd
     // Text input
@@ -30,6 +33,13 @@ public enum EditorAction: String, Sendable {
     case selectCancel
     // Clipboard
     case copy
+    case yank
+    case yankPop
+    // Edit
+    case undo
+    // Character jump
+    case jumpForward
+    case jumpBackward
 }
 
 /// Editor keybindings configuration.
@@ -54,16 +64,19 @@ public let DEFAULT_EDITOR_KEYBINDINGS: [EditorAction: [KeyId]] = [
     // Cursor movement
     .cursorUp: [Key.up],
     .cursorDown: [Key.down],
-    .cursorLeft: [Key.left],
-    .cursorRight: [Key.right],
-    .cursorWordLeft: [Key.alt("left"), Key.ctrl("left")],
-    .cursorWordRight: [Key.alt("right"), Key.ctrl("right")],
+    .cursorLeft: [Key.left, Key.ctrl("b")],
+    .cursorRight: [Key.right, Key.ctrl("f")],
+    .cursorWordLeft: [Key.alt("left"), Key.ctrl("left"), Key.alt("b")],
+    .cursorWordRight: [Key.alt("right"), Key.ctrl("right"), Key.alt("f")],
     .cursorLineStart: [Key.home, Key.ctrl("a")],
     .cursorLineEnd: [Key.end, Key.ctrl("e")],
+    .pageUp: [Key.pageUp],
+    .pageDown: [Key.pageDown],
     // Deletion
     .deleteCharBackward: [Key.backspace],
-    .deleteCharForward: [Key.delete],
+    .deleteCharForward: [Key.delete, Key.ctrl("d")],
     .deleteWordBackward: [Key.ctrl("w"), Key.alt("backspace")],
+    .deleteWordForward: [Key.alt("d"), Key.alt("delete")],
     .deleteToLineStart: [Key.ctrl("u")],
     .deleteToLineEnd: [Key.ctrl("k")],
     // Text input
@@ -79,6 +92,13 @@ public let DEFAULT_EDITOR_KEYBINDINGS: [EditorAction: [KeyId]] = [
     .selectCancel: [Key.escape, Key.ctrl("c")],
     // Clipboard
     .copy: [Key.ctrl("c")],
+    .yank: [Key.ctrl("y")],
+    .yankPop: [Key.alt("y")],
+    // Edit
+    .undo: [Key.ctrl(Key.hyphen)],
+    // Character jump
+    .jumpForward: [Key.ctrl("]")],
+    .jumpBackward: [Key.ctrlAlt("]")],
 ]
 
 /// Manages keybindings for editor-related components.

@@ -6,6 +6,20 @@ public enum ImageProtocol: String {
     case iterm2
 }
 
+private let kittyPrefix = "\u{001B}_G"
+private let iterm2Prefix = "\u{001B}]1337;File="
+
+/// Check if a line contains terminal image escape sequences.
+/// Returns true if the line contains Kitty or iTerm2 image data.
+public func isImageLine(_ line: String) -> Bool {
+    // Fast path: sequence at line start (single-row images)
+    if line.hasPrefix(kittyPrefix) || line.hasPrefix(iterm2Prefix) {
+        return true
+    }
+    // Slow path: sequence elsewhere (multi-row images have cursor-up prefix)
+    return line.contains(kittyPrefix) || line.contains(iterm2Prefix)
+}
+
 /// Terminal capability flags used for rendering.
 public struct TerminalCapabilities {
     /// Supported image protocol, if any.
@@ -150,6 +164,23 @@ public func getCapabilities() -> TerminalCapabilities {
 /// Clear the cached terminal capabilities.
 public func resetCapabilitiesCache() {
     cachedCapabilities.set(nil)
+}
+
+/// Allocate a random image ID for Kitty graphics protocol.
+/// Returns a random ID in range [1, 0xffffffff] to avoid collisions.
+public func allocateImageId() -> UInt32 {
+    return UInt32.random(in: 1...0xfffffffe)
+}
+
+/// Delete a specific Kitty graphics image by ID.
+public func deleteKittyImage(imageId: UInt32) -> String {
+    return "\u{001B}_Ga=d,d=I,i=\(imageId)\u{001B}\\"
+}
+
+/// Delete all visible Kitty graphics images.
+/// Uses uppercase 'A' to also free the image data.
+public func deleteAllKittyImages() -> String {
+    return "\u{001B}_Ga=d,d=A\u{001B}\\"
 }
 
 /// Encode base64 image data using the Kitty graphics protocol.

@@ -141,6 +141,7 @@ public final class TUI: Container {
     }
 
     private var renderRequested = false
+    private var stopped = false
     private var cursorRow = 0
     private var lastSystemCursor: CursorPosition?
     private var inputBuffer = ""
@@ -258,6 +259,7 @@ public final class TUI: Container {
 
     /// Start terminal input and initial rendering.
     public func start() {
+        stopped = false
         terminal.start(onInput: { [weak self] data in
             Task { @MainActor in
                 self?.handleTerminalInput(data)
@@ -274,6 +276,7 @@ public final class TUI: Container {
 
     /// Stop terminal input and restore terminal state.
     public func stop() {
+        stopped = true
         if !previousLines.isEmpty {
             let targetRow = previousLines.count
             let lineDiff = targetRow - cursorRow
@@ -290,6 +293,7 @@ public final class TUI: Container {
 
     /// Request a render, optionally forcing a full redraw.
     public func requestRender(force: Bool = false) {
+        if stopped { return }
         if force {
             previousLines = []
             previousWidth = -1
@@ -607,6 +611,7 @@ public final class TUI: Container {
     }
 
     private func doRender() {
+        if stopped { return }
         let width = terminal.columns
         let height = terminal.rows
 
@@ -618,7 +623,7 @@ public final class TUI: Container {
         let cursorPosition: CursorPosition?
         let cleanedLines: [String]
         if useSystemCursor {
-            let extraction = extractCursorPosition(from: renderedLines)
+            let extraction = extractCursorPosition(from: renderedLines, height: height)
             cleanedLines = extraction.lines
             cursorPosition = extraction.cursor
         } else {
@@ -784,21 +789,19 @@ public final class TUI: Container {
         let col: Int
     }
 
-    private func extractCursorPosition(from lines: [String]) -> (lines: [String], cursor: CursorPosition?) {
+    private func extractCursorPosition(from lines: [String], height: Int) -> (lines: [String], cursor: CursorPosition?) {
         var cursor: CursorPosition?
-        var cleaned: [String] = []
-        cleaned.reserveCapacity(lines.count)
-
-        for (row, line) in lines.enumerated() {
-            if let range = line.range(of: systemCursorMarker) {
-                let prefix = String(line[..<range.lowerBound])
-                let col = visibleWidth(prefix)
-                if cursor == nil {
+        var cleaned = lines
+        let viewportTop = max(0, lines.count - max(0, height))
+        if !lines.isEmpty {
+            for row in stride(from: lines.count - 1, through: viewportTop, by: -1) {
+                if let range = cleaned[row].range(of: systemCursorMarker) {
+                    let prefix = String(cleaned[row][..<range.lowerBound])
+                    let col = visibleWidth(prefix)
                     cursor = CursorPosition(row: row, col: col)
+                    cleaned[row] = cleaned[row].replacingOccurrences(of: systemCursorMarker, with: "")
+                    break
                 }
-                cleaned.append(line.replacingOccurrences(of: systemCursorMarker, with: ""))
-            } else {
-                cleaned.append(line)
             }
         }
 

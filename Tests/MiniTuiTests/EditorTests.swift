@@ -200,6 +200,65 @@ func historyMultiLineDownAfterMove() {
 }
 
 @MainActor
+@Test("Ctrl+] jumps forward to next matching character")
+func jumpForwardCharacter() {
+    let editor = Editor(theme: defaultEditorTheme)
+    editor.setText("hello world")
+    editor.handleInput("\u{0001}") // Ctrl+A
+    #expect(editor.getCursor().line == 0)
+    #expect(editor.getCursor().col == 0)
+
+    editor.handleInput("\u{001D}") // Ctrl+]
+    editor.handleInput("o")
+
+    #expect(editor.getCursor().line == 0)
+    #expect(editor.getCursor().col == 4)
+}
+
+@MainActor
+@Test("Ctrl+Alt+] jumps backward to previous matching character")
+func jumpBackwardCharacter() {
+    let editor = Editor(theme: defaultEditorTheme)
+    editor.setText("hello world")
+    #expect(editor.getCursor().line == 0)
+    #expect(editor.getCursor().col == 11)
+
+    editor.handleInput("\u{001B}\u{001D}") // Ctrl+Alt+]
+    editor.handleInput("o")
+
+    #expect(editor.getCursor().line == 0)
+    #expect(editor.getCursor().col == 7)
+}
+
+@MainActor
+@Test("Up on first visual line moves to line start")
+func upMovesToLineStart() {
+    let editor = Editor(theme: defaultEditorTheme)
+    editor.setText("hello world")
+    _ = editor.render(width: 5)
+    for _ in 0..<9 {
+        editor.handleInput("\u{001B}[D")
+    }
+    #expect(editor.getCursor().col == 2)
+
+    editor.handleInput("\u{001B}[A")
+    #expect(editor.getCursor().col == 0)
+}
+
+@MainActor
+@Test("Down on last visual line moves to line end")
+func downMovesToLineEnd() {
+    let editor = Editor(theme: defaultEditorTheme)
+    editor.setText("hello world")
+    _ = editor.render(width: 5)
+    editor.handleInput("\u{001B}[D")
+    #expect(editor.getCursor().col == 10)
+
+    editor.handleInput("\u{001B}[B")
+    #expect(editor.getCursor().col == 11)
+}
+
+@MainActor
 @Test("returns cursor position")
 func returnsCursorPosition() {
     let editor = Editor(theme: defaultEditorTheme)
@@ -506,4 +565,54 @@ func preservesMultipleSpaces() {
     let lines = editor.render(width: width)
     let contentLine = stripVTControlCharacters(lines[1]).trimmingCharacters(in: .whitespaces)
     #expect(contentLine.contains("Word1   Word2"))
+}
+
+@MainActor
+@Test("undo restores the last typed word")
+func undoRestoresWord() {
+    let editor = Editor(theme: defaultEditorTheme)
+    editor.handleInput("h")
+    editor.handleInput("i")
+    editor.handleInput("!")
+    editor.handleInput("\u{001F}") // Ctrl+-
+    #expect(editor.getText() == "")
+}
+
+@MainActor
+@Test("yank-pop cycles through the kill ring")
+func yankPopCyclesKillRing() {
+    let editor = Editor(theme: defaultEditorTheme)
+    editor.setText("one two three")
+    editor.handleInput("\u{0017}") // Ctrl+W kills "three"
+    editor.handleInput("x") // Break kill chain
+    editor.handleInput("\u{0017}") // Ctrl+W kills "x"
+    editor.handleInput("\u{0019}") // Ctrl+Y yanks "x"
+    #expect(editor.getText() == "one two x")
+    editor.handleInput("\u{001B}y") // Alt+Y yank-pop -> "three"
+    #expect(editor.getText() == "one two three")
+}
+
+@MainActor
+@Test("page up/down moves cursor by a page")
+func pageScrollMovesCursor() {
+    let editor = Editor(theme: defaultEditorTheme)
+    let lines = (1...10).map { "line\($0)" }.joined(separator: "\n")
+    editor.setText(lines)
+    for _ in 0..<9 {
+        editor.handleInput("\u{001B}[A")
+    }
+    editor.handleInput("\u{001B}[6~") // Page Down
+    #expect(editor.getCursor().line == 5)
+    editor.handleInput("\u{001B}[5~") // Page Up
+    #expect(editor.getCursor().line == 0)
+}
+
+@MainActor
+@Test("Alt+D deletes the next word")
+func deleteWordForward() {
+    let editor = Editor(theme: defaultEditorTheme)
+    editor.setText("one two")
+    editor.handleInput("\u{0001}") // Ctrl+A
+    editor.handleInput("\u{001B}d") // Alt+D
+    #expect(editor.getText() == " two")
 }

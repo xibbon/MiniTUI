@@ -23,13 +23,14 @@ func ctrlDEndsInputWhenEmpty() {
 }
 
 @MainActor
-@Test("Ctrl-D does nothing when input is not empty")
-func ctrlDIgnoredWhenNotEmpty() {
+@Test("Ctrl-D deletes forward when input is not empty")
+func ctrlDDeletesWhenNotEmpty() {
     let input = Input()
     var didEnd = false
     var submitted: String?
 
     input.setValue("hello")
+    input.handleInput("\u{0001}")
     input.onEnd = {
         didEnd = true
     }
@@ -41,5 +42,5 @@ func ctrlDIgnoredWhenNotEmpty() {
 
     #expect(!didEnd)
     #expect(submitted == nil)
-    #expect(input.getValue() == "hello")
+    #expect(input.getValue() == "ello")
 }
