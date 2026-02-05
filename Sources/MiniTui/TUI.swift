@@ -139,14 +139,25 @@ public final class TUI: Container {
             updateCursorMode()
         }
     }
+    /// When true, record line origin metadata for debugging overlong lines.
+    public var debugLineOrigins = false
 
     private var renderRequested = false
     private var stopped = false
     private var cursorRow = 0
     private var lastSystemCursor: CursorPosition?
+    private var lastLineOrigins: [String] = []
     private var inputBuffer = ""
     private var cellSizeQueryPending = false
     private var overlayStack: [OverlayEntry] = []
+
+    private final class LineOrigins {
+        var values: [String]
+
+        init(_ values: [String]) {
+            self.values = values
+        }
+    }
 
     fileprivate final class OverlayEntry {
         let component: Component
@@ -499,10 +510,15 @@ public final class TUI: Container {
         }
     }
 
-    private func compositeOverlays(_ lines: [String], termWidth: Int, termHeight: Int) -> [String] {
+    private func compositeOverlays(
+        _ lines: [String],
+        termWidth: Int,
+        termHeight: Int,
+        lineOrigins: LineOrigins? = nil
+    ) -> [String] {
         if overlayStack.isEmpty { return lines }
         var result = lines
-        var rendered: [(lines: [String], row: Int, col: Int, width: Int)] = []
+        var rendered: [(lines: [String], row: Int, col: Int, width: Int, component: Component)] = []
         var minLinesNeeded = result.count
 
         for entry in overlayStack {
@@ -515,7 +531,7 @@ public final class TUI: Container {
             }
             let layout = resolveOverlayLayout(options: entry.options, overlayHeight: overlayLines.count, termWidth: termWidth, termHeight: termHeight)
 
-            rendered.append((lines: overlayLines, row: layout.row, col: layout.col, width: layout.width))
+            rendered.append((lines: overlayLines, row: layout.row, col: layout.col, width: layout.width, component: entry.component))
             minLinesNeeded = max(minLinesNeeded, layout.row + overlayLines.count)
         }
 
@@ -525,12 +541,15 @@ public final class TUI: Container {
 
         while result.count < minLinesNeeded {
             result.append("")
+            lineOrigins?.values.append("<overlay padding>")
         }
 
         let viewportStart = max(0, result.count - termHeight)
         var modifiedLines = Set<Int>()
 
         for overlay in rendered {
+            let overlayObj: AnyObject = overlay.component
+            let overlayName = "\(type(of: overlay.component))@\(Unmanaged.passUnretained(overlayObj).toOpaque())"
             for i in 0..<overlay.lines.count {
                 let idx = viewportStart + overlay.row + i
                 if idx >= 0 && idx < result.count {
@@ -545,6 +564,14 @@ public final class TUI: Container {
                         overlayWidth: overlay.width,
                         totalWidth: termWidth
                     )
+                    if let origins = lineOrigins, idx < origins.values.count {
+                        let base = origins.values[idx]
+                        if base.isEmpty {
+                            origins.values[idx] = "Overlay(\(overlayName))"
+                        } else {
+                            origins.values[idx] = base + " + Overlay(\(overlayName))"
+                        }
+                    }
                     modifiedLines.insert(idx)
                 }
             }
@@ -615,11 +642,26 @@ public final class TUI: Container {
         let width = terminal.columns
         let height = terminal.rows
 
-        var renderedLines = render(width: width)
-        if !overlayStack.isEmpty {
-            renderedLines = compositeOverlays(renderedLines, termWidth: width, termHeight: height)
+        var renderedLines: [String]
+        var lineOrigins: LineOrigins?
+        if debugLineOrigins {
+            let trace = RenderTrace()
+            RenderTrace.active = trace
+            renderedLines = render(width: width)
+            RenderTrace.active = nil
+            var origins = trace.origins
+            if origins.count < renderedLines.count {
+                origins.append(contentsOf: repeatElement("<unknown>", count: renderedLines.count - origins.count))
+            } else if origins.count > renderedLines.count {
+                origins = Array(origins.prefix(renderedLines.count))
+            }
+            lineOrigins = LineOrigins(origins)
+        } else {
+            renderedLines = render(width: width)
         }
-        renderedLines = applyLineResets(renderedLines)
+        if !overlayStack.isEmpty {
+            renderedLines = compositeOverlays(renderedLines, termWidth: width, termHeight: height, lineOrigins: lineOrigins)
+        }
         let cursorPosition: CursorPosition?
         let cleanedLines: [String]
         if useSystemCursor {
@@ -630,8 +672,10 @@ public final class TUI: Container {
             cleanedLines = renderedLines
             cursorPosition = nil
         }
-        let newLines = clampLines(cleanedLines, width: width)
+        let resetLines = applyLineResets(cleanedLines)
         let widthChanged = previousWidth != 0 && previousWidth != width
+        let newLines = resetLines
+        lastLineOrigins = debugLineOrigins ? (lineOrigins?.values ?? []) : []
 
         if previousLines.isEmpty && !widthChanged {
             var buffer = "\u{001B}[?2026h"
@@ -742,7 +786,57 @@ public final class TUI: Container {
             for i in firstChanged...renderEnd {
                 if i > firstChanged { buffer += "\r\n" }
                 buffer += "\u{001B}[2K"
-                buffer += newLines[i]
+                let line = newLines[i]
+                if !containsImage(line), visibleWidth(line) > width {
+                    let origin = debugLineOrigins && i < lastLineOrigins.count ? lastLineOrigins[i] : nil
+                    let crashLogPath = FileManager.default.homeDirectoryForCurrentUser
+                        .appendingPathComponent(".pi/agent/pi-crash.log")
+                    let formatter = ISO8601DateFormatter()
+                    var crashLines = [
+                        "Crash at \(formatter.string(from: Date()))",
+                        "Terminal width: \(width)",
+                        "Line \(i) visible width: \(visibleWidth(line))",
+                    ]
+                    if let origin {
+                        crashLines.append("Origin: \(origin)")
+                    }
+                    crashLines.append("")
+                    crashLines.append("=== All rendered lines ===")
+                    crashLines.append(contentsOf: newLines.enumerated().map { idx, value in
+                        if debugLineOrigins, idx < lastLineOrigins.count {
+                            return "[\(idx)] (w=\(visibleWidth(value))) [\(lastLineOrigins[idx])] \(value)"
+                        }
+                        return "[\(idx)] (w=\(visibleWidth(value))) \(value)"
+                    })
+                    crashLines.append("")
+                    let crashData = crashLines.joined(separator: "\n")
+                    do {
+                        try FileManager.default.createDirectory(
+                            at: crashLogPath.deletingLastPathComponent(),
+                            withIntermediateDirectories: true
+                        )
+                        try crashData.write(to: crashLogPath, atomically: true, encoding: .utf8)
+                    } catch {
+                        // Best-effort logging, continue to crash.
+                    }
+
+                    stop()
+
+                    var errorLines = [
+                        "Rendered line \(i) exceeds terminal width (\(visibleWidth(line)) > \(width)).",
+                    ]
+                    if let origin {
+                        errorLines.append("Origin: \(origin)")
+                    }
+                    errorLines.append("")
+                    errorLines.append("This is likely caused by a custom TUI component not truncating its output.")
+                    errorLines.append("Use visibleWidth() to measure and truncateToWidth() to truncate lines.")
+                    errorLines.append("")
+                    errorLines.append("Debug log written to: \(crashLogPath.path)")
+                    let errorMsg = errorLines.joined(separator: "\n")
+                    fatalError(errorMsg)
+                }
+                buffer += line
             }
         }
 
@@ -825,22 +919,6 @@ public final class TUI: Container {
         terminal.write(buffer)
         cursorRow = cursor.row
         lastSystemCursor = cursor
-    }
-
-    private func clampLines(_ lines: [String], width: Int) -> [String] {
-        guard width > 0 else { return lines }
-        var clamped: [String] = []
-        clamped.reserveCapacity(lines.count)
-
-        for line in lines {
-            if containsImage(line) || visibleWidth(line) <= width {
-                clamped.append(line)
-            } else {
-                clamped.append(truncateToWidth(line, maxWidth: width, ellipsis: ""))
-            }
-        }
-
-        return clamped
     }
 
     private func matchRegex(_ pattern: String, in text: String) -> [String]? {
