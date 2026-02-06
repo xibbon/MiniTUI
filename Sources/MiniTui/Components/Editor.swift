@@ -193,13 +193,13 @@ public final class Editor: SystemCursorAware, KillBufferAware, EditorComponent {
         case backward
     }
     private var jumpMode: JumpMode? = nil
+    private var preferredVisualCol: Int? = nil
 
     private var pastes: [Int: String] = [:]
     private var pasteCounter = 0
 
     private var pasteBuffer = ""
     private var isInPaste = false
-    private var pendingShiftEnter = false
 
     private var history: [String] = []
     private var historyIndex = -1
@@ -333,21 +333,6 @@ public final class Editor: SystemCursorAware, KillBufferAware, EditorComponent {
             return
         }
 
-        if pendingShiftEnter {
-            if input == "\r" {
-                pendingShiftEnter = false
-                addNewLine()
-                return
-            }
-            pendingShiftEnter = false
-            insertCharacter("\\")
-        }
-
-        if input == "\\" {
-            pendingShiftEnter = true
-            return
-        }
-
         if matchesKey(input, Key.ctrl("z")) {
             sendSuspendSignal()
             return
@@ -404,7 +389,7 @@ public final class Editor: SystemCursorAware, KillBufferAware, EditorComponent {
                     )
                     state.lines = result.lines
                     state.cursorLine = result.cursorLine
-                    state.cursorCol = result.cursorCol
+                    setCursorCol(result.cursorCol)
                     cancelAutocomplete()
                     onChange?(getText())
                 }
@@ -424,7 +409,7 @@ public final class Editor: SystemCursorAware, KillBufferAware, EditorComponent {
                     )
                     state.lines = result.lines
                     state.cursorLine = result.cursorLine
-                    state.cursorCol = result.cursorCol
+                    setCursorCol(result.cursorCol)
 
                     if autocompletePrefix.hasPrefix("/") {
                         cancelAutocomplete()
@@ -501,7 +486,12 @@ public final class Editor: SystemCursorAware, KillBufferAware, EditorComponent {
             || input == "\u{001B}[13;2~"
             || (input.count > 1 && input.contains("\u{001B}") && input.contains("\r"))
             || (input == "\n" && input.count == 1)
-            || input == "\\\r" {
+        {
+            if shouldSubmitOnBackslashEnter(input, kb: kb) {
+                handleBackspace()
+                submitValue()
+                return
+            }
             addNewLine()
             return
         }
@@ -510,24 +500,7 @@ public final class Editor: SystemCursorAware, KillBufferAware, EditorComponent {
             if disableSubmit {
                 return
             }
-
-            var result = state.lines.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
-            for (pasteId, pasteContent) in pastes {
-                let pattern = "\\[paste #\(pasteId)( (\\+\\d+ lines|\\d+ chars))?\\]"
-                if let regex = try? NSRegularExpression(pattern: pattern, options: []) {
-                    let range = NSRange(result.startIndex..<result.endIndex, in: result)
-                    result = regex.stringByReplacingMatches(in: result, options: [], range: range, withTemplate: pasteContent)
-                }
-            }
-
-            state = EditorState(lines: [""], cursorLine: 0, cursorCol: 0)
-            pastes.removeAll()
-            pasteCounter = 0
-            historyIndex = -1
-            undoStack.removeAll()
-            setLastAction(nil)
-            onChange?("")
-            onSubmit?(result)
+            submitValue()
             return
         }
 
@@ -650,7 +623,7 @@ public final class Editor: SystemCursorAware, KillBufferAware, EditorComponent {
 
         if insertedLines.count == 1 {
             state.lines[state.cursorLine] = beforeCursor + normalized + afterCursor
-            state.cursorCol += normalized.count
+            setCursorCol(state.cursorCol + normalized.count)
         } else {
             var newLines: [String] = []
             if state.cursorLine > 0 {
@@ -666,7 +639,7 @@ public final class Editor: SystemCursorAware, KillBufferAware, EditorComponent {
             }
             state.lines = newLines
             state.cursorLine += insertedLines.count - 1
-            state.cursorCol = insertedLines.last?.count ?? 0
+            setCursorCol(insertedLines.last?.count ?? 0)
         }
 
         onChange?(getText())
@@ -689,7 +662,7 @@ public final class Editor: SystemCursorAware, KillBufferAware, EditorComponent {
         let before = line.prefixCharacters(state.cursorCol)
         let after = line.substring(from: state.cursorCol, length: max(0, line.count - state.cursorCol))
         state.lines[state.cursorLine] = before + text + after
-        state.cursorCol += text.count
+        setCursorCol(state.cursorCol + text.count)
         onChange?(getText())
 
         if !isAutocompleting {
@@ -723,8 +696,40 @@ public final class Editor: SystemCursorAware, KillBufferAware, EditorComponent {
         state.lines[state.cursorLine] = before
         state.lines.insert(after, at: state.cursorLine + 1)
         state.cursorLine += 1
-        state.cursorCol = 0
+        setCursorCol(0)
         onChange?(getText())
+    }
+
+    private func shouldSubmitOnBackslashEnter(_ data: String, kb: EditorKeybindingsManager) -> Bool {
+        if disableSubmit { return false }
+        if !matchesKey(data, Key.enter) { return false }
+        let submitKeys = kb.getKeys(.submit)
+        let hasShiftEnter = submitKeys.contains(Key.shift("enter")) || submitKeys.contains(Key.shift("return"))
+        if !hasShiftEnter { return false }
+
+        let currentLine = state.lines[safe: state.cursorLine] ?? ""
+        return state.cursorCol > 0 && currentLine.character(at: state.cursorCol - 1) == "\\"
+    }
+
+    private func submitValue() {
+        var result = state.lines.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+        for (pasteId, pasteContent) in pastes {
+            let pattern = "\\[paste #\(pasteId)( (\\+\\d+ lines|\\d+ chars))?\\]"
+            if let regex = try? NSRegularExpression(pattern: pattern, options: []) {
+                let range = NSRange(result.startIndex..<result.endIndex, in: result)
+                result = regex.stringByReplacingMatches(in: result, options: [], range: range, withTemplate: pasteContent)
+            }
+        }
+
+        state = EditorState(lines: [""], cursorLine: 0, cursorCol: 0)
+        pastes.removeAll()
+        pasteCounter = 0
+        historyIndex = -1
+        undoStack.removeAll()
+        setLastAction(nil)
+        preferredVisualCol = nil
+        onChange?("")
+        onSubmit?(result)
     }
 
     private func handleBackspace() {
@@ -737,7 +742,7 @@ public final class Editor: SystemCursorAware, KillBufferAware, EditorComponent {
             let before = line.prefixCharacters(state.cursorCol - 1)
             let after = line.substring(from: state.cursorCol, length: max(0, line.count - state.cursorCol))
             state.lines[state.cursorLine] = before + after
-            state.cursorCol -= 1
+            setCursorCol(state.cursorCol - 1)
         } else if state.cursorLine > 0 {
             pushUndoSnapshot()
             let currentLine = state.lines[state.cursorLine]
@@ -745,7 +750,7 @@ public final class Editor: SystemCursorAware, KillBufferAware, EditorComponent {
             state.lines[state.cursorLine - 1] = previousLine + currentLine
             state.lines.remove(at: state.cursorLine)
             state.cursorLine -= 1
-            state.cursorCol = previousLine.count
+            setCursorCol(previousLine.count)
         }
 
         onChange?(getText())
@@ -794,15 +799,80 @@ public final class Editor: SystemCursorAware, KillBufferAware, EditorComponent {
         }
     }
 
+    private func setCursorCol(_ col: Int) {
+        state.cursorCol = col
+        preferredVisualCol = nil
+    }
+
+    private func moveToVisualLine(
+        _ visualLines: [(logicalLine: Int, startCol: Int, length: Int)],
+        currentVisualLine: Int,
+        targetVisualLine: Int
+    ) {
+        let currentVL = visualLines[safe: currentVisualLine]
+        let targetVL = visualLines[safe: targetVisualLine]
+
+        guard let currentVL, let targetVL else { return }
+
+        let currentVisualCol = state.cursorCol - currentVL.startCol
+        let isLastSourceSegment = currentVisualLine == visualLines.count - 1
+            || visualLines[safe: currentVisualLine + 1]?.logicalLine != currentVL.logicalLine
+        let sourceMaxVisualCol = isLastSourceSegment ? currentVL.length : max(0, currentVL.length - 1)
+
+        let isLastTargetSegment = targetVisualLine == visualLines.count - 1
+            || visualLines[safe: targetVisualLine + 1]?.logicalLine != targetVL.logicalLine
+        let targetMaxVisualCol = isLastTargetSegment ? targetVL.length : max(0, targetVL.length - 1)
+
+        let moveToVisualCol = computeVerticalMoveColumn(
+            currentVisualCol: currentVisualCol,
+            sourceMaxVisualCol: sourceMaxVisualCol,
+            targetMaxVisualCol: targetMaxVisualCol
+        )
+
+        state.cursorLine = targetVL.logicalLine
+        let targetCol = targetVL.startCol + moveToVisualCol
+        let logicalLine = state.lines[safe: targetVL.logicalLine] ?? ""
+        state.cursorCol = min(targetCol, logicalLine.count)
+    }
+
+    private func computeVerticalMoveColumn(
+        currentVisualCol: Int,
+        sourceMaxVisualCol: Int,
+        targetMaxVisualCol: Int
+    ) -> Int {
+        let hasPreferred = preferredVisualCol != nil
+        let cursorInMiddle = currentVisualCol < sourceMaxVisualCol
+        let targetTooShort = targetMaxVisualCol < currentVisualCol
+
+        if !hasPreferred || cursorInMiddle {
+            if targetTooShort {
+                preferredVisualCol = currentVisualCol
+                return targetMaxVisualCol
+            }
+
+            preferredVisualCol = nil
+            return currentVisualCol
+        }
+
+        let preferred = preferredVisualCol ?? currentVisualCol
+        let targetCantFitPreferred = targetMaxVisualCol < preferred
+        if targetTooShort || targetCantFitPreferred {
+            return targetMaxVisualCol
+        }
+
+        preferredVisualCol = nil
+        return preferred
+    }
+
     private func moveToLineStart() {
         setLastAction(nil)
-        state.cursorCol = 0
+        setCursorCol(0)
     }
 
     private func moveToLineEnd() {
         setLastAction(nil)
         let currentLine = state.lines[safe: state.cursorLine] ?? ""
-        state.cursorCol = currentLine.count
+        setCursorCol(currentLine.count)
     }
 
     private func deleteToStartOfLine() {
@@ -813,14 +883,14 @@ public final class Editor: SystemCursorAware, KillBufferAware, EditorComponent {
         if state.cursorCol > 0 {
             pushUndoSnapshot()
             state.lines[state.cursorLine] = currentLine.substring(from: state.cursorCol, length: max(0, currentLine.count - state.cursorCol))
-            state.cursorCol = 0
+            setCursorCol(0)
         } else if state.cursorLine > 0 {
             pushUndoSnapshot()
             let previousLine = state.lines[state.cursorLine - 1]
             state.lines[state.cursorLine - 1] = previousLine + currentLine
             state.lines.remove(at: state.cursorLine)
             state.cursorLine -= 1
-            state.cursorCol = previousLine.count
+            setCursorCol(previousLine.count)
         }
 
         onChange?(getText())
@@ -895,7 +965,7 @@ public final class Editor: SystemCursorAware, KillBufferAware, EditorComponent {
             let before = currentLine.prefixCharacters(max(0, state.cursorCol - deleteLen))
             let after = currentLine.substring(from: state.cursorCol, length: max(0, currentLine.count - state.cursorCol))
             state.lines[state.cursorLine] = before + after
-            state.cursorCol = max(0, state.cursorCol - deleteLen)
+            setCursorCol(max(0, state.cursorCol - deleteLen))
         } else {
             let startLine = state.cursorLine - (yankLines.count - 1)
             guard startLine >= 0 else { return }
@@ -907,7 +977,7 @@ public final class Editor: SystemCursorAware, KillBufferAware, EditorComponent {
             let beforeYank = startLineText.prefixCharacters(startCol)
             state.lines.replaceSubrange(startLine...state.cursorLine, with: [beforeYank + afterCursor])
             state.cursorLine = startLine
-            state.cursorCol = startCol
+            setCursorCol(startCol)
         }
 
         onChange?(getText())
@@ -929,6 +999,7 @@ public final class Editor: SystemCursorAware, KillBufferAware, EditorComponent {
         guard let snapshot = undoStack.popLast() else { return }
         state = snapshot
         setLastAction(nil)
+        preferredVisualCol = nil
         onChange?(getText())
     }
 
@@ -944,18 +1015,18 @@ public final class Editor: SystemCursorAware, KillBufferAware, EditorComponent {
                 state.lines[state.cursorLine - 1] = previousLine + currentLine
                 state.lines.remove(at: state.cursorLine)
                 state.cursorLine -= 1
-                state.cursorCol = previousLine.count
+                setCursorCol(previousLine.count)
             }
         } else {
             pushUndoSnapshot()
             let oldCursor = state.cursorCol
             moveWordBackwards()
             let deleteFrom = state.cursorCol
-            state.cursorCol = oldCursor
+            setCursorCol(oldCursor)
             let before = currentLine.prefixCharacters(deleteFrom)
             let after = currentLine.substring(from: state.cursorCol, length: max(0, currentLine.count - state.cursorCol))
             state.lines[state.cursorLine] = before + after
-            state.cursorCol = deleteFrom
+            setCursorCol(deleteFrom)
         }
 
         onChange?(getText())
@@ -972,7 +1043,7 @@ public final class Editor: SystemCursorAware, KillBufferAware, EditorComponent {
                 state.lines[state.cursorLine - 1] = previousLine + currentLine
                 state.lines.remove(at: state.cursorLine)
                 state.cursorLine -= 1
-                state.cursorCol = previousLine.count
+                setCursorCol(previousLine.count)
                 KillBuffer.shared.registerKill("\n", append: true, prepend: true)
                 setLastAction(.kill)
             }
@@ -981,12 +1052,12 @@ public final class Editor: SystemCursorAware, KillBufferAware, EditorComponent {
             let oldCursor = state.cursorCol
             moveWordBackwards()
             let deleteFrom = state.cursorCol
-            state.cursorCol = oldCursor
+            setCursorCol(oldCursor)
             let before = currentLine.prefixCharacters(deleteFrom)
             let after = currentLine.substring(from: state.cursorCol, length: max(0, currentLine.count - state.cursorCol))
             let deleted = currentLine.substring(from: deleteFrom, length: max(0, state.cursorCol - deleteFrom))
             state.lines[state.cursorLine] = before + after
-            state.cursorCol = deleteFrom
+            setCursorCol(deleteFrom)
             KillBuffer.shared.registerKill(deleted, append: true, prepend: true)
             setLastAction(.kill)
         }
@@ -1000,7 +1071,7 @@ public final class Editor: SystemCursorAware, KillBufferAware, EditorComponent {
             if state.cursorLine > 0 {
                 state.cursorLine -= 1
                 let prevLine = state.lines[state.cursorLine]
-                state.cursorCol = prevLine.count
+                setCursorCol(prevLine.count)
             }
             return
         }
@@ -1027,7 +1098,7 @@ public final class Editor: SystemCursorAware, KillBufferAware, EditorComponent {
             }
         }
 
-        state.cursorCol = newCol
+        setCursorCol(newCol)
     }
 
     private func moveWordForwards() {
@@ -1035,16 +1106,17 @@ public final class Editor: SystemCursorAware, KillBufferAware, EditorComponent {
         if state.cursorCol >= currentLine.count {
             if state.cursorLine < state.lines.count - 1 {
                 state.cursorLine += 1
-                state.cursorCol = 0
+                setCursorCol(0)
             }
             return
         }
 
         let textAfterCursor = Array(currentLine.substring(from: state.cursorCol, length: max(0, currentLine.count - state.cursorCol)))
         var index = 0
+        var newCol = state.cursorCol
 
         while index < textAfterCursor.count, isWhitespaceChar(textAfterCursor[index]) {
-            state.cursorCol += 1
+            newCol += 1
             index += 1
         }
 
@@ -1052,18 +1124,19 @@ public final class Editor: SystemCursorAware, KillBufferAware, EditorComponent {
             let first = textAfterCursor[index]
             if isPunctuationChar(first) {
                 while index < textAfterCursor.count, isPunctuationChar(textAfterCursor[index]) {
-                    state.cursorCol += 1
+                    newCol += 1
                     index += 1
                 }
             } else {
                 while index < textAfterCursor.count,
                       !isWhitespaceChar(textAfterCursor[index]),
                       !isPunctuationChar(textAfterCursor[index]) {
-                    state.cursorCol += 1
+                    newCol += 1
                     index += 1
                 }
             }
         }
+        setCursorCol(newCol)
     }
 
     private func killWordForwards() {
@@ -1119,20 +1192,13 @@ public final class Editor: SystemCursorAware, KillBufferAware, EditorComponent {
 
     private func moveCursor(deltaLine: Int, deltaCol: Int) {
         setLastAction(nil)
-        let width = lastWidth
+        let visualLines = buildVisualLineMap(width: lastWidth)
+        let currentVisualLine = findCurrentVisualLine(visualLines)
 
         if deltaLine != 0 {
-            let visualLines = buildVisualLineMap(width: width)
-            let currentVisualLine = findCurrentVisualLine(visualLines)
-            let currentVL = visualLines[safe: currentVisualLine]
-            let visualCol = currentVL.map { state.cursorCol - $0.startCol } ?? 0
             let targetVisualLine = currentVisualLine + deltaLine
             if targetVisualLine >= 0 && targetVisualLine < visualLines.count {
-                let targetVL = visualLines[targetVisualLine]
-                state.cursorLine = targetVL.logicalLine
-                let targetCol = targetVL.startCol + min(visualCol, targetVL.length)
-                let logicalLine = state.lines[safe: targetVL.logicalLine] ?? ""
-                state.cursorCol = min(targetCol, logicalLine.count)
+                moveToVisualLine(visualLines, currentVisualLine: currentVisualLine, targetVisualLine: targetVisualLine)
             }
         }
 
@@ -1140,18 +1206,24 @@ public final class Editor: SystemCursorAware, KillBufferAware, EditorComponent {
             let currentLine = state.lines[safe: state.cursorLine] ?? ""
             if deltaCol > 0 {
                 if state.cursorCol < currentLine.count {
-                    state.cursorCol += 1
+                    setCursorCol(state.cursorCol + 1)
                 } else if state.cursorLine < state.lines.count - 1 {
                     state.cursorLine += 1
-                    state.cursorCol = 0
+                    setCursorCol(0)
+                }
+                else {
+                    let currentVL = visualLines[safe: currentVisualLine]
+                    if let currentVL {
+                        preferredVisualCol = state.cursorCol - currentVL.startCol
+                    }
                 }
             } else {
                 if state.cursorCol > 0 {
-                    state.cursorCol -= 1
+                    setCursorCol(state.cursorCol - 1)
                 } else if state.cursorLine > 0 {
                     state.cursorLine -= 1
                     let prevLine = state.lines[state.cursorLine]
-                    state.cursorCol = prevLine.count
+                    setCursorCol(prevLine.count)
                 }
             }
         }
@@ -1164,13 +1236,7 @@ public final class Editor: SystemCursorAware, KillBufferAware, EditorComponent {
         let currentVisualLine = findCurrentVisualLine(visualLines)
         let pageSize = 5
         let targetVisualLine = max(0, min(visualLines.count - 1, currentVisualLine + direction * pageSize))
-        let currentVL = visualLines[safe: currentVisualLine]
-        let visualCol = currentVL.map { state.cursorCol - $0.startCol } ?? 0
-        let targetVL = visualLines[targetVisualLine]
-        state.cursorLine = targetVL.logicalLine
-        let targetCol = targetVL.startCol + min(visualCol, targetVL.length)
-        let logicalLine = state.lines[safe: targetVL.logicalLine] ?? ""
-        state.cursorCol = min(targetCol, logicalLine.count)
+        moveToVisualLine(visualLines, currentVisualLine: currentVisualLine, targetVisualLine: targetVisualLine)
     }
 
     private func buildVisualLineMap(width: Int) -> [(logicalLine: Int, startCol: Int, length: Int)] {
@@ -1324,7 +1390,7 @@ public final class Editor: SystemCursorAware, KillBufferAware, EditorComponent {
         let lines = text.replacingOccurrences(of: "\r\n", with: "\n").replacingOccurrences(of: "\r", with: "\n").split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
         state.lines = lines.isEmpty ? [""] : lines
         state.cursorLine = max(state.lines.count - 1, 0)
-        state.cursorCol = state.lines[safe: state.cursorLine]?.count ?? 0
+        setCursorCol(state.lines[safe: state.cursorLine]?.count ?? 0)
         onChange?(getText())
     }
 
@@ -1364,7 +1430,7 @@ public final class Editor: SystemCursorAware, KillBufferAware, EditorComponent {
 
             if let matchIndex {
                 state.cursorLine = lineIndex
-                state.cursorCol = matchIndex
+                setCursorCol(matchIndex)
                 return
             }
 

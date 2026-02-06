@@ -1,20 +1,65 @@
 import Foundation
 
 private let ansiEscape = "\u{001B}"
+private let ansiCsiRegex = try! NSRegularExpression(pattern: "\u{001B}\\[[0-9;]*[mGKHJ]", options: [])
+private let ansiOscBellRegex = try! NSRegularExpression(pattern: "\u{001B}\\][^\u{0007}]*\u{0007}", options: [])
+private let ansiOscStRegex = try! NSRegularExpression(pattern: "\u{001B}\\][^\u{001B}]*\u{001B}\\\\", options: [])
+private let ansiApcRegex = try! NSRegularExpression(pattern: "\u{001B}_[^\u{0007}\u{001B}]*(?:\u{0007}|\u{001B}\\\\)", options: [])
+
+private let visibleWidthCache = VisibleWidthCache(maxSize: 512)
+
+private final class VisibleWidthCache: @unchecked Sendable {
+    private let lock = NSLock()
+    private var values: [String: Int] = [:]
+    private var order: [String] = []
+    private let maxSize: Int
+
+    init(maxSize: Int) {
+        self.maxSize = maxSize
+    }
+
+    func get(_ key: String) -> Int? {
+        lock.lock()
+        defer { lock.unlock() }
+        return values[key]
+    }
+
+    func set(_ key: String, value: Int) {
+        lock.lock()
+        if values[key] != nil {
+            values[key] = value
+            lock.unlock()
+            return
+        }
+        values[key] = value
+        order.append(key)
+        if order.count > maxSize, let oldest = order.first {
+            order.removeFirst()
+            values.removeValue(forKey: oldest)
+        }
+        lock.unlock()
+    }
+}
 
 /// Return the display width of a string, ignoring ANSI escape codes.
 public func visibleWidth(_ str: String) -> Int {
     guard !str.isEmpty else { return 0 }
 
-    var isPureAscii = true
+    var asciiCount = 0
     for scalar in str.unicodeScalars {
-        if scalar.value < 0x20 || scalar.value > 0x7E {
-            isPureAscii = false
+        let value = scalar.value
+        if value < 0x20 || value > 0x7E {
+            asciiCount = -1
             break
         }
+        asciiCount += 1
     }
-    if isPureAscii {
-        return str.count
+    if asciiCount >= 0 {
+        return asciiCount
+    }
+
+    if let cached = visibleWidthCache.get(str) {
+        return cached
     }
 
     var clean = str.replacingOccurrences(of: "\t", with: "   ")
@@ -27,6 +72,7 @@ public func visibleWidth(_ str: String) -> Int {
         width += graphemeWidth(character)
     }
 
+    visibleWidthCache.set(str, value: width)
     return width
 }
 
@@ -34,11 +80,34 @@ func stripAnsiCodes(_ text: String) -> String {
     var result = text
 
     // Strip SGR + cursor codes.
-    result = result.replacingMatches(of: "\u{001B}\\[[0-9;]*[mGKHJ]", with: "")
+    result = ansiCsiRegex.stringByReplacingMatches(
+        in: result,
+        options: [],
+        range: NSRange(result.startIndex..<result.endIndex, in: result),
+        withTemplate: ""
+    )
 
     // Strip OSC sequences (BEL or ST terminator).
-    result = result.replacingMatches(of: "\u{001B}\\][^\u{0007}]*\u{0007}", with: "")
-    result = result.replacingMatches(of: "\u{001B}\\][^\u{001B}]*\u{001B}\\\\", with: "")
+    result = ansiOscBellRegex.stringByReplacingMatches(
+        in: result,
+        options: [],
+        range: NSRange(result.startIndex..<result.endIndex, in: result),
+        withTemplate: ""
+    )
+    result = ansiOscStRegex.stringByReplacingMatches(
+        in: result,
+        options: [],
+        range: NSRange(result.startIndex..<result.endIndex, in: result),
+        withTemplate: ""
+    )
+
+    // Strip APC sequences (BEL or ST terminator).
+    result = ansiApcRegex.stringByReplacingMatches(
+        in: result,
+        options: [],
+        range: NSRange(result.startIndex..<result.endIndex, in: result),
+        withTemplate: ""
+    )
 
     return result
 }
@@ -442,6 +511,7 @@ public func sliceWithWidth(
 }
 
 /// Extract "before" and "after" segments from a line in a single pass.
+@MainActor
 public func extractSegments(
     _ line: String,
     beforeEnd: Int,
@@ -788,15 +858,5 @@ private final class AnsiCodeTracker {
         strikethrough = false
         fgColor = nil
         bgColor = nil
-    }
-}
-
-private extension String {
-    func replacingMatches(of pattern: String, with replacement: String) -> String {
-        guard let regex = try? NSRegularExpression(pattern: pattern, options: []) else {
-            return self
-        }
-        let range = NSRange(startIndex..<endIndex, in: self)
-        return regex.stringByReplacingMatches(in: self, options: [], range: range, withTemplate: replacement)
     }
 }

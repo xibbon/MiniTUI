@@ -40,6 +40,8 @@ final class VirtualTerminal: Terminal {
         resizeHandler = nil
     }
 
+    func drainInput(maxMs: Int, idleMs: Int) {}
+
     func write(_ data: String) {
         if let frame = parseFrame(from: data) {
             lastFrame = frame

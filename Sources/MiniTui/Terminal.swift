@@ -13,6 +13,8 @@ public protocol Terminal: AnyObject {
     func start(onInput: @escaping (String) -> Void, onResize: @escaping () -> Void)
     /// Stop the terminal and restore any modified state.
     func stop()
+    /// Drain stdin before exiting to prevent Kitty key release events leaking to the parent shell.
+    func drainInput(maxMs: Int, idleMs: Int)
     /// Write raw data to the terminal output.
     func write(_ data: String)
     /// Current terminal column count.
@@ -129,11 +131,48 @@ public final class ProcessTerminal: Terminal {
         inputHandler = nil
         resizeHandler = nil
 
+        // Flush any pending stdin data before leaving raw mode.
+        tcflush(STDIN_FILENO, TCIFLUSH)
+
         if hasOriginalTermios {
             var termios = originalTermios
             tcsetattr(STDIN_FILENO, TCSANOW, &termios)
             hasOriginalTermios = false
         }
+    }
+
+    public func drainInput(maxMs: Int = 1000, idleMs: Int = 50) {
+        if kittyProtocolActiveFlag {
+            write("\u{001B}[<u")
+            kittyProtocolActiveFlag = false
+            setKittyProtocolActive(false)
+        }
+
+        let previousHandler = inputHandler
+        inputHandler = nil
+        let previousOnData = stdinBuffer?.onData
+        let previousOnPaste = stdinBuffer?.onPaste
+
+        var lastDataTime = Date()
+        stdinBuffer?.onData = { _ in
+            lastDataTime = Date()
+        }
+        stdinBuffer?.onPaste = { _ in
+            lastDataTime = Date()
+        }
+
+        let endTime = Date().addingTimeInterval(Double(maxMs) / 1000.0)
+        while Date() < endTime {
+            let idleElapsed = Date().timeIntervalSince(lastDataTime) * 1000.0
+            if idleElapsed >= Double(idleMs) { break }
+            let remaining = endTime.timeIntervalSinceNow
+            if remaining <= 0 { break }
+            Thread.sleep(forTimeInterval: min(Double(idleMs) / 1000.0, remaining))
+        }
+
+        stdinBuffer?.onData = previousOnData
+        stdinBuffer?.onPaste = previousOnPaste
+        inputHandler = previousHandler
     }
 
     private func setupStdinBuffer() {

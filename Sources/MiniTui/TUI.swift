@@ -125,6 +125,7 @@ public final class TUI: Container {
     /// Terminal implementation used for IO.
     public let terminal: Terminal
     private var previousLines: [String] = []
+    private var previousResetSource: [String] = []
     private var previousWidth: Int = 0
     private var focusedComponent: Component?
 
@@ -149,6 +150,9 @@ public final class TUI: Container {
     private var lastLineOrigins: [String] = []
     private var inputBuffer = ""
     private var cellSizeQueryPending = false
+    private var clearOnShrink = ProcessInfo.processInfo.environment["PI_CLEAR_ON_SHRINK"] == "1"
+    private var maxLinesRendered = 0
+    private var fullRedrawCount = 0
     private var overlayStack: [OverlayEntry] = []
 
     private final class LineOrigins {
@@ -177,6 +181,16 @@ public final class TUI: Container {
     public init(terminal: Terminal) {
         self.terminal = terminal
         super.init()
+    }
+
+    /// Return true when clearing is enabled on content shrink.
+    public func getClearOnShrink() -> Bool {
+        return clearOnShrink
+    }
+
+    /// Enable or disable clearing empty rows when content shrinks.
+    public func setClearOnShrink(_ enabled: Bool) {
+        clearOnShrink = enabled
     }
 
     /// Set the component that receives keyboard input.
@@ -404,8 +418,16 @@ public final class TUI: Container {
         return result
     }
 
+    private static let kittyImagePrefix = "\u{001B}_G"
+    private static let itermImagePrefix = "\u{001B}]1337;File="
+
     private func containsImage(_ line: String) -> Bool {
-        return line.contains("\u{001B}_G") || line.contains("\u{001B}]1337;File=")
+        // Fast path: sequence at line start (single-row images).
+        if line.hasPrefix(TUI.kittyImagePrefix) || line.hasPrefix(TUI.itermImagePrefix) {
+            return true
+        }
+        // Slow path: sequence elsewhere (multi-row images have cursor-up prefix).
+        return line.contains(TUI.kittyImagePrefix) || line.contains(TUI.itermImagePrefix)
     }
 
     private static let segmentReset = "\u{001B}[0m\u{001B}]8;;\u{0007}"
@@ -586,11 +608,25 @@ public final class TUI: Container {
         return result
     }
 
-    private func applyLineResets(_ lines: [String]) -> [String] {
+    private func applyLineResets(
+        _ lines: [String],
+        previousSource: [String],
+        previousLines: [String]
+    ) -> [String] {
         let reset = TUI.segmentReset
-        return lines.map { line in
-            containsImage(line) ? line : line + reset
+        var result = lines
+        let canReuse = !previousSource.isEmpty && previousSource.count == previousLines.count
+        for index in result.indices {
+            let line = result[index]
+            if canReuse, index < previousSource.count, previousSource[index] == line, index < previousLines.count {
+                result[index] = previousLines[index]
+                continue
+            }
+            if !containsImage(line) {
+                result[index] = line + reset
+            }
         }
+        return result
     }
 
     private func compositeLineAt(
@@ -672,13 +708,42 @@ public final class TUI: Container {
             cleanedLines = renderedLines
             cursorPosition = nil
         }
-        let resetLines = applyLineResets(cleanedLines)
+        let resetLines = applyLineResets(
+            cleanedLines,
+            previousSource: previousResetSource,
+            previousLines: previousLines
+        )
         let widthChanged = previousWidth != 0 && previousWidth != width
         let newLines = resetLines
         lastLineOrigins = debugLineOrigins ? (lineOrigins?.values ?? []) : []
 
-        if previousLines.isEmpty && !widthChanged {
+        let debugRedraw = ProcessInfo.processInfo.environment["PI_DEBUG_REDRAW"] == "1"
+        func logRedraw(_ reason: String) {
+            guard debugRedraw else { return }
+            let logPath = FileManager.default.homeDirectoryForCurrentUser
+                .appendingPathComponent(".pi/agent/pi-debug.log")
+            let formatter = ISO8601DateFormatter()
+            let message = "[\(formatter.string(from: Date()))] fullRender: \(reason) (prev=\(previousLines.count), new=\(newLines.count), height=\(height))\n"
+            do {
+                try FileManager.default.createDirectory(at: logPath.deletingLastPathComponent(), withIntermediateDirectories: true)
+                let handle = try FileHandle(forWritingTo: logPath)
+                handle.seekToEndOfFile()
+                if let data = message.data(using: .utf8) {
+                    handle.write(data)
+                }
+                try handle.close()
+            } catch {
+                // Best-effort logging only.
+            }
+        }
+
+        func fullRender(clear: Bool, reason: String) {
+            logRedraw(reason)
+            fullRedrawCount += 1
             var buffer = "\u{001B}[?2026h"
+            if clear {
+                buffer += "\u{001B}[3J\u{001B}[2J\u{001B}[H"
+            }
             for i in 0..<newLines.count {
                 if i > 0 { buffer += "\r\n" }
                 buffer += newLines[i]
@@ -686,25 +751,29 @@ public final class TUI: Container {
             buffer += "\u{001B}[?2026l"
             terminal.write(buffer)
             cursorRow = max(0, newLines.count - 1)
+            if clear {
+                maxLinesRendered = newLines.count
+            } else {
+                maxLinesRendered = max(maxLinesRendered, newLines.count)
+            }
             previousLines = newLines
+            previousResetSource = cleanedLines
             previousWidth = width
             positionCursorIfNeeded(cursorPosition, width: width)
+        }
+
+        if previousLines.isEmpty && !widthChanged {
+            fullRender(clear: false, reason: "first render")
             return
         }
 
         if widthChanged {
-            var buffer = "\u{001B}[?2026h"
-            buffer += "\u{001B}[3J\u{001B}[2J\u{001B}[H"
-            for i in 0..<newLines.count {
-                if i > 0 { buffer += "\r\n" }
-                buffer += newLines[i]
-            }
-            buffer += "\u{001B}[?2026l"
-            terminal.write(buffer)
-            cursorRow = max(0, newLines.count - 1)
-            previousLines = newLines
-            previousWidth = width
-            positionCursorIfNeeded(cursorPosition, width: width)
+            fullRender(clear: true, reason: "width changed (\(previousWidth) -> \(width))")
+            return
+        }
+
+        if clearOnShrink && newLines.count < maxLinesRendered && overlayStack.isEmpty {
+            fullRender(clear: true, reason: "clearOnShrink (maxLinesRendered=\(maxLinesRendered))")
             return
         }
 
@@ -726,6 +795,8 @@ public final class TUI: Container {
             if useSystemCursor, cursorPosition != lastSystemCursor {
                 positionCursorIfNeeded(cursorPosition, width: width)
             }
+            previousResetSource = cleanedLines
+            maxLinesRendered = max(maxLinesRendered, newLines.count)
             return
         }
 
@@ -750,25 +821,16 @@ public final class TUI: Container {
                 cursorRow = targetRow
             }
             previousLines = newLines
+            previousResetSource = cleanedLines
             previousWidth = width
+            maxLinesRendered = max(maxLinesRendered, newLines.count)
             positionCursorIfNeeded(cursorPosition, width: width)
             return
         }
 
         let viewportTop = cursorRow - height + 1
         if firstChanged < viewportTop {
-            var buffer = "\u{001B}[?2026h"
-            buffer += "\u{001B}[3J\u{001B}[2J\u{001B}[H"
-            for i in 0..<newLines.count {
-                if i > 0 { buffer += "\r\n" }
-                buffer += newLines[i]
-            }
-            buffer += "\u{001B}[?2026l"
-            terminal.write(buffer)
-            cursorRow = max(0, newLines.count - 1)
-            previousLines = newLines
-            previousWidth = width
-            positionCursorIfNeeded(cursorPosition, width: width)
+            fullRender(clear: true, reason: "firstChanged < viewportTop (\(firstChanged) < \(viewportTop))")
             return
         }
 
@@ -859,7 +921,9 @@ public final class TUI: Container {
         terminal.write(buffer)
         cursorRow = finalCursorRow
         previousLines = newLines
+        previousResetSource = cleanedLines
         previousWidth = width
+        maxLinesRendered = max(maxLinesRendered, newLines.count)
         positionCursorIfNeeded(cursorPosition, width: width)
     }
 

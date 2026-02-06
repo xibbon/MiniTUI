@@ -295,12 +295,15 @@ func insertsUnicode() {
 }
 
 @MainActor
-@Test("treats split Shift+Enter as a newline")
-func shiftEnterSplitNewline() {
+@Test("backslash then Enter submits when Enter is the submit key")
+func backslashEnterSubmits() {
     let editor = Editor(theme: defaultEditorTheme)
+    var submitted: String? = nil
+    editor.onSubmit = { submitted = $0 }
     editor.handleInput("\\")
     editor.handleInput("\r")
-    #expect(editor.getText() == "\n")
+    #expect(submitted == "\\")
+    #expect(editor.getText() == "")
 }
 
 @MainActor
@@ -615,4 +618,205 @@ func deleteWordForward() {
     editor.handleInput("\u{0001}") // Ctrl+A
     editor.handleInput("\u{001B}d") // Alt+D
     #expect(editor.getText() == " two")
+}
+
+@Suite("Sticky column")
+struct StickyColumnTests {
+    @MainActor
+    @Test("preserves target column when moving up through a shorter line")
+    func stickyColumnUp() {
+        let editor = Editor(theme: defaultEditorTheme)
+        editor.setText("2222222222x222\n\n1111111111_111111111111")
+
+        #expect(editor.getCursor().line == 2)
+        #expect(editor.getCursor().col == 23)
+        editor.handleInput("\u{0001}") // Ctrl+A
+        for _ in 0..<10 { editor.handleInput("\u{001B}[C") }
+        #expect(editor.getCursor().line == 2)
+        #expect(editor.getCursor().col == 10)
+
+        editor.handleInput("\u{001B}[A")
+        #expect(editor.getCursor().line == 1)
+        #expect(editor.getCursor().col == 0)
+
+        editor.handleInput("\u{001B}[A")
+        #expect(editor.getCursor().line == 0)
+        #expect(editor.getCursor().col == 10)
+    }
+
+    @MainActor
+    @Test("preserves target column when moving down through a shorter line")
+    func stickyColumnDown() {
+        let editor = Editor(theme: defaultEditorTheme)
+        editor.setText("1111111111_111\n\n2222222222x222222222222")
+
+        editor.handleInput("\u{001B}[A")
+        editor.handleInput("\u{001B}[A")
+        editor.handleInput("\u{0001}")
+        for _ in 0..<10 { editor.handleInput("\u{001B}[C") }
+        #expect(editor.getCursor().line == 0)
+        #expect(editor.getCursor().col == 10)
+
+        editor.handleInput("\u{001B}[B")
+        #expect(editor.getCursor().line == 1)
+        #expect(editor.getCursor().col == 0)
+
+        editor.handleInput("\u{001B}[B")
+        #expect(editor.getCursor().line == 2)
+        #expect(editor.getCursor().col == 10)
+    }
+
+    @MainActor
+    @Test("resets sticky column on horizontal movement")
+    func stickyColumnResetsOnHorizontalMove() {
+        let editor = Editor(theme: defaultEditorTheme)
+        editor.setText("1234567890\n\n1234567890")
+        editor.handleInput("\u{0001}")
+        for _ in 0..<5 { editor.handleInput("\u{001B}[C") }
+        editor.handleInput("\u{001B}[A")
+        editor.handleInput("\u{001B}[A")
+        #expect(editor.getCursor().line == 0)
+        #expect(editor.getCursor().col == 5)
+
+        editor.handleInput("\u{001B}[D")
+        #expect(editor.getCursor().col == 4)
+
+        editor.handleInput("\u{001B}[B")
+        editor.handleInput("\u{001B}[B")
+        #expect(editor.getCursor().line == 2)
+        #expect(editor.getCursor().col == 4)
+    }
+
+    @MainActor
+    @Test("resets sticky column on typing and backspace")
+    func stickyColumnResetsOnEdit() {
+        let editor = Editor(theme: defaultEditorTheme)
+        editor.setText("1234567890\n\n1234567890")
+        editor.handleInput("\u{0001}")
+        for _ in 0..<8 { editor.handleInput("\u{001B}[C") }
+        editor.handleInput("\u{001B}[A")
+        editor.handleInput("\u{001B}[A")
+        #expect(editor.getCursor().line == 0)
+        #expect(editor.getCursor().col == 8)
+
+        editor.handleInput("X")
+        #expect(editor.getCursor().col == 9)
+
+        editor.handleInput("\u{001B}[B")
+        editor.handleInput("\u{001B}[B")
+        #expect(editor.getCursor().line == 2)
+        #expect(editor.getCursor().col == 9)
+
+        editor.handleInput("\u{001B}[A")
+        editor.handleInput("\u{001B}[A")
+        editor.handleInput("\u{007F}")
+        #expect(editor.getCursor().line == 0)
+        #expect(editor.getCursor().col == 8)
+    }
+
+    @MainActor
+    @Test("resets sticky column on Ctrl+A and Ctrl+E")
+    func stickyColumnResetsOnLineMoves() {
+        let editor = Editor(theme: defaultEditorTheme)
+        editor.setText("12345\n\n1234567890")
+        editor.handleInput("\u{0001}")
+        for _ in 0..<3 { editor.handleInput("\u{001B}[C") }
+        editor.handleInput("\u{001B}[A")
+        editor.handleInput("\u{001B}[A")
+        #expect(editor.getCursor().line == 0)
+        #expect(editor.getCursor().col == 3)
+
+        editor.handleInput("\u{0005}")
+        #expect(editor.getCursor().col == 5)
+
+        editor.handleInput("\u{001B}[B")
+        editor.handleInput("\u{001B}[B")
+        #expect(editor.getCursor().line == 2)
+        #expect(editor.getCursor().col == 5)
+    }
+
+    @MainActor
+    @Test("resets sticky column on word movement and undo")
+    func stickyColumnResetsOnWordMoveAndUndo() {
+        let editor = Editor(theme: defaultEditorTheme)
+        editor.setText("hello world\n\nhello world")
+        editor.handleInput("\u{001B}[A")
+        editor.handleInput("\u{001B}[A")
+        editor.handleInput("\u{0001}")
+        for _ in 0..<11 { editor.handleInput("\u{001B}[C") }
+        #expect(editor.getCursor().line == 0)
+        #expect(editor.getCursor().col == 11)
+
+        editor.handleInput("\u{001B}[1;5D")
+        #expect(editor.getCursor().col == 6)
+
+        editor.handleInput("\u{001B}[B")
+        editor.handleInput("\u{001B}[B")
+        #expect(editor.getCursor().line == 2)
+        #expect(editor.getCursor().col == 6)
+
+        editor.handleInput("X")
+        editor.handleInput("\u{001B}[45;5u")
+        #expect(editor.getText() == "hello world\n\nhello world")
+    }
+
+    @MainActor
+    @Test("handles setText resetting sticky column")
+    func stickyColumnResetsOnSetText() {
+        let editor = Editor(theme: defaultEditorTheme)
+        editor.setText("1234567890\n\n1234567890")
+        editor.handleInput("\u{0001}")
+        for _ in 0..<8 { editor.handleInput("\u{001B}[C") }
+        editor.handleInput("\u{001B}[A")
+
+        editor.setText("abcdefghij\n\nabcdefghij")
+        #expect(editor.getCursor().line == 2)
+        #expect(editor.getCursor().col == 10)
+        editor.handleInput("\u{001B}[A")
+        editor.handleInput("\u{001B}[A")
+        #expect(editor.getCursor().line == 0)
+        #expect(editor.getCursor().col == 10)
+    }
+
+    @MainActor
+    @Test("sets preferred column when pressing right at end of prompt")
+    func stickyColumnRightAtEnd() {
+        let editor = Editor(theme: defaultEditorTheme)
+        editor.setText("111111111x1111111111\n\n333333333_")
+
+        editor.handleInput("\u{001B}[A")
+        editor.handleInput("\u{001B}[A")
+        editor.handleInput("\u{0005}")
+        #expect(editor.getCursor().line == 0)
+        #expect(editor.getCursor().col == 20)
+
+        editor.handleInput("\u{001B}[B")
+        editor.handleInput("\u{001B}[B")
+        #expect(editor.getCursor().line == 2)
+        #expect(editor.getCursor().col == 10)
+
+        editor.handleInput("\u{001B}[C")
+        #expect(editor.getCursor().col == 10)
+
+        editor.handleInput("\u{001B}[A")
+        editor.handleInput("\u{001B}[A")
+        #expect(editor.getCursor().line == 0)
+        #expect(editor.getCursor().col == 10)
+    }
+
+    @MainActor
+    @Test("moves correctly through wrapped visual lines")
+    func stickyColumnWrappedLines() {
+        let editor = Editor(theme: defaultEditorTheme)
+        editor.setText("short\n123456789012345678901234567890")
+        _ = editor.render(width: 15)
+
+        #expect(editor.getCursor().line == 1)
+        #expect(editor.getCursor().col == 30)
+
+        editor.handleInput("\u{001B}[A")
+        editor.handleInput("\u{001B}[A")
+        editor.handleInput("\u{001B}[A")
+        #expect(editor.getCursor().line == 0)
+    }
 }

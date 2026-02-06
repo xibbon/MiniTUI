@@ -1,5 +1,27 @@
 import Foundation
 
+@MainActor
+final class RenderTrace {
+    static var active: RenderTrace?
+
+    private var stack: [String] = []
+    private(set) var origins: [String] = []
+
+    func push(_ name: String) {
+        stack.append(name)
+    }
+
+    func pop() {
+        _ = stack.popLast()
+    }
+
+    func recordLines(_ count: Int) {
+        guard count > 0 else { return }
+        let origin = stack.joined(separator: " > ")
+        origins.append(contentsOf: repeatElement(origin, count: count))
+    }
+}
+
 /// Component that composes and renders a list of child components.
 open class Container: Component {
     /// Current child components in render order.
@@ -34,6 +56,37 @@ open class Container: Component {
 
     /// Render all children sequentially and concatenate their lines.
     public func render(width: Int) -> [String] {
+        if let trace = RenderTrace.active {
+            func componentLabel(_ component: AnyObject) -> String {
+                let ptr = Unmanaged.passUnretained(component).toOpaque()
+                return "\(type(of: component))@\(ptr)"
+            }
+
+            trace.push(componentLabel(self))
+            defer { trace.pop() }
+            var lines: [String] = []
+            for child in children {
+                if let container = child as? Container {
+                    let originCountBefore = trace.origins.count
+                    let childLines = container.render(width: width)
+                    let added = trace.origins.count - originCountBefore
+                    if added < childLines.count {
+                        trace.push(componentLabel(child))
+                        trace.recordLines(childLines.count - added)
+                        trace.pop()
+                    }
+                    lines.append(contentsOf: childLines)
+                } else {
+                    trace.push(componentLabel(child))
+                    let childLines = child.render(width: width)
+                    trace.recordLines(childLines.count)
+                    trace.pop()
+                    lines.append(contentsOf: childLines)
+                }
+            }
+            return lines
+        }
+
         var lines: [String] = []
         for child in children {
             lines.append(contentsOf: child.render(width: width))

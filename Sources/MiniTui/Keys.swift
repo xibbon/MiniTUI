@@ -424,7 +424,14 @@ private func matchesKittySequence(_ data: String, expectedCodepoint: Int, expect
     // Alternate match: use base layout key for non-Latin keyboard layouts
     // This allows Ctrl+С (Cyrillic) to match Ctrl+c (Latin) when terminal reports
     // the base layout key (the key in standard PC-101 layout)
-    if let baseLayoutKey = parsed.baseLayoutKey, baseLayoutKey == expectedCodepoint { return true }
+    if let baseLayoutKey = parsed.baseLayoutKey, baseLayoutKey == expectedCodepoint {
+        let codepoint = parsed.codepoint
+        let isLatinLetter = codepoint >= 97 && codepoint <= 122
+        let isKnownSymbol = UnicodeScalar(codepoint).map { symbolKeys.contains(String($0)) } ?? false
+        if !isLatinLetter && !isKnownSymbol {
+            return true
+        }
+    }
 
     return false
 }
@@ -716,9 +723,6 @@ public func matchesKey(_ data: String, _ keyId: KeyId) -> Bool {
             if ctrl && !shift && !alt {
                 if let raw = rawCtrlChar(key) {
                     if data == raw { return true }
-                    if let dataScalar = data.unicodeScalars.first, let rawScalar = raw.unicodeScalars.first, dataScalar.value == rawScalar.value {
-                        return true
-                    }
                 }
                 return matchesKittySequence(data, expectedCodepoint: codepoint, expectedModifier: Modifiers.ctrl)
             }
@@ -766,9 +770,11 @@ public func parseKey(_ data: String) -> KeyId? {
         if (effectiveMod & Modifiers.ctrl) != 0 { mods.append("ctrl") }
         if (effectiveMod & Modifiers.alt) != 0 { mods.append("alt") }
 
-        // Prefer base layout key for consistent shortcut naming across keyboard layouts
-        // This ensures Ctrl+С (Cyrillic) is reported as "ctrl+c" (Latin)
-        let effectiveCodepoint = kitty.baseLayoutKey ?? kitty.codepoint
+        let isLatinLetter = kitty.codepoint >= 97 && kitty.codepoint <= 122
+        let isKnownSymbol = UnicodeScalar(kitty.codepoint).map { symbolKeys.contains(String($0)) } ?? false
+        // Prefer base layout key only when the codepoint is not already a recognized Latin letter or symbol.
+        // This avoids remapped layouts (Dvorak/Colemak) from reporting the wrong key.
+        let effectiveCodepoint = (isLatinLetter || isKnownSymbol) ? kitty.codepoint : (kitty.baseLayoutKey ?? kitty.codepoint)
 
         var keyName: String?
         switch effectiveCodepoint {
@@ -827,24 +833,8 @@ public func parseKey(_ data: String) -> KeyId? {
     }
 
     // Check legacy sequence lookup table (SS3 sequences, function keys, rxvt modifiers)
-    // Exclude ambiguous alt+letter sequences when kitty is active
     if let keyId = legacySequenceKeyIds[data] {
-        // When kitty is active, don't match ESC+letter as alt+letter - they're ambiguous
-        if kittyActive && data.count == 2 && data.first == "\u{001B}" {
-            let second = data[data.index(after: data.startIndex)]
-            if let scalar = second.unicodeScalars.first {
-                let code = Int(scalar.value)
-                // Skip lowercase letters and Emacs-style navigation keys
-                if (code >= 97 && code <= 122) || (code >= 65 && code <= 90) {
-                    // Don't return the keyId, fall through to other checks
-                }
-                else {
-                    return keyId
-                }
-            }
-        } else {
-            return keyId
-        }
+        return keyId
     }
 
     if data == "\u{001B}" { return "escape" }

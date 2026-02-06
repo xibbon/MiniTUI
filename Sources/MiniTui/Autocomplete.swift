@@ -82,7 +82,24 @@ private func walkDirectoryWithFd(
     query: String,
     maxResults: Int
 ) -> [(path: String, isDirectory: Bool)] {
-    var args = ["--base-directory", baseDir, "--max-results", String(maxResults), "--type", "f", "--type", "d", "--full-path"]
+    var args = [
+        "--base-directory",
+        baseDir,
+        "--max-results",
+        String(maxResults),
+        "--type",
+        "f",
+        "--type",
+        "d",
+        "--full-path",
+        "--hidden",
+        "--exclude",
+        ".git",
+        "--exclude",
+        ".git/*",
+        "--exclude",
+        ".git/**",
+    ]
     if !query.isEmpty {
         args.append(query)
     }
@@ -114,7 +131,11 @@ private func walkDirectoryWithFd(
     }
 
     let lines = output.split(separator: "\n").map(String.init).filter { !$0.isEmpty }
-    return lines.map { line in
+    return lines.compactMap { line in
+        let normalized = line.hasSuffix("/") ? String(line.dropLast()) : line
+        if normalized == ".git" || normalized.hasPrefix(".git/") || normalized.contains("/.git/") {
+            return nil
+        }
         let isDirectory = line.hasSuffix("/")
         return (path: line, isDirectory: isDirectory)
     }

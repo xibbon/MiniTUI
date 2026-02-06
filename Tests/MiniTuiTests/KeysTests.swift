@@ -93,6 +93,28 @@ struct MatchesKeyTests {
             #expect(matchesKey(fullFormat, "ctrl+shift+c") == true)
         }
 
+        @Test("should prefer codepoint for Latin letters even when base layout differs")
+        func preferCodepointForLatinLetters() {
+            setKittyProtocolActive(true)
+            defer { setKittyProtocolActive(false) }
+            // Dvorak Ctrl+K reports codepoint 'k' (107) and base layout 'v' (118)
+            let dvorakCtrlK = "\u{001B}[107::118;5u"
+            #expect(matchesKey(dvorakCtrlK, "ctrl+k") == true)
+            #expect(matchesKey(dvorakCtrlK, "ctrl+v") == false)
+            #expect(parseKey(dvorakCtrlK) == "ctrl+k")
+        }
+
+        @Test("should prefer codepoint for symbol keys even when base layout differs")
+        func preferCodepointForSymbols() {
+            setKittyProtocolActive(true)
+            defer { setKittyProtocolActive(false) }
+            // Dvorak Ctrl+/ reports codepoint '/' (47) and base layout '[' (91)
+            let dvorakCtrlSlash = "\u{001B}[47::91;5u"
+            #expect(matchesKey(dvorakCtrlSlash, "ctrl+/") == true)
+            #expect(matchesKey(dvorakCtrlSlash, "ctrl+[") == false)
+            #expect(parseKey(dvorakCtrlSlash) == "ctrl+/")
+        }
+
         @Test("should not match wrong key even with base layout")
         func noMatchWrongKey() {
             setKittyProtocolActive(true)
