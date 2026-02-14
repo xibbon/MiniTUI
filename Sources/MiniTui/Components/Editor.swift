@@ -877,20 +877,24 @@ public final class Editor: SystemCursorAware, KillBufferAware, EditorComponent {
 
     private func deleteToStartOfLine() {
         historyIndex = -1
-        setLastAction(nil)
         let currentLine = state.lines[safe: state.cursorLine] ?? ""
 
         if state.cursorCol > 0 {
             pushUndoSnapshot()
+            let deleted = currentLine.prefixCharacters(state.cursorCol)
+            KillBuffer.shared.registerKill(deleted, append: true, prepend: true)
             state.lines[state.cursorLine] = currentLine.substring(from: state.cursorCol, length: max(0, currentLine.count - state.cursorCol))
             setCursorCol(0)
+            setLastAction(.kill)
         } else if state.cursorLine > 0 {
             pushUndoSnapshot()
             let previousLine = state.lines[state.cursorLine - 1]
+            KillBuffer.shared.registerKill("\n", append: true, prepend: true)
             state.lines[state.cursorLine - 1] = previousLine + currentLine
             state.lines.remove(at: state.cursorLine)
             state.cursorLine -= 1
             setCursorCol(previousLine.count)
+            setLastAction(.kill)
         }
 
         onChange?(getText())

@@ -44,3 +44,34 @@ func ctrlDDeletesWhenNotEmpty() {
     #expect(submitted == nil)
     #expect(input.getValue() == "ello")
 }
+
+@MainActor
+@Test("Ctrl-U kill can be yanked back in input")
+func ctrlUKillCanBeYankedBack() {
+    let input = Input()
+    input.setValue("one two three")
+    input.handleInput("\u{0005}") // Ctrl+E
+
+    input.handleInput("\u{0015}") // Ctrl+U
+    #expect(input.getValue() == "")
+
+    input.handleInput("\u{0019}") // Ctrl+Y
+    #expect(input.getValue() == "one two three")
+}
+
+@MainActor
+@Test("input yank-pop cycles kill ring entries")
+func inputYankPopCyclesKillRing() {
+    let input = Input()
+    input.setValue("one two three")
+    input.handleInput("\u{0005}") // Ctrl+E
+
+    input.handleInput("\u{0015}") // Ctrl+U kills "one two three"
+    input.handleInput("x") // Break kill chain
+    input.handleInput("\u{0015}") // Ctrl+U kills "x"
+    input.handleInput("\u{0019}") // Ctrl+Y yanks "x"
+    #expect(input.getValue() == "x")
+
+    input.handleInput("\u{001B}y") // Alt+Y yank-pop -> "one two three"
+    #expect(input.getValue() == "one two three")
+}

@@ -596,6 +596,20 @@ func yankPopCyclesKillRing() {
 }
 
 @MainActor
+@Test("Ctrl+U participates in kill ring for yank-pop")
+func ctrlUKillYankPopCyclesKillRing() {
+    let editor = Editor(theme: defaultEditorTheme)
+    editor.setText("one two three")
+    editor.handleInput("\u{0015}") // Ctrl+U kills "one two three"
+    editor.handleInput("x") // Break kill chain
+    editor.handleInput("\u{0015}") // Ctrl+U kills "x"
+    editor.handleInput("\u{0019}") // Ctrl+Y yanks "x"
+    #expect(editor.getText() == "x")
+    editor.handleInput("\u{001B}y") // Alt+Y yank-pop -> "one two three"
+    #expect(editor.getText() == "one two three")
+}
+
+@MainActor
 @Test("page up/down moves cursor by a page")
 func pageScrollMovesCursor() {
     let editor = Editor(theme: defaultEditorTheme)

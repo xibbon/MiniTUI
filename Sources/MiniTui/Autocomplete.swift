@@ -396,6 +396,36 @@ public final class CombinedAutocompleteProvider: AutocompleteProvider {
         return path
     }
 
+    private func resolveScopedFuzzyQuery(_ rawQuery: String) -> (baseDir: String, query: String, displayBase: String)? {
+        guard let slashIndex = rawQuery.lastIndex(of: "/") else { return nil }
+        let baseEnd = rawQuery.index(after: slashIndex)
+        let displayBase = String(rawQuery[..<baseEnd])
+        let query = String(rawQuery[baseEnd...])
+
+        let baseDir: String
+        if displayBase.hasPrefix("~/") {
+            baseDir = expandHomePath(displayBase)
+        } else if displayBase.hasPrefix("/") {
+            baseDir = displayBase
+        } else {
+            baseDir = joinPath(basePath, displayBase)
+        }
+
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: baseDir, isDirectory: &isDirectory), isDirectory.boolValue else {
+            return nil
+        }
+
+        return (baseDir: baseDir, query: query, displayBase: displayBase)
+    }
+
+    private func scopedPathForDisplay(displayBase: String, relativePath: String) -> String {
+        if displayBase == "/" {
+            return "/\(relativePath)"
+        }
+        return "\(displayBase)\(relativePath)"
+    }
+
     private func getFileSuggestions(prefix: String) -> [AutocompleteItem] {
         do {
             let parsed = parsePathPrefix(prefix)
@@ -529,10 +559,13 @@ public final class CombinedAutocompleteProvider: AutocompleteProvider {
             return []
         }
 
-        let entries = walkDirectoryWithFd(baseDir: basePath, fdPath: fdPath, query: query, maxResults: 100)
+        let scopedQuery = resolveScopedFuzzyQuery(query)
+        let fdBaseDir = scopedQuery?.baseDir ?? basePath
+        let fdQuery = scopedQuery?.query ?? query
+        let entries = walkDirectoryWithFd(baseDir: fdBaseDir, fdPath: fdPath, query: fdQuery, maxResults: 100)
         let scored = entries
             .map { entry in
-                (entry: entry, score: query.isEmpty ? 1 : scoreEntry(filePath: entry.path, query: query, isDirectory: entry.isDirectory))
+                (entry: entry, score: fdQuery.isEmpty ? 1 : scoreEntry(filePath: entry.path, query: fdQuery, isDirectory: entry.isDirectory))
             }
             .filter { $0.score > 0 }
             .sorted { $0.score > $1.score }
@@ -542,9 +575,15 @@ public final class CombinedAutocompleteProvider: AutocompleteProvider {
             let entryPath = scoredEntry.entry.path
             let isDirectory = scoredEntry.entry.isDirectory
             let pathWithoutSlash = isDirectory ? String(entryPath.dropLast()) : entryPath
+            let displayPath = if let scopedQuery {
+                scopedPathForDisplay(displayBase: scopedQuery.displayBase, relativePath: pathWithoutSlash)
+            } else {
+                pathWithoutSlash
+            }
             let entryName = basename(pathWithoutSlash)
-            let value = buildCompletionValue(entryPath, isAtPrefix: true, isQuotedPrefix: isQuotedPrefix)
-            return AutocompleteItem(value: value, label: entryName + (isDirectory ? "/" : ""), description: pathWithoutSlash)
+            let completionPath = isDirectory ? "\(displayPath)/" : displayPath
+            let value = buildCompletionValue(completionPath, isAtPrefix: true, isQuotedPrefix: isQuotedPrefix)
+            return AutocompleteItem(value: value, label: entryName + (isDirectory ? "/" : ""), description: displayPath)
         }
     }
 }

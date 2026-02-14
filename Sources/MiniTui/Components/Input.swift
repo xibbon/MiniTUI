@@ -2,8 +2,14 @@ import Foundation
 
 /// Single-line text input with cursor and editing shortcuts.
 public final class Input: SystemCursorAware, KillBufferAware {
+    private enum LastAction {
+        case kill
+        case yank
+    }
+
     private var value: String = ""
     private var cursor: Int = 0
+    private var lastAction: LastAction?
     /// Called when the user submits with Enter.
     public var onSubmit: ((String) -> Void)?
     /// Called when the user cancels with Escape or Ctrl+C.
@@ -57,12 +63,14 @@ public final class Input: SystemCursorAware, KillBufferAware {
         }
 
         if matchesKey(input, Key.ctrl("z")) {
+            setLastAction(nil)
             sendSuspendSignal()
             return
         }
 
         if matchesKey(input, Key.ctrl("d")) {
             if value.isEmpty {
+                setLastAction(nil)
                 onEnd?()
                 return
             }
@@ -71,16 +79,19 @@ public final class Input: SystemCursorAware, KillBufferAware {
         let kb = getEditorKeybindings()
 
         if kb.matches(input, .selectCancel) {
+            setLastAction(nil)
             onEscape?()
             return
         }
 
         if kb.matches(input, .submit) || input == "\n" {
+            setLastAction(nil)
             onSubmit?(value)
             return
         }
 
         if kb.matches(input, .deleteCharBackward) || matchesKey(input, Key.shift("backspace")) {
+            setLastAction(nil)
             if cursor > 0 {
                 let before = value.prefixCharacters(cursor - 1)
                 let after = value.substring(from: cursor, length: value.count - cursor)
@@ -91,6 +102,7 @@ public final class Input: SystemCursorAware, KillBufferAware {
         }
 
         if kb.matches(input, .deleteCharForward) || matchesKey(input, Key.shift("delete")) {
+            setLastAction(nil)
             if cursor < value.count {
                 let before = value.prefixCharacters(cursor)
                 let after = value.substring(from: cursor + 1, length: value.count - cursor - 1)
@@ -105,8 +117,7 @@ public final class Input: SystemCursorAware, KillBufferAware {
         }
 
         if kb.matches(input, .deleteToLineStart) {
-            value = value.substring(from: cursor, length: value.count - cursor)
-            cursor = 0
+            killToStartOfLine()
             return
         }
 
@@ -120,12 +131,18 @@ public final class Input: SystemCursorAware, KillBufferAware {
             return
         }
 
+        if kb.matches(input, .yankPop) {
+            yankPop()
+            return
+        }
+
         if kb.matches(input, .deleteWordForward) {
             killWordForwards()
             return
         }
 
         if kb.matches(input, .cursorLeft) {
+            setLastAction(nil)
             if cursor > 0 {
                 cursor -= 1
             }
@@ -133,6 +150,7 @@ public final class Input: SystemCursorAware, KillBufferAware {
         }
 
         if kb.matches(input, .cursorRight) {
+            setLastAction(nil)
             if cursor < value.count {
                 cursor += 1
             }
@@ -140,21 +158,25 @@ public final class Input: SystemCursorAware, KillBufferAware {
         }
 
         if kb.matches(input, .cursorLineStart) {
+            setLastAction(nil)
             cursor = 0
             return
         }
 
         if kb.matches(input, .cursorLineEnd) {
+            setLastAction(nil)
             cursor = value.count
             return
         }
 
         if kb.matches(input, .cursorWordLeft) {
+            setLastAction(nil)
             moveWordBackwards()
             return
         }
 
         if kb.matches(input, .cursorWordRight) {
+            setLastAction(nil)
             moveWordForwards()
             return
         }
@@ -164,6 +186,7 @@ public final class Input: SystemCursorAware, KillBufferAware {
             return value < 32 || value == 0x7F || (0x80...0x9F).contains(value)
         }
         if !hasControlChars {
+            setLastAction(nil)
             let before = value.prefixCharacters(cursor)
             let after = value.substring(from: cursor, length: value.count - cursor)
             value = before + input + after
@@ -292,6 +315,7 @@ public final class Input: SystemCursorAware, KillBufferAware {
     }
 
     private func handlePaste(_ pastedText: String) {
+        setLastAction(nil)
         let cleanText = pastedText
             .replacingOccurrences(of: "\r\n", with: "")
             .replacingOccurrences(of: "\r", with: "")
@@ -303,11 +327,23 @@ public final class Input: SystemCursorAware, KillBufferAware {
         cursor += cleanText.count
     }
 
+    private func killToStartOfLine() {
+        guard cursor > 0 else { return }
+        let deleted = value.prefixCharacters(cursor)
+        let remaining = value.substring(from: cursor, length: value.count - cursor)
+        KillBuffer.shared.registerKill(deleted, append: true, prepend: true)
+        value = remaining
+        cursor = 0
+        setLastAction(.kill)
+    }
+
     private func killToEndOfLine() {
+        guard cursor < value.count else { return }
         let before = value.prefixCharacters(cursor)
         let after = value.substring(from: cursor, length: value.count - cursor)
         KillBuffer.shared.registerKill(after, append: true)
         value = before
+        setLastAction(.kill)
     }
 
     private func yankKillBuffer() {
@@ -317,6 +353,27 @@ public final class Input: SystemCursorAware, KillBufferAware {
         let after = value.substring(from: cursor, length: value.count - cursor)
         value = before + killBuffer + after
         cursor += killBuffer.count
+        setLastAction(.yank)
+    }
+
+    private func yankPop() {
+        guard lastAction == .yank, KillBuffer.shared.hasMultipleEntries() else { return }
+
+        let previousText = KillBuffer.shared.yank()
+        let deleteLength = min(previousText.count, cursor)
+        if deleteLength > 0 {
+            let before = value.prefixCharacters(cursor - deleteLength)
+            let after = value.substring(from: cursor, length: value.count - cursor)
+            value = before + after
+            cursor -= deleteLength
+        }
+
+        let nextText = KillBuffer.shared.rotate()
+        let before = value.prefixCharacters(cursor)
+        let after = value.substring(from: cursor, length: value.count - cursor)
+        value = before + nextText + after
+        cursor += nextText.count
+        setLastAction(.yank)
     }
 
     private func killWordBackwards() {
@@ -334,6 +391,7 @@ public final class Input: SystemCursorAware, KillBufferAware {
         cursor = deleteFrom
 
         KillBuffer.shared.registerKill(deleted, append: true, prepend: true)
+        setLastAction(.kill)
     }
 
     private func killWordForwards() {
@@ -368,5 +426,13 @@ public final class Input: SystemCursorAware, KillBufferAware {
         value = before + after
 
         KillBuffer.shared.registerKill(deleted, append: true)
+        setLastAction(.kill)
+    }
+
+    private func setLastAction(_ action: LastAction?) {
+        lastAction = action
+        if action != .kill {
+            KillBuffer.shared.breakChain()
+        }
     }
 }

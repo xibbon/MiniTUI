@@ -366,11 +366,16 @@ public final class TUI: Container {
             if isKeyRelease(input), !focused.wantsKeyRelease {
                 return
             }
-            let shouldPreserveKillChain = focused is KillBufferAware
-                && (matchesKey(input, Key.ctrl("k"))
-                    || matchesKey(input, Key.ctrl("w"))
-                    || matchesKey(input, Key.alt("backspace"))
-                    || matchesKey(input, Key.alt("d")))
+            let shouldPreserveKillChain: Bool
+            if focused is KillBufferAware {
+                let kb = getEditorKeybindings()
+                shouldPreserveKillChain = kb.matches(input, .deleteToLineStart)
+                    || kb.matches(input, .deleteToLineEnd)
+                    || kb.matches(input, .deleteWordBackward)
+                    || kb.matches(input, .deleteWordForward)
+            } else {
+                shouldPreserveKillChain = false
+            }
             if !shouldPreserveKillChain {
                 KillBuffer.shared.breakChain()
             }
