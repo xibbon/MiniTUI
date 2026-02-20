@@ -7,6 +7,10 @@ import Glibc
 import Darwin
 #endif
 
+#if os(Windows)
+import WinSDK
+#endif
+
 /// Minimal terminal interface used by the TUI renderer.
 public protocol Terminal: AnyObject {
     /// Start the terminal and provide input/resize handlers.
@@ -102,6 +106,10 @@ public final class ProcessTerminal: Terminal {
         #if !os(Windows)
         kill(getpid(), SIGWINCH)
         #endif
+
+        // On Windows, raw mode can reset console flags. Re-enable VT input so
+        // modified keys (e.g. Shift+Tab) are emitted as escape sequences.
+        enableWindowsVTInput()
 
         write("\u{001B}[?2004h")
         setupStdinBuffer()
@@ -207,6 +215,18 @@ public final class ProcessTerminal: Terminal {
         DispatchQueue.global().asyncAfter(deadline: .now() + 0.1, execute: workItem)
 
         write("\u{001B}[?u")
+    }
+
+    private func enableWindowsVTInput() {
+        #if os(Windows)
+        let stdInputHandle: DWORD = DWORD(bitPattern: Int32(-10))
+        let enableVirtualTerminalInput: DWORD = 0x0200
+        let handle = GetStdHandle(stdInputHandle)
+        guard handle != INVALID_HANDLE_VALUE else { return }
+        var mode: DWORD = 0
+        guard GetConsoleMode(handle, &mode) != 0 else { return }
+        _ = SetConsoleMode(handle, mode | enableVirtualTerminalInput)
+        #endif
     }
 
     private func handleStdinData(_ data: Data) {
