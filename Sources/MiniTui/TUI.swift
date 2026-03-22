@@ -368,11 +368,11 @@ public final class TUI: Container {
             }
             let shouldPreserveKillChain: Bool
             if focused is KillBufferAware {
-                let kb = getEditorKeybindings()
-                shouldPreserveKillChain = kb.matches(input, .deleteToLineStart)
-                    || kb.matches(input, .deleteToLineEnd)
-                    || kb.matches(input, .deleteWordBackward)
-                    || kb.matches(input, .deleteWordForward)
+                let kb = getKeybindings()
+                shouldPreserveKillChain = kb.matches(input, TUIKeybinding.editorDeleteToLineStart)
+                    || kb.matches(input, TUIKeybinding.editorDeleteToLineEnd)
+                    || kb.matches(input, TUIKeybinding.editorDeleteWordBackward)
+                    || kb.matches(input, TUIKeybinding.editorDeleteWordForward)
             } else {
                 shouldPreserveKillChain = false
             }

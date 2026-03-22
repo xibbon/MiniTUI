@@ -142,23 +142,23 @@ public final class SettingsList: SystemCursorAware {
             return
         }
 
-        let kb = getEditorKeybindings()
+        let kb = getKeybindings()
         let displayItems = searchEnabled ? filteredItems : items
-        if kb.matches(data, .selectUp) {
+        if kb.matches(data, TUIKeybinding.selectUp) {
             guard !displayItems.isEmpty else { return }
             selectedIndex = selectedIndex == 0 ? max(displayItems.count - 1, 0) : selectedIndex - 1
-        } else if kb.matches(data, .selectDown) {
+        } else if kb.matches(data, TUIKeybinding.selectDown) {
             guard !displayItems.isEmpty else { return }
             selectedIndex = selectedIndex == max(displayItems.count - 1, 0) ? 0 : selectedIndex + 1
-        } else if kb.matches(data, .selectPageUp) {
+        } else if kb.matches(data, TUIKeybinding.selectPageUp) {
             guard !displayItems.isEmpty else { return }
             selectedIndex = max(0, selectedIndex - maxVisible)
-        } else if kb.matches(data, .selectPageDown) {
+        } else if kb.matches(data, TUIKeybinding.selectPageDown) {
             guard !displayItems.isEmpty else { return }
             selectedIndex = min(max(displayItems.count - 1, 0), selectedIndex + maxVisible)
-        } else if kb.matches(data, .selectConfirm) || data == " " {
+        } else if kb.matches(data, TUIKeybinding.selectConfirm) || data == " " {
             activateItem()
-        } else if kb.matches(data, .selectCancel) {
+        } else if kb.matches(data, TUIKeybinding.selectCancel) {
             onCancel()
         } else if searchEnabled, let searchInput {
             let sanitized = data.replacingOccurrences(of: " ", with: "")

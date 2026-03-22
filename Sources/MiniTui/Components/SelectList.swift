@@ -165,26 +165,26 @@ public final class SelectList: SystemCursorAware {
 
     /// Handle navigation and selection input.
     public func handleInput(_ data: String) {
-        let kb = getEditorKeybindings()
-        if kb.matches(data, .selectUp) {
+        let kb = getKeybindings()
+        if kb.matches(data, TUIKeybinding.selectUp) {
             selectedIndex = selectedIndex == 0 ? max(filteredItems.count - 1, 0) : selectedIndex - 1
             notifySelectionChange()
-        } else if kb.matches(data, .selectDown) {
+        } else if kb.matches(data, TUIKeybinding.selectDown) {
             selectedIndex = selectedIndex == max(filteredItems.count - 1, 0) ? 0 : selectedIndex + 1
             notifySelectionChange()
-        } else if kb.matches(data, .selectPageUp) {
+        } else if kb.matches(data, TUIKeybinding.selectPageUp) {
             guard !filteredItems.isEmpty else { return }
             selectedIndex = max(0, selectedIndex - maxVisible)
             notifySelectionChange()
-        } else if kb.matches(data, .selectPageDown) {
+        } else if kb.matches(data, TUIKeybinding.selectPageDown) {
             guard !filteredItems.isEmpty else { return }
             selectedIndex = min(max(filteredItems.count - 1, 0), selectedIndex + maxVisible)
             notifySelectionChange()
-        } else if kb.matches(data, .selectConfirm) {
+        } else if kb.matches(data, TUIKeybinding.selectConfirm) {
             if let selected = filteredItems[safe: selectedIndex] {
                 onSelect?(selected)
             }
-        } else if kb.matches(data, .selectCancel) {
+        } else if kb.matches(data, TUIKeybinding.selectCancel) {
             onCancel?()
         }
     }

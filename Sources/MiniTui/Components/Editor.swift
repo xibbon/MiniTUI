@@ -338,10 +338,10 @@ public final class Editor: SystemCursorAware, KillBufferAware, EditorComponent {
             return
         }
 
-        let kb = getEditorKeybindings()
+        let kb = getKeybindings()
 
         if let activeJump = jumpMode {
-            if kb.matches(input, .jumpForward) || kb.matches(input, .jumpBackward) {
+            if kb.matches(input, TUIKeybinding.editorJumpForward) || kb.matches(input, TUIKeybinding.editorJumpBackward) {
                 jumpMode = nil
                 return
             }
@@ -355,28 +355,28 @@ public final class Editor: SystemCursorAware, KillBufferAware, EditorComponent {
             jumpMode = nil
         }
 
-        if kb.matches(input, .copy) {
+        if kb.matches(input, TUIKeybinding.inputCopy) {
             return
         }
-        if kb.matches(input, .undo) {
+        if kb.matches(input, TUIKeybinding.editorUndo) {
             undo()
             return
         }
 
         if isAutocompleting, let autocompleteList {
-            if kb.matches(input, .selectCancel) {
+            if kb.matches(input, TUIKeybinding.selectCancel) {
                 cancelAutocomplete()
                 return
             }
-            if kb.matches(input, .selectUp)
-                || kb.matches(input, .selectDown)
-                || kb.matches(input, .selectPageUp)
-                || kb.matches(input, .selectPageDown) {
+            if kb.matches(input, TUIKeybinding.selectUp)
+                || kb.matches(input, TUIKeybinding.selectDown)
+                || kb.matches(input, TUIKeybinding.selectPageUp)
+                || kb.matches(input, TUIKeybinding.selectPageDown) {
                 autocompleteList.handleInput(input)
                 return
             }
 
-            if kb.matches(input, .tab) {
+            if kb.matches(input, TUIKeybinding.inputTab) {
                 if let selected = autocompleteList.getSelectedItem(), let provider = autocompleteProvider {
                     pushUndoSnapshot()
                     setLastAction(nil)
@@ -396,7 +396,7 @@ public final class Editor: SystemCursorAware, KillBufferAware, EditorComponent {
                 return
             }
 
-            if kb.matches(input, .selectConfirm) {
+            if kb.matches(input, TUIKeybinding.selectConfirm) {
                 if let selected = autocompleteList.getSelectedItem(), let provider = autocompleteProvider {
                     pushUndoSnapshot()
                     setLastAction(nil)
@@ -422,65 +422,65 @@ public final class Editor: SystemCursorAware, KillBufferAware, EditorComponent {
             }
         }
 
-        if kb.matches(input, .tab) && !isAutocompleting {
+        if kb.matches(input, TUIKeybinding.inputTab) && !isAutocompleting {
             handleTabCompletion()
             return
         }
 
-        if kb.matches(input, .deleteToLineEnd) {
+        if kb.matches(input, TUIKeybinding.editorDeleteToLineEnd) {
             killToEndOfLine()
             return
         }
-        if kb.matches(input, .deleteToLineStart) {
+        if kb.matches(input, TUIKeybinding.editorDeleteToLineStart) {
             deleteToStartOfLine()
             return
         }
-        if kb.matches(input, .deleteWordBackward) {
+        if kb.matches(input, TUIKeybinding.editorDeleteWordBackward) {
             killWordBackwards()
             return
         }
-        if kb.matches(input, .deleteWordForward) {
+        if kb.matches(input, TUIKeybinding.editorDeleteWordForward) {
             killWordForwards()
             return
         }
-        if kb.matches(input, .deleteCharBackward) || matchesKey(input, Key.shift("backspace")) {
+        if kb.matches(input, TUIKeybinding.editorDeleteCharBackward) || matchesKey(input, Key.shift("backspace")) {
             handleBackspace()
             return
         }
-        if kb.matches(input, .deleteCharForward) || matchesKey(input, Key.shift("delete")) {
+        if kb.matches(input, TUIKeybinding.editorDeleteCharForward) || matchesKey(input, Key.shift("delete")) {
             handleForwardDelete()
             return
         }
 
-        if kb.matches(input, .yank) {
+        if kb.matches(input, TUIKeybinding.editorYank) {
             yankKillBuffer()
             return
         }
-        if kb.matches(input, .yankPop) {
+        if kb.matches(input, TUIKeybinding.editorYankPop) {
             yankPop()
             return
         }
 
-        if kb.matches(input, .cursorLineStart) {
+        if kb.matches(input, TUIKeybinding.editorCursorLineStart) {
             moveToLineStart()
             return
         }
-        if kb.matches(input, .cursorLineEnd) {
+        if kb.matches(input, TUIKeybinding.editorCursorLineEnd) {
             moveToLineEnd()
             return
         }
-        if kb.matches(input, .cursorWordLeft) {
+        if kb.matches(input, TUIKeybinding.editorCursorWordLeft) {
             setLastAction(nil)
             moveWordBackwards()
             return
         }
-        if kb.matches(input, .cursorWordRight) {
+        if kb.matches(input, TUIKeybinding.editorCursorWordRight) {
             setLastAction(nil)
             moveWordForwards()
             return
         }
 
-        if kb.matches(input, .newLine)
+        if kb.matches(input, TUIKeybinding.inputNewLine)
             || (input.first?.unicodeScalars.first?.value == 10 && input.count > 1)
             || input == "\u{001B}\r"
             || input == "\u{001B}[13;2~"
@@ -496,7 +496,7 @@ public final class Editor: SystemCursorAware, KillBufferAware, EditorComponent {
             return
         }
 
-        if kb.matches(input, .submit) {
+        if kb.matches(input, TUIKeybinding.inputSubmit) {
             if disableSubmit {
                 return
             }
@@ -504,7 +504,7 @@ public final class Editor: SystemCursorAware, KillBufferAware, EditorComponent {
             return
         }
 
-        if kb.matches(input, .cursorUp) {
+        if kb.matches(input, TUIKeybinding.editorCursorUp) {
             if isEditorEmpty() {
                 navigateHistory(direction: -1)
             } else if historyIndex > -1 && isOnFirstVisualLine() {
@@ -516,7 +516,7 @@ public final class Editor: SystemCursorAware, KillBufferAware, EditorComponent {
             }
             return
         }
-        if kb.matches(input, .cursorDown) {
+        if kb.matches(input, TUIKeybinding.editorCursorDown) {
             if historyIndex > -1 && isOnLastVisualLine() {
                 navigateHistory(direction: 1)
             } else if isOnLastVisualLine() {
@@ -526,30 +526,30 @@ public final class Editor: SystemCursorAware, KillBufferAware, EditorComponent {
             }
             return
         }
-        if kb.matches(input, .cursorRight) {
+        if kb.matches(input, TUIKeybinding.editorCursorRight) {
             moveCursor(deltaLine: 0, deltaCol: 1)
             return
         }
-        if kb.matches(input, .cursorLeft) {
+        if kb.matches(input, TUIKeybinding.editorCursorLeft) {
             moveCursor(deltaLine: 0, deltaCol: -1)
             return
         }
 
-        if kb.matches(input, .pageUp) {
+        if kb.matches(input, TUIKeybinding.editorPageUp) {
             pageScroll(direction: -1)
             return
         }
-        if kb.matches(input, .pageDown) {
+        if kb.matches(input, TUIKeybinding.editorPageDown) {
             pageScroll(direction: 1)
             return
         }
 
-        if kb.matches(input, .jumpForward) {
+        if kb.matches(input, TUIKeybinding.editorJumpForward) {
             setLastAction(nil)
             jumpMode = .forward
             return
         }
-        if kb.matches(input, .jumpBackward) {
+        if kb.matches(input, TUIKeybinding.editorJumpBackward) {
             setLastAction(nil)
             jumpMode = .backward
             return
@@ -700,10 +700,10 @@ public final class Editor: SystemCursorAware, KillBufferAware, EditorComponent {
         onChange?(getText())
     }
 
-    private func shouldSubmitOnBackslashEnter(_ data: String, kb: EditorKeybindingsManager) -> Bool {
+    private func shouldSubmitOnBackslashEnter(_ data: String, kb: TUIKeybindingsManager) -> Bool {
         if disableSubmit { return false }
         if !matchesKey(data, Key.enter) { return false }
-        let submitKeys = kb.getKeys(.submit)
+        let submitKeys = kb.getKeys(TUIKeybinding.inputSubmit)
         let hasShiftEnter = submitKeys.contains(Key.shift("enter")) || submitKeys.contains(Key.shift("return"))
         if !hasShiftEnter { return false }
 

@@ -46,8 +46,8 @@ public final class CancellableLoader: Loader {
 
     /// Handle Escape to cancel the loader.
     public override func handleInput(_ data: String) {
-        let kb = getEditorKeybindings()
-        if kb.matches(data, .selectCancel) {
+        let kb = getKeybindings()
+        if kb.matches(data, TUIKeybinding.selectCancel) {
             cancellationSignal.cancel()
             onAbort?()
         }

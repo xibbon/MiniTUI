@@ -76,21 +76,21 @@ public final class Input: SystemCursorAware, KillBufferAware {
             }
         }
 
-        let kb = getEditorKeybindings()
+        let kb = getKeybindings()
 
-        if kb.matches(input, .selectCancel) {
+        if kb.matches(input, TUIKeybinding.selectCancel) {
             setLastAction(nil)
             onEscape?()
             return
         }
 
-        if kb.matches(input, .submit) || input == "\n" {
+        if kb.matches(input, TUIKeybinding.inputSubmit) || input == "\n" {
             setLastAction(nil)
             onSubmit?(value)
             return
         }
 
-        if kb.matches(input, .deleteCharBackward) || matchesKey(input, Key.shift("backspace")) {
+        if kb.matches(input, TUIKeybinding.editorDeleteCharBackward) || matchesKey(input, Key.shift("backspace")) {
             setLastAction(nil)
             if cursor > 0 {
                 let before = value.prefixCharacters(cursor - 1)
@@ -101,7 +101,7 @@ public final class Input: SystemCursorAware, KillBufferAware {
             return
         }
 
-        if kb.matches(input, .deleteCharForward) || matchesKey(input, Key.shift("delete")) {
+        if kb.matches(input, TUIKeybinding.editorDeleteCharForward) || matchesKey(input, Key.shift("delete")) {
             setLastAction(nil)
             if cursor < value.count {
                 let before = value.prefixCharacters(cursor)
@@ -111,37 +111,37 @@ public final class Input: SystemCursorAware, KillBufferAware {
             return
         }
 
-        if kb.matches(input, .deleteWordBackward) {
+        if kb.matches(input, TUIKeybinding.editorDeleteWordBackward) {
             killWordBackwards()
             return
         }
 
-        if kb.matches(input, .deleteToLineStart) {
+        if kb.matches(input, TUIKeybinding.editorDeleteToLineStart) {
             killToStartOfLine()
             return
         }
 
-        if kb.matches(input, .deleteToLineEnd) {
+        if kb.matches(input, TUIKeybinding.editorDeleteToLineEnd) {
             killToEndOfLine()
             return
         }
 
-        if kb.matches(input, .yank) {
+        if kb.matches(input, TUIKeybinding.editorYank) {
             yankKillBuffer()
             return
         }
 
-        if kb.matches(input, .yankPop) {
+        if kb.matches(input, TUIKeybinding.editorYankPop) {
             yankPop()
             return
         }
 
-        if kb.matches(input, .deleteWordForward) {
+        if kb.matches(input, TUIKeybinding.editorDeleteWordForward) {
             killWordForwards()
             return
         }
 
-        if kb.matches(input, .cursorLeft) {
+        if kb.matches(input, TUIKeybinding.editorCursorLeft) {
             setLastAction(nil)
             if cursor > 0 {
                 cursor -= 1
@@ -149,7 +149,7 @@ public final class Input: SystemCursorAware, KillBufferAware {
             return
         }
 
-        if kb.matches(input, .cursorRight) {
+        if kb.matches(input, TUIKeybinding.editorCursorRight) {
             setLastAction(nil)
             if cursor < value.count {
                 cursor += 1
@@ -157,25 +157,25 @@ public final class Input: SystemCursorAware, KillBufferAware {
             return
         }
 
-        if kb.matches(input, .cursorLineStart) {
+        if kb.matches(input, TUIKeybinding.editorCursorLineStart) {
             setLastAction(nil)
             cursor = 0
             return
         }
 
-        if kb.matches(input, .cursorLineEnd) {
+        if kb.matches(input, TUIKeybinding.editorCursorLineEnd) {
             setLastAction(nil)
             cursor = value.count
             return
         }
 
-        if kb.matches(input, .cursorWordLeft) {
+        if kb.matches(input, TUIKeybinding.editorCursorWordLeft) {
             setLastAction(nil)
             moveWordBackwards()
             return
         }
 
-        if kb.matches(input, .cursorWordRight) {
+        if kb.matches(input, TUIKeybinding.editorCursorWordRight) {
             setLastAction(nil)
             moveWordForwards()
             return
