@@ -1337,12 +1337,13 @@ public final class Editor: SystemCursorAware, KillBufferAware, EditorComponent {
         historyIndex = -1
         setLastAction(nil)
         pushUndoSnapshot()
-        let pastedLines = pastedText.replacingOccurrences(of: "\r\n", with: "\n").replacingOccurrences(of: "\r", with: "\n").split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+        let normalizedText = pastedText.replacingOccurrences(of: "\t", with: "    ")
+        let pastedLines = normalizedText.replacingOccurrences(of: "\r\n", with: "\n").replacingOccurrences(of: "\r", with: "\n").split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
 
         if pastedLines.count > 10 {
             pasteCounter += 1
             let pasteId = pasteCounter
-            pastes[pasteId] = pastedText
+            pastes[pasteId] = normalizedText
             let marker = "[paste #\(pasteId) +\(pastedLines.count) lines]"
             for char in marker {
                 insertCharacter(String(char), skipUndoSnapshot: true)
@@ -1356,7 +1357,7 @@ public final class Editor: SystemCursorAware, KillBufferAware, EditorComponent {
             }
             return
         }
-        insertTextAtCursorInternal(pastedText)
+        insertTextAtCursorInternal(normalizedText)
     }
 
     private func isEditorEmpty() -> Bool {

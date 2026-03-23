@@ -500,7 +500,14 @@ public final class CombinedAutocompleteProvider: AutocompleteProvider {
                         let dir = dirname(displayPrefix)
                         relativePath = dir == "/" ? "/\(entry)" : "\(dir)/\(entry)"
                     } else {
-                        relativePath = joinPath(dirname(displayPrefix), entry)
+                        let dir = dirname(displayPrefix)
+                        let joined = joinPath(dir, entry)
+                        // Preserve ./ prefix when the user typed it explicitly
+                        if displayPrefix.hasPrefix("./") && !joined.hasPrefix("./") {
+                            relativePath = "./" + joined
+                        } else {
+                            relativePath = joined
+                        }
                     }
                 } else {
                     if displayPrefix.hasPrefix("~") {

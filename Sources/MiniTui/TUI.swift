@@ -127,6 +127,7 @@ public final class TUI: Container {
     private var previousLines: [String] = []
     private var previousResetSource: [String] = []
     private var previousWidth: Int = 0
+    private var previousHeight: Int = 0
     private var focusedComponent: Component?
 
     /// Optional handler for Shift+Ctrl+D debug trigger.
@@ -282,6 +283,18 @@ public final class TUI: Container {
         }
     }
 
+    /// Clear stale scrollback state, useful when switching sessions.
+    public func clearScrollback() {
+        previousLines = []
+        previousResetSource = []
+        previousWidth = 0
+        previousHeight = 0
+        cursorRow = 0
+        maxLinesRendered = 0
+        terminal.clearScreen()
+        requestRender(force: true)
+    }
+
     /// Start terminal input and initial rendering.
     public func start() {
         stopped = false
@@ -322,6 +335,7 @@ public final class TUI: Container {
         if force {
             previousLines = []
             previousWidth = -1
+            previousHeight = -1
             cursorRow = 0
         }
         if renderRequested { return }
@@ -678,6 +692,10 @@ public final class TUI: Container {
         return sliceByColumn(result, startCol: 0, length: totalWidth, strict: true)
     }
 
+    private static func isTermuxSession() -> Bool {
+        ProcessInfo.processInfo.environment["TERMUX_VERSION"] != nil
+    }
+
     private func doRender() {
         if stopped { return }
         let width = terminal.columns
@@ -719,6 +737,7 @@ public final class TUI: Container {
             previousLines: previousLines
         )
         let widthChanged = previousWidth != 0 && previousWidth != width
+        let heightChanged = previousHeight != 0 && previousHeight != height
         let newLines = resetLines
         lastLineOrigins = debugLineOrigins ? (lineOrigins?.values ?? []) : []
 
@@ -764,6 +783,7 @@ public final class TUI: Container {
             previousLines = newLines
             previousResetSource = cleanedLines
             previousWidth = width
+            previousHeight = height
             positionCursorIfNeeded(cursorPosition, width: width)
         }
 
@@ -774,6 +794,14 @@ public final class TUI: Container {
 
         if widthChanged {
             fullRender(clear: true, reason: "width changed (\(previousWidth) -> \(width))")
+            return
+        }
+
+        // Height changes normally need a full re-render to keep the visible viewport aligned,
+        // but Termux changes height when the software keyboard shows or hides.
+        // In that environment, a full redraw causes the entire history to replay on every toggle.
+        if heightChanged && !TUI.isTermuxSession() {
+            fullRender(clear: true, reason: "terminal height changed (\(previousHeight) -> \(height))")
             return
         }
 
@@ -801,6 +829,7 @@ public final class TUI: Container {
                 positionCursorIfNeeded(cursorPosition, width: width)
             }
             previousResetSource = cleanedLines
+            previousHeight = height
             maxLinesRendered = max(maxLinesRendered, newLines.count)
             return
         }
@@ -828,6 +857,7 @@ public final class TUI: Container {
             previousLines = newLines
             previousResetSource = cleanedLines
             previousWidth = width
+            previousHeight = height
             maxLinesRendered = max(maxLinesRendered, newLines.count)
             positionCursorIfNeeded(cursorPosition, width: width)
             return
@@ -928,6 +958,7 @@ public final class TUI: Container {
         previousLines = newLines
         previousResetSource = cleanedLines
         previousWidth = width
+        previousHeight = height
         maxLinesRendered = max(maxLinesRendered, newLines.count)
         positionCursorIfNeeded(cursorPosition, width: width)
     }

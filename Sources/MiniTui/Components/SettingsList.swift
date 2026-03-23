@@ -216,7 +216,8 @@ public final class SettingsList: SystemCursorAware {
 
         if startIndex > 0 || endIndex < displayItems.count {
             let scrollText = "  (\(selectedIndex + 1)/\(displayItems.count))"
-            lines.append(theme.hint(truncateToWidth(scrollText, maxWidth: width - 2, ellipsis: "")))
+            let scrollMaxWidth = max(1, width < 40 ? width : width - 2)
+            lines.append(theme.hint(truncateToWidth(scrollText, maxWidth: scrollMaxWidth, ellipsis: "")))
         }
 
         if let description = displayItems[safe: selectedIndex]?.description {

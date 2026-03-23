@@ -157,7 +157,8 @@ public final class SelectList: SystemCursorAware {
 
         if startIndex > 0 || endIndex < filteredItems.count {
             let scrollText = "  (\(selectedIndex + 1)/\(filteredItems.count))"
-            lines.append(theme.scrollInfo(truncateToWidth(scrollText, maxWidth: width - 2, ellipsis: "")))
+            let scrollMaxWidth = max(1, width < 40 ? width : width - 2)
+            lines.append(theme.scrollInfo(truncateToWidth(scrollText, maxWidth: scrollMaxWidth, ellipsis: "")))
         }
 
         return lines

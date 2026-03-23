@@ -317,6 +317,7 @@ public final class Input: SystemCursorAware, KillBufferAware {
     private func handlePaste(_ pastedText: String) {
         setLastAction(nil)
         let cleanText = pastedText
+            .replacingOccurrences(of: "\t", with: "    ")
             .replacingOccurrences(of: "\r\n", with: "")
             .replacingOccurrences(of: "\r", with: "")
             .replacingOccurrences(of: "\n", with: "")

@@ -179,6 +179,10 @@ public final class Markdown: Component {
             renderedLines.append(contentsOf: output.lines)
             hasPreviousNonBlank = true
         }
+        // Remove trailing blank lines to avoid extra spacing after the last block element
+        while let last = renderedLines.last, last.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            renderedLines.removeLast()
+        }
 
         var normalizedLines: [String] = []
         var lastWasEmpty = false
@@ -379,6 +383,10 @@ public final class Markdown: Component {
             }
             lines.append(contentsOf: output.lines)
             hasPreviousNonBlank = true
+        }
+        // Remove trailing blank lines to avoid extra spacing after block elements
+        while let last = lines.last, last.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            lines.removeLast()
         }
         return lines
     }
