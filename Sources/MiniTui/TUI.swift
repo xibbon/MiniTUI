@@ -66,6 +66,10 @@ public struct OverlayOptions: Sendable {
     public var col: SizeValue?
     public var margin: OverlayMargin?
     public var visible: (@Sendable (Int, Int) -> Bool)?
+    /// When true, the overlay is displayed but doesn't capture keyboard focus.
+    /// Input continues to go to the component underneath. Useful for status
+    /// overlays, notifications, or background panels.
+    public var nonCapturing: Bool?
 
     public init(
         width: SizeValue? = nil,
@@ -77,7 +81,8 @@ public struct OverlayOptions: Sendable {
         row: SizeValue? = nil,
         col: SizeValue? = nil,
         margin: OverlayMargin? = nil,
-        visible: (@Sendable (Int, Int) -> Bool)? = nil
+        visible: (@Sendable (Int, Int) -> Bool)? = nil,
+        nonCapturing: Bool? = nil
     ) {
         self.width = width
         self.minWidth = minWidth
@@ -89,6 +94,7 @@ public struct OverlayOptions: Sendable {
         self.col = col
         self.margin = margin
         self.visible = visible
+        self.nonCapturing = nonCapturing
     }
 }
 
@@ -211,7 +217,8 @@ public final class TUI: Container {
     public func showOverlay(_ component: Component, options: OverlayOptions? = nil) -> OverlayHandle {
         let entry = OverlayEntry(component: component, options: options, preFocus: focusedComponent, hidden: false)
         overlayStack.append(entry)
-        if isOverlayVisible(entry) {
+        // Non-capturing overlays don't steal focus
+        if isOverlayVisible(entry) && !(options?.nonCapturing == true) {
             setFocus(component)
         }
         updateCursorMode()
@@ -252,7 +259,7 @@ public final class TUI: Container {
                 let topVisible = getTopmostVisibleOverlay()
                 setFocus(topVisible?.component ?? entry.preFocus)
             }
-        } else if isOverlayVisible(entry) {
+        } else if isOverlayVisible(entry) && !(entry.options?.nonCapturing == true) {
             setFocus(entry.component)
         }
         updateCursorMode()
@@ -269,7 +276,8 @@ public final class TUI: Container {
 
     private func getTopmostVisibleOverlay() -> OverlayEntry? {
         for entry in overlayStack.reversed() {
-            if isOverlayVisible(entry) {
+            // Skip non-capturing overlays when finding focus target
+            if isOverlayVisible(entry) && !(entry.options?.nonCapturing == true) {
                 return entry
             }
         }
