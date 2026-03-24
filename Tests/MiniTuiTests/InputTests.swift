@@ -75,3 +75,39 @@ func inputYankPopCyclesKillRing() {
     input.handleInput("\u{001B}y") // Alt+Y yank-pop -> "one two three"
     #expect(input.getValue() == "one two three")
 }
+
+// MARK: - Wide character input tests
+
+@MainActor
+@Test("wide character input stores CJK text correctly")
+func wideCharInputStoresCorrectly() {
+    let input = Input()
+    input.setValue("你好世界") // 4 CJK chars = 8 visible columns
+    #expect(input.getValue() == "你好世界")
+}
+
+@MainActor
+@Test("wide character input supports cursor movement")
+func wideCharCursorMovement() {
+    let input = Input()
+    input.setValue("你好世界")
+    // Move to beginning with Ctrl+A, then delete forward with Ctrl+D
+    input.handleInput("\u{0001}") // Ctrl+A = beginning of line
+    input.handleInput("\u{0004}") // Ctrl+D = delete forward
+    #expect(input.getValue() == "好世界")
+}
+
+@MainActor
+@Test("wide character input handles mixed ASCII and CJK")
+func wideCharMixedContent() {
+    let input = Input()
+    input.setValue("hello你好world")
+    #expect(input.getValue() == "hello你好world")
+    // Kill line (Ctrl+U) should clear everything
+    input.handleInput("\u{0005}") // Ctrl+E = end of line
+    input.handleInput("\u{0015}") // Ctrl+U = kill line
+    #expect(input.getValue() == "")
+    // Yank it back
+    input.handleInput("\u{0019}") // Ctrl+Y = yank
+    #expect(input.getValue() == "hello你好world")
+}
