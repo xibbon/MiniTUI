@@ -152,8 +152,22 @@ private func isZeroWidthScalar(_ scalar: Unicode.Scalar) -> Bool {
     }
 }
 
+private func isRegionalIndicator(_ scalar: Unicode.Scalar) -> Bool {
+    return scalar.value >= 0x1F1E6 && scalar.value <= 0x1F1FF
+}
+
 private func isEmoji(_ grapheme: Character) -> Bool {
     let scalars = Array(grapheme.unicodeScalars)
+
+    // Regional indicator pairs (flag emoji like 🇺🇸) are always width 2.
+    if scalars.count == 2 && isRegionalIndicator(scalars[0]) && isRegionalIndicator(scalars[1]) {
+        return true
+    }
+    // A lone regional indicator is treated as width 2 for consistency.
+    if scalars.count == 1 && isRegionalIndicator(scalars[0]) {
+        return true
+    }
+
     if scalars.count > 2 {
         return true
     }

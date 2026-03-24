@@ -205,22 +205,28 @@ public final class Input: SystemCursorAware, KillBufferAware {
         var visibleText = ""
         var cursorDisplay = cursor
 
-        if value.count < availableWidth {
+        let totalWidth = visibleWidth(value)
+        if totalWidth < availableWidth {
             visibleText = value
         } else {
+            // Measure the visible width of text before the cursor for scroll calculations
+            let textBeforeCursor = value.prefixCharacters(cursor)
+            let cursorColWidth = visibleWidth(textBeforeCursor)
             let scrollWidth = cursor == value.count ? max(0, availableWidth - 1) : availableWidth
             let halfWidth = scrollWidth / 2
 
-            if cursor < halfWidth {
-                visibleText = value.prefixCharacters(scrollWidth)
+            if cursorColWidth < halfWidth {
+                visibleText = sliceByColumn(value, startCol: 0, length: scrollWidth)
                 cursorDisplay = cursor
-            } else if cursor > value.count - halfWidth {
-                visibleText = value.suffixCharacters(scrollWidth)
-                cursorDisplay = scrollWidth - (value.count - cursor)
+            } else if cursorColWidth > totalWidth - halfWidth {
+                let startCol = max(0, totalWidth - scrollWidth)
+                visibleText = sliceByColumn(value, startCol: startCol, length: scrollWidth)
+                cursorDisplay = visibleText.count - (value.count - cursor)
             } else {
-                let start = cursor - halfWidth
-                visibleText = value.substring(from: start, length: scrollWidth)
-                cursorDisplay = halfWidth
+                let startCol = max(0, cursorColWidth - halfWidth)
+                visibleText = sliceByColumn(value, startCol: startCol, length: scrollWidth)
+                let slicedBefore = sliceByColumn(value, startCol: startCol, length: cursorColWidth - startCol)
+                cursorDisplay = slicedBefore.count
             }
         }
 

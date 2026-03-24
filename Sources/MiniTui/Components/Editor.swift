@@ -392,6 +392,15 @@ public final class Editor: SystemCursorAware, KillBufferAware, EditorComponent {
                     setCursorCol(result.cursorCol)
                     cancelAutocomplete()
                     onChange?(getText())
+
+                    // Chain: after completing a slash command (e.g. "/model "),
+                    // re-trigger autocomplete for slash command arguments.
+                    let completedLine = state.lines[safe: state.cursorLine] ?? ""
+                    let beforeCursor = completedLine.prefixCharacters(state.cursorCol)
+                    let trimmed = beforeCursor.trimmingCharacters(in: .whitespaces)
+                    if trimmed.hasPrefix("/") && beforeCursor.hasSuffix(" ") {
+                        tryTriggerAutocomplete(explicitTab: false)
+                    }
                 }
                 return
             }
@@ -614,7 +623,7 @@ public final class Editor: SystemCursorAware, KillBufferAware, EditorComponent {
     private func insertTextAtCursorInternal(_ text: String) {
         guard !text.isEmpty else { return }
         historyIndex = -1
-        let normalized = text.replacingOccurrences(of: "\r\n", with: "\n").replacingOccurrences(of: "\r", with: "\n")
+        let normalized = normalizeText(text)
         let insertedLines = normalized.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
 
         let currentLine = state.lines[safe: state.cursorLine] ?? ""
@@ -1337,8 +1346,8 @@ public final class Editor: SystemCursorAware, KillBufferAware, EditorComponent {
         historyIndex = -1
         setLastAction(nil)
         pushUndoSnapshot()
-        let normalizedText = pastedText.replacingOccurrences(of: "\t", with: "    ")
-        let pastedLines = normalizedText.replacingOccurrences(of: "\r\n", with: "\n").replacingOccurrences(of: "\r", with: "\n").split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+        let normalizedText = normalizeText(pastedText)
+        let pastedLines = normalizedText.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
 
         if pastedLines.count > 10 {
             pasteCounter += 1
@@ -1352,9 +1361,9 @@ public final class Editor: SystemCursorAware, KillBufferAware, EditorComponent {
         }
 
         if pastedLines.count == 1 {
-            for char in pastedLines[0] {
-                insertCharacter(String(char), skipUndoSnapshot: true)
-            }
+            // Insert single-line paste atomically to avoid repeated autocomplete
+            // scans on special characters like @ in the pasted text.
+            insertTextAtCursorInternal(normalizedText)
             return
         }
         insertTextAtCursorInternal(normalizedText)
@@ -1391,8 +1400,16 @@ public final class Editor: SystemCursorAware, KillBufferAware, EditorComponent {
         }
     }
 
+    /// Normalize incoming text: unify line endings and expand tabs.
+    private func normalizeText(_ text: String) -> String {
+        return text
+            .replacingOccurrences(of: "\r\n", with: "\n")
+            .replacingOccurrences(of: "\r", with: "\n")
+            .replacingOccurrences(of: "\t", with: "    ")
+    }
+
     private func setTextInternal(_ text: String) {
-        let lines = text.replacingOccurrences(of: "\r\n", with: "\n").replacingOccurrences(of: "\r", with: "\n").split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+        let lines = normalizeText(text).split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
         state.lines = lines.isEmpty ? [""] : lines
         state.cursorLine = max(state.lines.count - 1, 0)
         setCursorCol(state.lines[safe: state.cursorLine]?.count ?? 0)
@@ -1527,7 +1544,15 @@ public final class Editor: SystemCursorAware, KillBufferAware, EditorComponent {
         guard isAutocompleting, let provider = autocompleteProvider else { return }
         if let suggestions = provider.getSuggestions(lines: state.lines, cursorLine: state.cursorLine, cursorCol: state.cursorCol), !suggestions.items.isEmpty {
             autocompletePrefix = suggestions.prefix
-            autocompleteList = SelectList(items: suggestions.items, maxVisible: autocompleteMaxVisible, theme: theme.selectList)
+            let list = SelectList(items: suggestions.items, maxVisible: autocompleteMaxVisible, theme: theme.selectList)
+            // Move highlight to the first item whose value starts with the typed prefix.
+            if !suggestions.prefix.isEmpty {
+                let lowered = suggestions.prefix.lowercased()
+                if let matchIndex = suggestions.items.firstIndex(where: { $0.value.lowercased().hasPrefix(lowered) }) {
+                    list.setSelectedIndex(matchIndex)
+                }
+            }
+            autocompleteList = list
         } else {
             cancelAutocomplete()
         }

@@ -351,9 +351,15 @@ public final class Markdown: Component {
         }
 
         if let blockquote = block as? BlockQuote {
-            let quoteLines = renderBlocks(Array(blockquote.children), width: width)
+            // Use renderBlocks (block-level traversal) so nested lists and code blocks
+            // inside blockquotes are rendered correctly, not just inline paragraphs.
+            // Reset style context to avoid parent style bleed-through into blockquote content.
+            let savedDefaultStylePrefix = defaultStylePrefix
+            defaultStylePrefix = ""
+            let quoteLines = renderBlocks(Array(blockquote.children), width: max(1, width - 2))
+            defaultStylePrefix = savedDefaultStylePrefix
             return quoteLines.map { line in
-                theme.quoteBorder("│ ") + theme.quote(theme.italic(line))
+                theme.quoteBorder("│ ") + "\u{001B}[0m" + theme.quote(line)
             }
         }
 
