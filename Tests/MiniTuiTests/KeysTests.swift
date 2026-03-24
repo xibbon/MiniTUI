@@ -297,6 +297,34 @@ struct MatchesKeyTests {
             #expect(matchesKey("\u{001B}[7$", "shift+home") == true)
         }
     }
+
+    // MARK: - Digit keybinding matching
+
+    @Suite("Digit keybinding matching")
+    struct DigitKeybindingTests {
+        @Test("should match plain digit key")
+        func matchPlainDigit() {
+            setKittyProtocolActive(false)
+            #expect(matchesKey("1", "1") == true)
+            #expect(matchesKey("2", "2") == true)
+            #expect(matchesKey("0", "0") == true)
+            #expect(matchesKey("9", "9") == true)
+        }
+
+        @Test("should not match digit with modifier when plain digit expected")
+        func noMatchDigitWithModifier() {
+            setKittyProtocolActive(false)
+            // A plain "1" keypress should not match "ctrl+1"
+            #expect(matchesKey("1", "ctrl+1") == false)
+        }
+
+        @Test("should not match wrong digit")
+        func noMatchWrongDigit() {
+            setKittyProtocolActive(false)
+            #expect(matchesKey("1", "2") == false)
+            #expect(matchesKey("0", "9") == false)
+        }
+    }
 }
 
 // MARK: - parseKey Tests
