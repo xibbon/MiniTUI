@@ -50,6 +50,31 @@ public struct SelectListTheme: Sendable {
     }
 }
 
+/// Layout options for controlling select list column sizing.
+public struct SelectListLayoutOptions: Sendable {
+    /// Minimum width for the primary (label/value) column.
+    public var minPrimaryColumnWidth: Int?
+    /// Maximum width for the primary (label/value) column.
+    public var maxPrimaryColumnWidth: Int?
+    /// Optional custom truncation function for the primary column.
+    /// Receives (text, maxWidth) and returns truncated text.
+    public var truncatePrimary: (@Sendable (String, Int) -> String)?
+
+    public init(
+        minPrimaryColumnWidth: Int? = nil,
+        maxPrimaryColumnWidth: Int? = nil,
+        truncatePrimary: (@Sendable (String, Int) -> String)? = nil
+    ) {
+        self.minPrimaryColumnWidth = minPrimaryColumnWidth
+        self.maxPrimaryColumnWidth = maxPrimaryColumnWidth
+        self.truncatePrimary = truncatePrimary
+    }
+}
+
+private let DEFAULT_PRIMARY_COLUMN_WIDTH = 32
+private let PRIMARY_COLUMN_GAP = 2
+private let MIN_DESCRIPTION_WIDTH = 10
+
 /// Scrollable list of selectable items.
 public final class SelectList: SystemCursorAware {
     private var items: [SelectItem]
@@ -59,6 +84,9 @@ public final class SelectList: SystemCursorAware {
     private let theme: SelectListTheme
     public var usesSystemCursor = false
 
+    /// Layout options for controlling column sizing.
+    public var layoutOptions: SelectListLayoutOptions?
+
     /// Called when an item is selected with Enter.
     public var onSelect: ((SelectItem) -> Void)?
     /// Called when the list is canceled (Escape or Ctrl+C).
@@ -67,11 +95,39 @@ public final class SelectList: SystemCursorAware {
     public var onSelectionChange: ((SelectItem) -> Void)?
 
     /// Create a list with items, max visible rows, and theme.
-    public init(items: [SelectItem], maxVisible: Int, theme: SelectListTheme) {
+    public init(items: [SelectItem], maxVisible: Int, theme: SelectListTheme, layoutOptions: SelectListLayoutOptions? = nil) {
         self.items = items
         self.filteredItems = items
         self.maxVisible = maxVisible
         self.theme = theme
+        self.layoutOptions = layoutOptions
+    }
+
+    /// Calculate the primary column width based on filtered items and layout options.
+    private func getPrimaryColumnWidth(availableWidth: Int) -> Int {
+        let layout = layoutOptions
+
+        let minBound = layout?.minPrimaryColumnWidth ?? 1
+        let maxBound = layout?.maxPrimaryColumnWidth ?? DEFAULT_PRIMARY_COLUMN_WIDTH
+
+        // Find widest item label
+        var widest = 0
+        for item in filteredItems {
+            let display = item.label.isEmpty ? item.value : item.label
+            let w = visibleWidth(display) + PRIMARY_COLUMN_GAP
+            if w > widest { widest = w }
+        }
+
+        // Clamp to bounds
+        var columnWidth = max(minBound, min(widest, maxBound))
+
+        // Ensure description has at least MIN_DESCRIPTION_WIDTH
+        let descSpace = availableWidth - columnWidth - 4 // prefix + margin
+        if descSpace < MIN_DESCRIPTION_WIDTH {
+            columnWidth = max(minBound, availableWidth - MIN_DESCRIPTION_WIDTH - 4)
+        }
+
+        return max(1, columnWidth)
     }
 
     /// Update the filter text and reset selection.
@@ -97,23 +153,32 @@ public final class SelectList: SystemCursorAware {
         let startIndex = max(0, min(selectedIndex - maxVisible / 2, filteredItems.count - maxVisible))
         let endIndex = min(startIndex + maxVisible, filteredItems.count)
 
+        let columnWidth = getPrimaryColumnWidth(availableWidth: width)
+
         for i in startIndex..<endIndex {
             let item = filteredItems[i]
             let isSelected = i == selectedIndex
 
             let line: String
+            let displayValue = item.label.isEmpty ? item.value : item.label
+
             if isSelected {
                 let prefix = "→ " + (usesSystemCursor ? systemCursorMarker : "")
                 let prefixWidth = visibleWidth("→ ")
                 let styledPrefix = theme.selectedPrefix(prefix)
-                let displayValue = item.label.isEmpty ? item.value : item.label
                 if let description = item.description, width > 40 {
-                    let maxValueWidth = min(30, width - prefixWidth - 4)
-                    let truncatedValue = truncateToWidth(displayValue, maxWidth: maxValueWidth, ellipsis: "")
-                    let spacing = String(repeating: " ", count: max(1, 32 - truncatedValue.count))
-                    let descriptionStart = prefixWidth + truncatedValue.count + spacing.count
+                    let maxValueWidth = min(columnWidth, width - prefixWidth - 4)
+                    let truncatedValue: String
+                    if let customTruncate = layoutOptions?.truncatePrimary {
+                        truncatedValue = customTruncate(displayValue, maxValueWidth)
+                    } else {
+                        truncatedValue = truncateToWidth(displayValue, maxWidth: maxValueWidth, ellipsis: "")
+                    }
+                    let truncatedWidth = visibleWidth(truncatedValue)
+                    let spacing = String(repeating: " ", count: max(1, columnWidth - truncatedWidth))
+                    let descriptionStart = prefixWidth + truncatedWidth + spacing.count
                     let remainingWidth = width - descriptionStart - 2
-                    if remainingWidth > 10 {
+                    if remainingWidth > MIN_DESCRIPTION_WIDTH {
                         let truncatedDesc = truncateToWidth(description, maxWidth: remainingWidth, ellipsis: "")
                         line = styledPrefix + theme.selectedText("\(truncatedValue)\(spacing)\(truncatedDesc)")
                     } else {
@@ -125,16 +190,21 @@ public final class SelectList: SystemCursorAware {
                     line = styledPrefix + theme.selectedText("\(truncateToWidth(displayValue, maxWidth: maxWidth, ellipsis: ""))")
                 }
             } else {
-                let displayValue = item.label.isEmpty ? item.value : item.label
                 let prefix = "  "
 
                 if let description = item.description, width > 40 {
-                    let maxValueWidth = min(30, width - prefix.count - 4)
-                    let truncatedValue = truncateToWidth(displayValue, maxWidth: maxValueWidth, ellipsis: "")
-                    let spacing = String(repeating: " ", count: max(1, 32 - truncatedValue.count))
-                    let descriptionStart = prefix.count + truncatedValue.count + spacing.count
+                    let maxValueWidth = min(columnWidth, width - prefix.count - 4)
+                    let truncatedValue: String
+                    if let customTruncate = layoutOptions?.truncatePrimary {
+                        truncatedValue = customTruncate(displayValue, maxValueWidth)
+                    } else {
+                        truncatedValue = truncateToWidth(displayValue, maxWidth: maxValueWidth, ellipsis: "")
+                    }
+                    let truncatedWidth = visibleWidth(truncatedValue)
+                    let spacing = String(repeating: " ", count: max(1, columnWidth - truncatedWidth))
+                    let descriptionStart = prefix.count + truncatedWidth + spacing.count
                     let remainingWidth = width - descriptionStart - 2
-                    if remainingWidth > 10 {
+                    if remainingWidth > MIN_DESCRIPTION_WIDTH {
                         let truncatedDesc = truncateToWidth(description, maxWidth: remainingWidth, ellipsis: "")
                         let descText = theme.description(spacing + truncatedDesc)
                         line = prefix + truncatedValue + descText
