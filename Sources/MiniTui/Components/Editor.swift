@@ -1,5 +1,99 @@
 import Foundation
 
+// MARK: - Paste marker system
+
+/// Regex matching paste markers like `[paste #1 +123 lines]` or `[paste #2 42 chars]`.
+private let pasteMarkerRegex = try! NSRegularExpression(
+    pattern: #"\[paste #(\d+)( (\+\d+ lines|\d+ chars))?\]"#
+)
+
+/// A text segment — either a single grapheme or an atomic paste marker.
+public struct TextSegment {
+    public let text: String
+    public let startIndex: Int
+    public let endIndex: Int
+    public let isAtomicMarker: Bool
+}
+
+/// Segment text into graphemes, but merge graphemes within valid paste markers into single atomic segments.
+public func segmentWithMarkers(_ text: String, validPasteIds: Set<Int>) -> [TextSegment] {
+    guard !validPasteIds.isEmpty else {
+        // Fast path: no pastes, return grapheme-by-grapheme
+        var segments: [TextSegment] = []
+        var idx = 0
+        for grapheme in text {
+            let s = String(grapheme)
+            segments.append(TextSegment(text: s, startIndex: idx, endIndex: idx + 1, isAtomicMarker: false))
+            idx += 1
+        }
+        return segments
+    }
+
+    // Find all valid paste marker ranges
+    let nsRange = NSRange(text.startIndex..<text.endIndex, in: text)
+    let matches = pasteMarkerRegex.matches(in: text, options: [], range: nsRange)
+
+    var markerRanges: [(charStart: Int, charEnd: Int)] = []
+    for match in matches {
+        guard let idRange = Range(match.range(at: 1), in: text) else { continue }
+        guard let pasteId = Int(text[idRange]) else { continue }
+        guard validPasteIds.contains(pasteId) else { continue }
+        guard let fullRange = Range(match.range, in: text) else { continue }
+
+        // Convert string range to character offset range
+        let charStart = text.distance(from: text.startIndex, to: fullRange.lowerBound)
+        let charEnd = text.distance(from: text.startIndex, to: fullRange.upperBound)
+        markerRanges.append((charStart, charEnd))
+    }
+
+    // Build segments
+    var segments: [TextSegment] = []
+    var charIdx = 0
+    var markerIdx = 0
+
+    for grapheme in text {
+        // Check if we're at the start of a marker
+        if markerIdx < markerRanges.count && charIdx == markerRanges[markerIdx].charStart {
+            let marker = markerRanges[markerIdx]
+            let start = text.index(text.startIndex, offsetBy: marker.charStart)
+            let end = text.index(text.startIndex, offsetBy: marker.charEnd)
+            let markerText = String(text[start..<end])
+            segments.append(TextSegment(text: markerText, startIndex: marker.charStart, endIndex: marker.charEnd, isAtomicMarker: true))
+            markerIdx += 1
+            // Skip graphemes inside the marker (we already emitted the whole marker)
+            charIdx += 1
+            continue
+        }
+
+        // Skip graphemes that are inside a current marker
+        if markerIdx > 0 && charIdx < markerRanges[markerIdx - 1].charEnd {
+            charIdx += 1
+            continue
+        }
+
+        // Normal grapheme
+        segments.append(TextSegment(text: String(grapheme), startIndex: charIdx, endIndex: charIdx + 1, isAtomicMarker: false))
+        charIdx += 1
+    }
+
+    return segments
+}
+
+/// Check if a substring at a given position is a valid paste marker.
+func isPasteMarker(_ text: String, at charIndex: Int, validPasteIds: Set<Int>) -> (length: Int, id: Int)? {
+    let startIdx = text.index(text.startIndex, offsetBy: charIndex, limitedBy: text.endIndex) ?? text.endIndex
+    guard startIdx < text.endIndex else { return nil }
+    let substring = String(text[startIdx...])
+    let nsRange = NSRange(substring.startIndex..<substring.endIndex, in: substring)
+    guard let match = pasteMarkerRegex.firstMatch(in: substring, options: [.anchored], range: nsRange) else { return nil }
+    guard let idRange = Range(match.range(at: 1), in: substring),
+          let pasteId = Int(substring[idRange]),
+          validPasteIds.contains(pasteId) else { return nil }
+    guard let fullRange = Range(match.range, in: substring) else { return nil }
+    let length = substring.distance(from: fullRange.lowerBound, to: fullRange.upperBound)
+    return (length: length, id: pasteId)
+}
+
 /// Theme configuration for the editor component.
 public struct EditorTheme: Sendable {
     /// Formatter for the border characters.
@@ -38,7 +132,9 @@ private func trimTrailingWhitespace(_ text: String) -> String {
 }
 
 /// Split a line into word-wrapped chunks with original index information.
-private func wordWrapLine(_ line: String, maxWidth: Int) -> [TextChunk] {
+/// When `preSegmented` is provided, paste markers within the segments are treated as
+/// indivisible tokens that cannot be broken across lines.
+private func wordWrapLine(_ line: String, maxWidth: Int, preSegmented: [TextSegment]? = nil) -> [TextChunk] {
     if line.isEmpty || maxWidth <= 0 {
         return [TextChunk(text: "", startIndex: 0, endIndex: 0)]
     }
@@ -748,10 +844,25 @@ public final class Editor: SystemCursorAware, KillBufferAware, EditorComponent {
         if state.cursorCol > 0 {
             pushUndoSnapshot()
             let line = state.lines[safe: state.cursorLine] ?? ""
-            let before = line.prefixCharacters(state.cursorCol - 1)
+
+            // Check if cursor is right after a paste marker — delete the whole marker
+            let validIds = Set(pastes.keys)
+            var deleteCount = 1
+            if !validIds.isEmpty {
+                // Scan backwards to see if the character before cursor is the end of a marker
+                for (start, end) in findPasteMarkerRanges(in: line, validIds: validIds) {
+                    if end == state.cursorCol {
+                        deleteCount = end - start
+                        break
+                    }
+                }
+            }
+
+            let deleteStart = max(0, state.cursorCol - deleteCount)
+            let before = line.prefixCharacters(deleteStart)
             let after = line.substring(from: state.cursorCol, length: max(0, line.count - state.cursorCol))
             state.lines[state.cursorLine] = before + after
-            setCursorCol(state.cursorCol - 1)
+            setCursorCol(deleteStart)
         } else if state.cursorLine > 0 {
             pushUndoSnapshot()
             let currentLine = state.lines[state.cursorLine]
@@ -1354,9 +1465,9 @@ public final class Editor: SystemCursorAware, KillBufferAware, EditorComponent {
             let pasteId = pasteCounter
             pastes[pasteId] = normalizedText
             let marker = "[paste #\(pasteId) +\(pastedLines.count) lines]"
-            for char in marker {
-                insertCharacter(String(char), skipUndoSnapshot: true)
-            }
+            // Insert marker atomically (not character-by-character) to avoid
+            // autocomplete triggering and to keep the marker as a single unit
+            insertTextAtCursorInternal(marker)
             return
         }
 
@@ -1367,6 +1478,23 @@ public final class Editor: SystemCursorAware, KillBufferAware, EditorComponent {
             return
         }
         insertTextAtCursorInternal(normalizedText)
+    }
+
+    /// Find all valid paste marker character ranges in a line.
+    private func findPasteMarkerRanges(in line: String, validIds: Set<Int>) -> [(start: Int, end: Int)] {
+        let nsRange = NSRange(line.startIndex..<line.endIndex, in: line)
+        let matches = pasteMarkerRegex.matches(in: line, options: [], range: nsRange)
+        var ranges: [(Int, Int)] = []
+        for match in matches {
+            guard let idRange = Range(match.range(at: 1), in: line),
+                  let pasteId = Int(line[idRange]),
+                  validIds.contains(pasteId),
+                  let fullRange = Range(match.range, in: line) else { continue }
+            let start = line.distance(from: line.startIndex, to: fullRange.lowerBound)
+            let end = line.distance(from: line.startIndex, to: fullRange.upperBound)
+            ranges.append((start, end))
+        }
+        return ranges
     }
 
     private func isEditorEmpty() -> Bool {

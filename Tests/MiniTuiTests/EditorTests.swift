@@ -834,3 +834,65 @@ struct StickyColumnTests {
         #expect(editor.getCursor().line == 0)
     }
 }
+
+// MARK: - Paste marker tests
+
+@Test("segmentWithMarkers returns atomic segments for valid paste markers")
+func segmentWithMarkersAtomicMarkers() {
+    let text = "before [paste #1 +5 lines] after"
+    let segments = segmentWithMarkers(text, validPasteIds: [1])
+
+    let atomicSegments = segments.filter { $0.isAtomicMarker }
+    #expect(atomicSegments.count == 1)
+    #expect(atomicSegments.first?.text == "[paste #1 +5 lines]")
+}
+
+@Test("segmentWithMarkers treats invalid paste IDs as normal graphemes")
+func segmentWithMarkersInvalidIds() {
+    let text = "[paste #99 +5 lines]"
+    let segments = segmentWithMarkers(text, validPasteIds: [1])
+
+    let atomicSegments = segments.filter { $0.isAtomicMarker }
+    #expect(atomicSegments.isEmpty)
+    // All characters should be individual grapheme segments
+    #expect(segments.count == text.count)
+}
+
+@Test("segmentWithMarkers handles multiple markers in same line")
+func segmentWithMarkersMultipleMarkers() {
+    let text = "[paste #1 +3 lines] text [paste #2 10 chars]"
+    let segments = segmentWithMarkers(text, validPasteIds: [1, 2])
+
+    let atomicSegments = segments.filter { $0.isAtomicMarker }
+    #expect(atomicSegments.count == 2)
+    #expect(atomicSegments[0].text == "[paste #1 +3 lines]")
+    #expect(atomicSegments[1].text == "[paste #2 10 chars]")
+}
+
+@Test("segmentWithMarkers with no valid IDs returns all graphemes")
+func segmentWithMarkersNoIds() {
+    let text = "hello"
+    let segments = segmentWithMarkers(text, validPasteIds: [])
+    #expect(segments.count == 5)
+    #expect(segments.allSatisfy { !$0.isAtomicMarker })
+}
+
+@MainActor
+@Test("getExpandedText replaces paste markers with stored content")
+func expandPasteMarkersReplacesContent() {
+    let editor = Editor(theme: defaultEditorTheme)
+    // Simulate a large paste (>10 lines) to trigger marker creation
+    let longText = (1...15).map { "line \($0)" }.joined(separator: "\n")
+    // Use bracket paste mode to trigger handlePaste
+    editor.handleInput("\u{001B}[200~\(longText)\u{001B}[201~")
+
+    let rawText = editor.getText()
+    let expandedText = editor.getExpandedText()
+
+    // Raw text should contain a paste marker
+    #expect(rawText.contains("[paste #"))
+    // Expanded text should contain the actual content
+    #expect(expandedText.contains("line 1"))
+    #expect(expandedText.contains("line 15"))
+    #expect(!expandedText.contains("[paste #"))
+}
