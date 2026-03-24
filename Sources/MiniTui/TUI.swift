@@ -774,7 +774,7 @@ public final class TUI: Container {
             fullRedrawCount += 1
             var buffer = "\u{001B}[?2026h"
             if clear {
-                buffer += "\u{001B}[3J\u{001B}[2J\u{001B}[H"
+                buffer += "\u{001B}[2J\u{001B}[H\u{001B}[3J"
             }
             for i in 0..<newLines.count {
                 if i > 0 { buffer += "\r\n" }

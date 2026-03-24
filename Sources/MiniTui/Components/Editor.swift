@@ -681,7 +681,9 @@ public final class Editor: SystemCursorAware, KillBufferAware, EditorComponent {
             let pattern = "\\[paste #\(pasteId)( (\\+\\d+ lines|\\d+ chars))?\\]"
             if let regex = try? NSRegularExpression(pattern: pattern, options: []) {
                 let range = NSRange(result.startIndex..<result.endIndex, in: result)
-                result = regex.stringByReplacingMatches(in: result, options: [], range: range, withTemplate: pasteContent)
+                // Escape $ in paste content to prevent regex template backreference interpretation
+                let escaped = NSRegularExpression.escapedTemplate(for: pasteContent)
+                result = regex.stringByReplacingMatches(in: result, options: [], range: range, withTemplate: escaped)
             }
         }
         return result
@@ -822,7 +824,8 @@ public final class Editor: SystemCursorAware, KillBufferAware, EditorComponent {
             let pattern = "\\[paste #\(pasteId)( (\\+\\d+ lines|\\d+ chars))?\\]"
             if let regex = try? NSRegularExpression(pattern: pattern, options: []) {
                 let range = NSRange(result.startIndex..<result.endIndex, in: result)
-                result = regex.stringByReplacingMatches(in: result, options: [], range: range, withTemplate: pasteContent)
+                let escaped = NSRegularExpression.escapedTemplate(for: pasteContent)
+                result = regex.stringByReplacingMatches(in: result, options: [], range: range, withTemplate: escaped)
             }
         }
 

@@ -216,16 +216,16 @@ public final class Input: SystemCursorAware, KillBufferAware {
             let halfWidth = scrollWidth / 2
 
             if cursorColWidth < halfWidth {
-                visibleText = sliceByColumn(value, startCol: 0, length: scrollWidth)
+                visibleText = sliceByColumn(value, startCol: 0, length: scrollWidth, strict: true)
                 cursorDisplay = cursor
             } else if cursorColWidth > totalWidth - halfWidth {
                 let startCol = max(0, totalWidth - scrollWidth)
-                visibleText = sliceByColumn(value, startCol: startCol, length: scrollWidth)
+                visibleText = sliceByColumn(value, startCol: startCol, length: scrollWidth, strict: true)
                 cursorDisplay = visibleText.count - (value.count - cursor)
             } else {
                 let startCol = max(0, cursorColWidth - halfWidth)
-                visibleText = sliceByColumn(value, startCol: startCol, length: scrollWidth)
-                let slicedBefore = sliceByColumn(value, startCol: startCol, length: cursorColWidth - startCol)
+                visibleText = sliceByColumn(value, startCol: startCol, length: scrollWidth, strict: true)
+                let slicedBefore = sliceByColumn(value, startCol: startCol, length: cursorColWidth - startCol, strict: true)
                 cursorDisplay = slicedBefore.count
             }
         }
