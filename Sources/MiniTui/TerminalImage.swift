@@ -117,38 +117,61 @@ public func setCellDimensions(_ dims: CellDimensions) {
 }
 
 /// Detect terminal capabilities from environment variables.
+///
+/// v0.67.6: hyperlinks default to `false` for unknown terminals, and are forced `false` under
+/// tmux/screen (including nested sessions where the outer terminal would otherwise advertise
+/// OSC 8). This prevents markdown link URLs from disappearing on terminals that silently
+/// swallow OSC 8 sequences.
 public func detectCapabilities() -> TerminalCapabilities {
     let env = ProcessInfo.processInfo.environment
     let termProgram = env["TERM_PROGRAM"]?.lowercased() ?? ""
     let term = env["TERM"]?.lowercased() ?? ""
     let colorTerm = env["COLORTERM"]?.lowercased() ?? ""
 
+    // tmux/screen swallow OSC 8 sequences silently. Force hyperlinks off even when the outer
+    // terminal would otherwise support them.
+    let isMultiplexed = term.hasPrefix("screen") || term.hasPrefix("tmux") ||
+        env["TMUX"] != nil || env["STY"] != nil
+
     if env["KITTY_WINDOW_ID"] != nil || termProgram == "kitty" || term.contains("kitty") {
-        return TerminalCapabilities(images: .kitty, trueColor: true, hyperlinks: true)
+        return TerminalCapabilities(images: .kitty, trueColor: true, hyperlinks: !isMultiplexed)
     }
 
     if termProgram == "ghostty" || term.contains("ghostty") || env["GHOSTTY_RESOURCES_DIR"] != nil {
-        return TerminalCapabilities(images: .kitty, trueColor: true, hyperlinks: true)
+        return TerminalCapabilities(images: .kitty, trueColor: true, hyperlinks: !isMultiplexed)
     }
 
     if env["WEZTERM_PANE"] != nil || termProgram == "wezterm" || term.contains("wezterm") {
-        return TerminalCapabilities(images: .kitty, trueColor: true, hyperlinks: true)
+        return TerminalCapabilities(images: .kitty, trueColor: true, hyperlinks: !isMultiplexed)
     }
 
     if env["ITERM_SESSION_ID"] != nil || termProgram == "iterm.app" {
-        return TerminalCapabilities(images: .iterm2, trueColor: true, hyperlinks: true)
+        return TerminalCapabilities(images: .iterm2, trueColor: true, hyperlinks: !isMultiplexed)
     }
 
     if termProgram == "vscode" {
-        return TerminalCapabilities(images: nil, trueColor: true, hyperlinks: true)
+        return TerminalCapabilities(images: nil, trueColor: true, hyperlinks: !isMultiplexed)
     }
 
     if termProgram == "alacritty" {
-        return TerminalCapabilities(images: nil, trueColor: true, hyperlinks: true)
+        return TerminalCapabilities(images: nil, trueColor: true, hyperlinks: !isMultiplexed)
     }
 
     let trueColor = colorTerm == "truecolor" || colorTerm == "24bit"
-    return TerminalCapabilities(images: nil, trueColor: trueColor, hyperlinks: true)
+    // Unknown terminal: don't claim OSC 8 support to avoid silent link drops.
+    return TerminalCapabilities(images: nil, trueColor: trueColor, hyperlinks: false)
+}
+
+/// v0.67.6: test override for terminal capabilities. Pass `nil` to reset to detection.
+public func setCapabilities(_ capabilities: TerminalCapabilities?) {
+    cachedCapabilities.set(capabilities)
+}
+
+/// v0.67.6: build an OSC 8 hyperlink escape sequence wrapping `text` with the given URL.
+/// Caller should consult `getCapabilities().hyperlinks` before using this — the helper itself
+/// always emits the escape so it can be unit-tested independently of capability detection.
+public func hyperlink(_ text: String, url: String) -> String {
+    "\u{001B}]8;;\(url)\u{001B}\\\(text)\u{001B}]8;;\u{001B}\\"
 }
 
 /// Return cached terminal capabilities, detecting once if needed.

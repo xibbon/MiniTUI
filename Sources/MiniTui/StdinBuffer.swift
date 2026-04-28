@@ -4,6 +4,42 @@ private let esc = "\u{001B}"
 private let bracketedPasteStart = "\u{001B}[200~"
 private let bracketedPasteEnd = "\u{001B}[201~"
 
+/// v0.70.1: decode CSI-u Ctrl+letter sequences inside bracketed-paste payloads.
+///
+/// When Kitty keyboard protocol is active and the user pastes text that contains a Ctrl+letter
+/// sequence (e.g., the bytes `\x1B[99;5u` for Ctrl+c), the terminal forwards the escape literally
+/// inside the bracketed paste. Without this fix, those escapes become visible characters in the
+/// editor (`["` etc.). The upstream fix decodes printable Kitty Ctrl+letter sequences to their
+/// printable lowercase character. Other escape sequences inside the paste are passed through
+/// unchanged so binary content / unusual paste payloads aren't lossy.
+private let pastedCtrlLetterRegex: NSRegularExpression = {
+    // \x1B[<codepoint>;<modifier>u where codepoint is a lowercase ASCII letter (97–122)
+    // and modifier == 5 (Ctrl alone, modifier_value = ctrl_bit + 1 = 4 + 1 = 5).
+    return try! NSRegularExpression(pattern: "\\x1B\\[(9[7-9]|1[01][0-9]|12[0-2]);5u")
+}()
+
+private func decodeCtrlLetterEscapesInPaste(_ payload: String) -> String {
+    let nsRange = NSRange(payload.startIndex..<payload.endIndex, in: payload)
+    let matches = pastedCtrlLetterRegex.matches(in: payload, options: [], range: nsRange)
+    guard !matches.isEmpty else { return payload }
+
+    var result = ""
+    var cursor = payload.startIndex
+    for match in matches {
+        guard let range = Range(match.range, in: payload),
+              let codepointRange = Range(match.range(at: 1), in: payload),
+              let codepoint = Int(payload[codepointRange]),
+              let scalar = UnicodeScalar(codepoint) else {
+            continue
+        }
+        result.append(contentsOf: payload[cursor..<range.lowerBound])
+        result.append(Character(scalar))
+        cursor = range.upperBound
+    }
+    result.append(contentsOf: payload[cursor...])
+    return result
+}
+
 private enum SequenceStatus {
     case complete
     case incomplete
@@ -260,7 +296,7 @@ public final class StdinBuffer {
                 pasteMode = false
                 pasteBuffer = ""
 
-                emit(.paste, payload: pastedContent)
+                emit(.paste, payload: decodeCtrlLetterEscapesInPaste(pastedContent))
 
                 if !remaining.isEmpty {
                     process(remaining)
@@ -290,7 +326,7 @@ public final class StdinBuffer {
                 pasteMode = false
                 pasteBuffer = ""
 
-                emit(.paste, payload: pastedContent)
+                emit(.paste, payload: decodeCtrlLetterEscapesInPaste(pastedContent))
 
                 if !remaining.isEmpty {
                     process(remaining)

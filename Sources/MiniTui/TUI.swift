@@ -161,6 +161,8 @@ public final class TUI: Container {
     private var maxLinesRendered = 0
     private var fullRedrawCount = 0
     private var overlayStack: [OverlayEntry] = []
+    /// v0.69.0 + v0.70.0: keep-alive timer for OSC 9;4 progress indicator.
+    private var progressTimer: DispatchSourceTimer?
 
     private final class LineOrigins {
         var values: [String]
@@ -291,6 +293,29 @@ public final class TUI: Container {
         }
     }
 
+    /// v0.69.0 + v0.70.0: toggle the OSC 9;4 progress indicator. While active, the indicator
+    /// is refreshed periodically so terminals like Ghostty don't time it out during long runs.
+    /// Pass `false` to clear; idempotent.
+    public func setProgress(_ active: Bool) {
+        if active {
+            if progressTimer != nil { return }
+            terminal.setProgress(true)
+            let timer = DispatchSource.makeTimerSource(queue: DispatchQueue.main)
+            // Refresh every ~5s. Long enough to avoid spamming the terminal, short enough that
+            // Ghostty (which expires the indicator on idle) keeps showing the activity.
+            timer.schedule(deadline: .now() + .seconds(5), repeating: .seconds(5))
+            timer.setEventHandler { [weak self] in
+                self?.terminal.setProgress(true)
+            }
+            timer.resume()
+            progressTimer = timer
+        } else {
+            progressTimer?.cancel()
+            progressTimer = nil
+            terminal.setProgress(false)
+        }
+    }
+
     /// Clear stale scrollback state, useful when switching sessions.
     public func clearScrollback() {
         previousLines = []
@@ -323,6 +348,11 @@ public final class TUI: Container {
     /// Stop terminal input and restore terminal state.
     public func stop() {
         stopped = true
+        // Clear OSC 9;4 progress indicator on shutdown so the host terminal doesn't keep
+        // showing activity after pi exits.
+        progressTimer?.cancel()
+        progressTimer = nil
+        terminal.setProgress(false)
         if !previousLines.isEmpty {
             let targetRow = previousLines.count
             let lineDiff = targetRow - cursorRow

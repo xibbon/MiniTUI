@@ -41,6 +41,16 @@ public protocol Terminal: AnyObject {
     func clearScreen()
     /// Set the terminal window title.
     func setTitle(_ title: String)
+    /// v0.69.0: turn the OSC 9;4 progress indicator on or off (e.g., iTerm2 / WezTerm /
+    /// Windows Terminal / Kitty tab-bar activity indicators). Implementations that don't
+    /// support OSC 9;4 should treat this as a no-op.
+    func setProgress(_ active: Bool)
+}
+
+public extension Terminal {
+    /// Default no-op so existing Terminal implementations don't break when callers invoke
+    /// `setProgress`. Production terminals override.
+    func setProgress(_ active: Bool) {}
 }
 
 /// Terminal backed by stdin/stdout with raw mode enabled.
@@ -323,6 +333,18 @@ public final class ProcessTerminal: Terminal {
     /// Set the terminal window title.
     public func setTitle(_ title: String) {
         write("\u{001B}]0;\(title)\u{0007}")
+    }
+
+    /// v0.69.0: emit OSC 9;4 to toggle terminal progress indicator.
+    /// State 1 = "indeterminate" (active), state 0 = "remove" (inactive).
+    /// Supported by iTerm2, WezTerm, Windows Terminal, Kitty (and Ghostty after v0.70.0
+    /// keep-alive workaround). Other terminals ignore.
+    public func setProgress(_ active: Bool) {
+        if active {
+            write("\u{001B}]9;4;1\u{001B}\\")
+        } else {
+            write("\u{001B}]9;4;0\u{001B}\\")
+        }
     }
 
     private func terminalSize() -> (columns: Int, rows: Int) {

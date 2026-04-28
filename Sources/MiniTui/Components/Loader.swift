@@ -1,9 +1,26 @@
 import Foundation
 
+/// v0.68.0: customizable working-indicator frames + animation interval. Pass `frames: [single]`
+/// for a static indicator, an empty `frames` array for a hidden indicator (caller renders its
+/// own working state), or omit to keep the default Braille spinner. `intervalMs` defaults to 80.
+public struct LoaderIndicatorOptions: Sendable {
+    public var frames: [String]?
+    public var intervalMs: Int?
+
+    public init(frames: [String]? = nil, intervalMs: Int? = nil) {
+        self.frames = frames
+        self.intervalMs = intervalMs
+    }
+}
+
 /// Animated spinner with a message that re-renders on a timer.
 @MainActor
 public class Loader: Text {
-    private let frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+    private static let defaultFrames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+    private static let defaultIntervalMs = 80
+
+    private var frames: [String] = Loader.defaultFrames
+    private var intervalMs: Int = Loader.defaultIntervalMs
     private var currentFrame = 0
     private var timer: DispatchSourceTimer?
     private weak var ui: TUI?
@@ -35,15 +52,9 @@ public class Loader: Text {
     /// Start the animation timer.
     public func start() {
         updateDisplay()
-        let timer = DispatchSource.makeTimerSource(queue: DispatchQueue.main)
-        timer.schedule(deadline: .now(), repeating: .milliseconds(80))
-        timer.setEventHandler { [weak self] in
-            guard let self else { return }
-            self.currentFrame = (self.currentFrame + 1) % self.frames.count
-            self.updateDisplay()
+        if frames.count > 1 {
+            scheduleTimer()
         }
-        timer.resume()
-        self.timer = timer
     }
 
     /// Stop the animation timer.
@@ -58,7 +69,48 @@ public class Loader: Text {
         updateDisplay()
     }
 
+    /// v0.68.0: replace the loader frames and animation interval at runtime.
+    /// - `options.frames == nil` keeps existing frames; `[]` hides the indicator entirely;
+    ///   single-element array becomes a static indicator (no timer).
+    /// - `options.intervalMs == nil` keeps existing interval.
+    /// v0.68.0 also: custom frames render verbatim (no theme accent override) — extension
+    /// authors own coloring when they customize. Apply by passing identity color closures
+    /// via the standard initializer; this method only changes frames/interval.
+    public func setIndicator(_ options: LoaderIndicatorOptions) {
+        if let newFrames = options.frames {
+            frames = newFrames
+            currentFrame = 0
+        }
+        if let newInterval = options.intervalMs {
+            intervalMs = newInterval
+        }
+        timer?.cancel()
+        timer = nil
+        updateDisplay()
+        if frames.count > 1 {
+            scheduleTimer()
+        }
+    }
+
+    private func scheduleTimer() {
+        let timer = DispatchSource.makeTimerSource(queue: DispatchQueue.main)
+        timer.schedule(deadline: .now() + .milliseconds(intervalMs), repeating: .milliseconds(intervalMs))
+        timer.setEventHandler { [weak self] in
+            guard let self else { return }
+            self.currentFrame = (self.currentFrame + 1) % self.frames.count
+            self.updateDisplay()
+        }
+        timer.resume()
+        self.timer = timer
+    }
+
     private func updateDisplay() {
+        if frames.isEmpty {
+            // Hidden indicator: render only the message (callers own working-state UI).
+            setText(messageColorFn(message))
+            ui?.requestRender()
+            return
+        }
         let frame = frames[currentFrame]
         setText("\(spinnerColorFn(frame)) \(messageColorFn(message))")
         ui?.requestRender()

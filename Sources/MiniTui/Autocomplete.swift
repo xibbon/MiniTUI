@@ -150,13 +150,23 @@ public struct SlashCommand {
     public let name: String
     /// Optional description shown in the list.
     public let description: String?
+    /// v0.67.6: optional argument hint shown before the description in the autocomplete dropdown.
+    /// Convention: `<required>` for required args, `[optional]` for optional args.
+    /// Example: `argumentHint: "<path> [--force]"`.
+    public let argumentHint: String?
     /// Optional provider for argument completions.
     public let getArgumentCompletions: ((String) -> [AutocompleteItem]?)?
 
     /// Create a slash command.
-    public init(name: String, description: String? = nil, getArgumentCompletions: ((String) -> [AutocompleteItem]?)? = nil) {
+    public init(
+        name: String,
+        description: String? = nil,
+        argumentHint: String? = nil,
+        getArgumentCompletions: ((String) -> [AutocompleteItem]?)? = nil
+    ) {
         self.name = name
         self.description = description
+        self.argumentHint = argumentHint
         self.getArgumentCompletions = getArgumentCompletions
     }
 }
@@ -550,8 +560,14 @@ public final class CombinedAutocompleteProvider: AutocompleteProvider {
             score = 80
         } else if lowerFileName.contains(lowerQuery) {
             score = 50
-        } else if filePath.lowercased().contains(lowerQuery) {
-            score = 30
+        } else {
+            // v0.68.0: only fall back to full-path matching when the query itself contains a
+            // path separator (e.g. `dir/file`). Plain queries like `plan` should not score
+            // against parent worktree/cwd path fragments — that crowds out real results when
+            // the cwd happens to contain the query text.
+            if lowerQuery.contains("/"), filePath.lowercased().contains(lowerQuery) {
+                score = 30
+            }
         }
 
         if isDirectory && score > 0 {

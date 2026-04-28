@@ -291,6 +291,8 @@ private enum Modifiers {
     static let shift = 1
     static let alt = 2
     static let ctrl = 4
+    /// v0.67.2: Kitty CSI-u super modifier bit.
+    static let superKey = 8
 }
 
 private let lockMask = 64 + 128
@@ -497,6 +499,8 @@ private struct ParsedKeyId {
     let ctrl: Bool
     let shift: Bool
     let alt: Bool
+    /// v0.67.2: Kitty `super` modifier bit (e.g., Cmd on macOS in Kitty).
+    let superKey: Bool
 }
 
 private func parseKeyId(_ keyId: String) -> ParsedKeyId? {
@@ -506,7 +510,8 @@ private func parseKeyId(_ keyId: String) -> ParsedKeyId? {
         key: key,
         ctrl: parts.contains("ctrl"),
         shift: parts.contains("shift"),
-        alt: parts.contains("alt")
+        alt: parts.contains("alt"),
+        superKey: parts.contains("super") || parts.contains("cmd") || parts.contains("meta")
     )
 }
 
@@ -518,12 +523,20 @@ public func matchesKey(_ data: String, _ keyId: KeyId) -> Bool {
     let ctrl = parsed.ctrl
     let shift = parsed.shift
     let alt = parsed.alt
+    let superKey = parsed.superKey
 
     var modifier = 0
     if shift { modifier |= Modifiers.shift }
     if alt { modifier |= Modifiers.alt }
     if ctrl { modifier |= Modifiers.ctrl }
+    // v0.67.2: super (bit 8) — only honored under Kitty keyboard protocol.
+    if superKey { modifier |= 8 }
     let kittyActive = isKittyProtocolActive()
+    // Super-modified bindings can only ever match through the Kitty parser,
+    // since legacy escape sequences cannot encode super.
+    if superKey && !kittyActive {
+        return false
+    }
 
     switch key {
     case "escape", "esc":
