@@ -361,7 +361,32 @@ struct StdinBufferTests {
             }
 
             buffer.process("\u{001B}[97ua")
-            #expect(emittedSequences == ["\u{001B}[97u", "a"])
+            #expect(emittedSequences == ["\u{001B}[97u"])
+        }
+
+        @Test("should drop duplicate raw printable after Kitty sequence across chunks")
+        func kittyDuplicatePrintableAcrossChunks() {
+            var emittedSequences: [String] = []
+            let buffer = StdinBuffer(options: StdinBufferOptions(timeout: 0.01))
+            _ = buffer.on(.data) { sequence in
+                emittedSequences.append(sequence)
+            }
+
+            buffer.process("\u{001B}[64u")
+            buffer.process("@")
+            #expect(emittedSequences == ["\u{001B}[64u"])
+        }
+
+        @Test("should split ESC ESC CSI into standalone ESC and CSI sequence")
+        func splitEscEscCsi() {
+            var emittedSequences: [String] = []
+            let buffer = StdinBuffer(options: StdinBufferOptions(timeout: 0.01))
+            _ = buffer.on(.data) { sequence in
+                emittedSequences.append(sequence)
+            }
+
+            buffer.process("\u{001B}\u{001B}[27;129:3u")
+            #expect(emittedSequences == ["\u{001B}", "\u{001B}[27;129:3u"])
         }
 
         @Test("should handle rapid typing simulation with Kitty protocol")

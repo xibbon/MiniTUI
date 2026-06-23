@@ -91,6 +91,7 @@ private func walkDirectoryWithFd(
         "f",
         "--type",
         "d",
+        "--follow",
         "--full-path",
         "--hidden",
         "--exclude",
@@ -136,7 +137,11 @@ private func walkDirectoryWithFd(
         if normalized == ".git" || normalized.hasPrefix(".git/") || normalized.contains("/.git/") {
             return nil
         }
-        let isDirectory = line.hasSuffix("/")
+        var isDirFlag: ObjCBool = false
+        let fullPath = joinPath(baseDir, normalized)
+        let isDirectory = FileManager.default.fileExists(atPath: fullPath, isDirectory: &isDirFlag)
+            ? isDirFlag.boolValue
+            : line.hasSuffix("/")
         return (path: line, isDirectory: isDirectory)
     }
 }

@@ -516,13 +516,20 @@ private func matchesKittySequence(_ data: String, expectedCodepoint: Int, expect
 }
 
 private func matchesModifyOtherKeys(_ data: String, expectedKeycode: Int, expectedModifier: Int) -> Bool {
-    if let match = matchRegex("^\\x1B\\[27;(\\d+);(\\d+)~$", in: data) {
-        let modValue = Int(match[1]) ?? 1
-        let keycode = Int(match[2]) ?? 0
-        let actualMod = modValue - 1
-        return keycode == expectedKeycode && actualMod == expectedModifier
-    }
-    return false
+    guard let parsed = parseModifyOtherKeysSequence(data) else { return false }
+    return parsed.codepoint == expectedKeycode && parsed.modifier == expectedModifier
+}
+
+private struct ParsedModifyOtherKeysSequence {
+    let codepoint: Int
+    let modifier: Int
+}
+
+private func parseModifyOtherKeysSequence(_ data: String) -> ParsedModifyOtherKeysSequence? {
+    guard let match = matchRegex("^\\x1B\\[27;(\\d+);(\\d+)~$", in: data) else { return nil }
+    let modValue = Int(match[1]) ?? 1
+    let codepoint = Int(match[2]) ?? 0
+    return ParsedModifyOtherKeysSequence(codepoint: codepoint, modifier: modValue - 1)
 }
 
 private func rawCtrlChar(_ key: String) -> String? {
@@ -583,7 +590,9 @@ public func matchesKey(_ data: String, _ keyId: KeyId) -> Bool {
     switch key {
     case "escape", "esc":
         if modifier != 0 { return false }
-        return data == "\u{001B}" || matchesKittySequence(data, expectedCodepoint: Codepoints.escape, expectedModifier: 0)
+        return data == "\u{001B}"
+            || matchesKittySequence(data, expectedCodepoint: Codepoints.escape, expectedModifier: 0)
+            || matchesModifyOtherKeys(data, expectedKeycode: Codepoints.escape, expectedModifier: 0)
     case "space":
         if !kittyActive {
             if ctrl && !alt && !shift && data == "\u{0000}" {
@@ -594,9 +603,12 @@ public func matchesKey(_ data: String, _ keyId: KeyId) -> Bool {
             }
         }
         if modifier == 0 {
-            return data == " " || matchesKittySequence(data, expectedCodepoint: Codepoints.space, expectedModifier: 0)
+            return data == " "
+                || matchesKittySequence(data, expectedCodepoint: Codepoints.space, expectedModifier: 0)
+                || matchesModifyOtherKeys(data, expectedKeycode: Codepoints.space, expectedModifier: 0)
         }
         return matchesKittySequence(data, expectedCodepoint: Codepoints.space, expectedModifier: modifier)
+            || matchesModifyOtherKeys(data, expectedKeycode: Codepoints.space, expectedModifier: modifier)
     case "tab":
         if shift && !ctrl && !alt {
             return data == "\u{001B}[Z"
@@ -604,9 +616,12 @@ public func matchesKey(_ data: String, _ keyId: KeyId) -> Bool {
                 || matchesKittySequence(data, expectedCodepoint: Codepoints.tab, expectedModifier: Modifiers.shift)
         }
         if modifier == 0 {
-            return data == "\t" || matchesKittySequence(data, expectedCodepoint: Codepoints.tab, expectedModifier: 0)
+            return data == "\t"
+                || matchesKittySequence(data, expectedCodepoint: Codepoints.tab, expectedModifier: 0)
+                || matchesModifyOtherKeys(data, expectedKeycode: Codepoints.tab, expectedModifier: 0)
         }
         return matchesKittySequence(data, expectedCodepoint: Codepoints.tab, expectedModifier: modifier)
+            || matchesModifyOtherKeys(data, expectedKeycode: Codepoints.tab, expectedModifier: modifier)
     case "enter", "return":
         if shift && !ctrl && !alt {
             if matchesKittySequence(data, expectedCodepoint: Codepoints.enter, expectedModifier: Modifiers.shift)
@@ -642,9 +657,11 @@ public func matchesKey(_ data: String, _ keyId: KeyId) -> Bool {
                 || data == "\u{001B}OM"
                 || matchesKittySequence(data, expectedCodepoint: Codepoints.enter, expectedModifier: 0)
                 || matchesKittySequence(data, expectedCodepoint: Codepoints.kpEnter, expectedModifier: 0)
+                || matchesModifyOtherKeys(data, expectedKeycode: Codepoints.enter, expectedModifier: 0)
         }
         return matchesKittySequence(data, expectedCodepoint: Codepoints.enter, expectedModifier: modifier)
             || matchesKittySequence(data, expectedCodepoint: Codepoints.kpEnter, expectedModifier: modifier)
+            || matchesModifyOtherKeys(data, expectedKeycode: Codepoints.enter, expectedModifier: modifier)
     case "backspace":
         let wtLocal = isWindowsTerminalLocal()
         if alt && !ctrl && !shift {
@@ -652,19 +669,23 @@ public func matchesKey(_ data: String, _ keyId: KeyId) -> Bool {
             // \x1b + 0x08: in WT local this is alt+ctrl+backspace, not alt+backspace
             if !wtLocal && data == "\u{001B}\u{0008}" { return true }
             return matchesKittySequence(data, expectedCodepoint: Codepoints.backspace, expectedModifier: Modifiers.alt)
+                || matchesModifyOtherKeys(data, expectedKeycode: Codepoints.backspace, expectedModifier: Modifiers.alt)
         }
         if ctrl && !alt && !shift {
             // In Windows Terminal (local), raw 0x08 means Ctrl+Backspace
             if wtLocal && data == "\u{0008}" { return true }
             return matchesKittySequence(data, expectedCodepoint: Codepoints.backspace, expectedModifier: Modifiers.ctrl)
+                || matchesModifyOtherKeys(data, expectedKeycode: Codepoints.backspace, expectedModifier: Modifiers.ctrl)
         }
         if modifier == 0 {
             if data == "\u{007F}" { return true }
             // 0x08: plain Backspace only when NOT in Windows Terminal local session
             if !wtLocal && data == "\u{0008}" { return true }
             return matchesKittySequence(data, expectedCodepoint: Codepoints.backspace, expectedModifier: 0)
+                || matchesModifyOtherKeys(data, expectedKeycode: Codepoints.backspace, expectedModifier: 0)
         }
         return matchesKittySequence(data, expectedCodepoint: Codepoints.backspace, expectedModifier: modifier)
+            || matchesModifyOtherKeys(data, expectedKeycode: Codepoints.backspace, expectedModifier: modifier)
     case "insert":
         if modifier == 0 {
             if let seqs = legacyKeySequences["insert"], matchesLegacySequence(data, seqs) {
@@ -830,15 +851,20 @@ public func matchesKey(_ data: String, _ keyId: KeyId) -> Bool {
                     if data == raw { return true }
                 }
                 return matchesKittySequence(data, expectedCodepoint: codepoint, expectedModifier: Modifiers.ctrl)
+                    || matchesModifyOtherKeys(data, expectedKeycode: codepoint, expectedModifier: Modifiers.ctrl)
             }
 
             if ctrl && shift && !alt {
+                let shiftedCodepoint = Int(key.uppercased().unicodeScalars.first?.value ?? scalar.value)
                 return matchesKittySequence(data, expectedCodepoint: codepoint, expectedModifier: Modifiers.shift + Modifiers.ctrl)
+                    || matchesModifyOtherKeys(data, expectedKeycode: shiftedCodepoint, expectedModifier: Modifiers.shift + Modifiers.ctrl)
             }
 
             if shift && !ctrl && !alt {
                 if isLetter, data == key.uppercased() { return true }
+                let shiftedCodepoint = Int(key.uppercased().unicodeScalars.first?.value ?? scalar.value)
                 return matchesKittySequence(data, expectedCodepoint: codepoint, expectedModifier: Modifiers.shift)
+                    || matchesModifyOtherKeys(data, expectedKeycode: shiftedCodepoint, expectedModifier: Modifiers.shift)
             }
 
             if ctrl && alt && !shift {
@@ -846,22 +872,89 @@ public func matchesKey(_ data: String, _ keyId: KeyId) -> Bool {
                     return true
                 }
                 return matchesKittySequence(data, expectedCodepoint: codepoint, expectedModifier: Modifiers.ctrl + Modifiers.alt)
+                    || matchesModifyOtherKeys(data, expectedKeycode: codepoint, expectedModifier: Modifiers.ctrl + Modifiers.alt)
             }
 
             if alt && !ctrl && !shift {
                 if !kittyActive && isLetter && data == "\u{001B}\(key)" { return true }
                 return matchesKittySequence(data, expectedCodepoint: codepoint, expectedModifier: Modifiers.alt)
+                    || matchesModifyOtherKeys(data, expectedKeycode: codepoint, expectedModifier: Modifiers.alt)
             }
 
             if modifier != 0 {
                 return matchesKittySequence(data, expectedCodepoint: codepoint, expectedModifier: modifier)
+                    || matchesModifyOtherKeys(data, expectedKeycode: codepoint, expectedModifier: modifier)
             }
 
-            return data == key || matchesKittySequence(data, expectedCodepoint: codepoint, expectedModifier: 0)
+            return data == key
+                || matchesKittySequence(data, expectedCodepoint: codepoint, expectedModifier: 0)
+                || matchesModifyOtherKeys(data, expectedKeycode: codepoint, expectedModifier: 0)
         }
     }
 
     return false
+}
+
+private func formatParsedKey(codepoint: Int, modifier: Int) -> KeyId? {
+    let effectiveMod = modifier & ~lockMask
+    var mods: [String] = []
+    if (effectiveMod & Modifiers.shift) != 0 { mods.append("shift") }
+    if (effectiveMod & Modifiers.ctrl) != 0 { mods.append("ctrl") }
+    if (effectiveMod & Modifiers.alt) != 0 { mods.append("alt") }
+
+    let normalizedCodepoint = normalizeKittyFunctionalCodepoint(codepoint)
+    let keyName: String?
+    switch normalizedCodepoint {
+    case Codepoints.escape:
+        keyName = "escape"
+    case Codepoints.tab:
+        keyName = "tab"
+    case Codepoints.enter, Codepoints.kpEnter:
+        keyName = "enter"
+    case Codepoints.space:
+        keyName = "space"
+    case Codepoints.backspace:
+        keyName = "backspace"
+    case FunctionalCodepoints.delete:
+        keyName = "delete"
+    case FunctionalCodepoints.insert:
+        keyName = "insert"
+    case FunctionalCodepoints.home:
+        keyName = "home"
+    case FunctionalCodepoints.end:
+        keyName = "end"
+    case FunctionalCodepoints.pageUp:
+        keyName = "pageUp"
+    case FunctionalCodepoints.pageDown:
+        keyName = "pageDown"
+    case ArrowCodepoints.up:
+        keyName = "up"
+    case ArrowCodepoints.down:
+        keyName = "down"
+    case ArrowCodepoints.left:
+        keyName = "left"
+    case ArrowCodepoints.right:
+        keyName = "right"
+    default:
+        if normalizedCodepoint >= 65 && normalizedCodepoint <= 90,
+           let scalar = UnicodeScalar(normalizedCodepoint + 32) {
+            keyName = String(scalar)
+        } else if normalizedCodepoint >= 97 && normalizedCodepoint <= 122,
+                  let scalar = UnicodeScalar(normalizedCodepoint) {
+            keyName = String(scalar)
+        } else if normalizedCodepoint >= 48 && normalizedCodepoint <= 57,
+                  let scalar = UnicodeScalar(normalizedCodepoint) {
+            keyName = String(scalar)
+        } else if let scalar = UnicodeScalar(normalizedCodepoint) {
+            let symbol = String(scalar)
+            keyName = symbolKeys.contains(symbol) ? symbol : nil
+        } else {
+            keyName = nil
+        }
+    }
+
+    guard let keyName else { return nil }
+    return mods.isEmpty ? keyName : mods.joined(separator: "+") + "+" + keyName
 }
 
 /// Parse input data into a key identifier, if recognized.
@@ -943,6 +1036,10 @@ public func parseKey(_ data: String) -> KeyId? {
         }
     }
 
+    if let modifyOtherKeys = parseModifyOtherKeysSequence(data) {
+        return formatParsedKey(codepoint: modifyOtherKeys.codepoint, modifier: modifyOtherKeys.modifier)
+    }
+
     // Mode-aware legacy sequences
     // When Kitty protocol is active, ambiguous sequences are interpreted as custom terminal mappings:
     // - \x1b\r = shift+enter (Kitty mapping), not alt+enter
@@ -1009,6 +1106,19 @@ public func parseKey(_ data: String) -> KeyId? {
         }
     }
 
+    return nil
+}
+
+/// Decode printable terminal key sequences into their literal text form.
+public func decodePrintableKey(_ data: String) -> String? {
+    if let modifyOtherKeys = parseModifyOtherKeysSequence(data),
+       modifyOtherKeys.modifier == Modifiers.shift,
+       let scalar = UnicodeScalar(modifyOtherKeys.codepoint),
+       scalar.value >= 32,
+       scalar.value != UInt32(Codepoints.enter),
+       scalar.value != UInt32(Codepoints.tab) {
+        return String(scalar)
+    }
     return nil
 }
 

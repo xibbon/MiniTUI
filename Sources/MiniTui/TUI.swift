@@ -527,13 +527,9 @@ public final class TUI: Container {
             cellSizeQueryPending = false
         }
 
-        if let lastChar = inputBuffer.last {
-            let partialPattern = "\\u{001B}(\\[6?;?[\\d;]*)?$"
-            if inputBuffer.range(of: partialPattern, options: .regularExpression) != nil {
-                if String(lastChar).range(of: "[a-zA-Z~]", options: .regularExpression) == nil {
-                    return ""
-                }
-            }
+        let partialResponsePattern = "^\\u{001B}\\[6(?:;\\d*){0,2}$"
+        if inputBuffer.range(of: partialResponsePattern, options: .regularExpression) != nil {
+            return ""
         }
 
         let result = inputBuffer

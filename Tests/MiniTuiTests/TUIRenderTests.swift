@@ -9,10 +9,42 @@ final class TestComponent: Component {
     }
 }
 
+final class InputRecordingComponent: Component {
+    var inputs: [String] = []
+
+    func render(width: Int) -> [String] {
+        return []
+    }
+
+    func handleInput(_ data: String) {
+        inputs.append(data)
+    }
+}
+
 @MainActor
 private func renderAndFlush(_ tui: TUI, _ terminal: VirtualTerminal, force: Bool = true) async {
     tui.requestRender(force: force)
     await terminal.waitForRender(tui)
+}
+
+@MainActor
+@Test("cell-size query does not swallow bare Escape input")
+func tuiCellSizeQueryDoesNotSwallowBareEscape() async {
+    setCapabilities(TerminalCapabilities(images: .kitty, trueColor: true, hyperlinks: false))
+    defer { setCapabilities(nil) }
+
+    let terminal = VirtualTerminal(columns: 40, rows: 10)
+    let tui = TUI(terminal: terminal)
+    let component = InputRecordingComponent()
+    tui.addChild(component)
+    tui.setFocus(component)
+
+    tui.start()
+    terminal.sendInput("\u{001B}")
+    await terminal.waitForRender(tui)
+
+    #expect(component.inputs == ["\u{001B}"])
+    tui.stop()
 }
 
 @MainActor

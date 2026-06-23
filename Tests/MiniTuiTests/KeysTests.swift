@@ -139,6 +139,32 @@ struct MatchesKeyTests {
     @Suite("Legacy key matching")
     struct LegacyKeyMatchingTests {
 
+        @Test("should match xterm modifyOtherKeys sequences")
+        func matchModifyOtherKeys() {
+            setKittyProtocolActive(false)
+            #expect(matchesKey("\u{001B}[27;5;99~", "ctrl+c") == true)
+            #expect(parseKey("\u{001B}[27;5;99~") == "ctrl+c")
+            #expect(matchesKey("\u{001B}[27;5;13~", "ctrl+enter") == true)
+            #expect(parseKey("\u{001B}[27;5;13~") == "ctrl+enter")
+            #expect(matchesKey("\u{001B}[27;2;9~", "shift+tab") == true)
+            #expect(parseKey("\u{001B}[27;2;9~") == "shift+tab")
+            #expect(matchesKey("\u{001B}[27;5;127~", "ctrl+backspace") == true)
+            #expect(parseKey("\u{001B}[27;5;127~") == "ctrl+backspace")
+            #expect(matchesKey("\u{001B}[27;7;104~", "ctrl+alt+h") == true)
+            #expect(parseKey("\u{001B}[27;7;104~") == "ctrl+alt+h")
+        }
+
+        @Test("should parse shifted xterm modifyOtherKeys printable letters")
+        func parseShiftedModifyOtherKeysLetters() {
+            setKittyProtocolActive(false)
+            #expect(matchesKey("\u{001B}[27;2;69~", "shift+e") == true)
+            #expect(matchesKey("\u{001B}[27;6;69~", "ctrl+shift+e") == true)
+            #expect(parseKey("\u{001B}[27;2;69~") == "shift+e")
+            #expect(parseKey("\u{001B}[27;6;69~") == "shift+ctrl+e")
+            #expect(decodePrintableKey("\u{001B}[27;2;69~") == "E")
+            #expect(decodePrintableKey("\u{001B}[27;6;69~") == nil)
+        }
+
         @Test("should match legacy Ctrl+c")
         func matchLegacyCtrlC() {
             setKittyProtocolActive(false)

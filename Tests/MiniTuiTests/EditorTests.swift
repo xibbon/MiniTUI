@@ -2,6 +2,14 @@ import Testing
 import MiniTui
 
 @MainActor
+@Test("inserts shifted xterm modifyOtherKeys letters as text")
+func editorInsertsShiftedModifyOtherKeysLetters() {
+    let editor = Editor(theme: defaultEditorTheme)
+    editor.handleInput("\u{001B}[27;2;69~")
+    #expect(editor.getText() == "E")
+}
+
+@MainActor
 @Test("does nothing on Up arrow when history is empty")
 func historyUpWhenEmpty() {
     let editor = Editor(theme: defaultEditorTheme)

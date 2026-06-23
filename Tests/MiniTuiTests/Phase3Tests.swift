@@ -185,6 +185,68 @@ struct AutocompletePlainQueryTests {
     }
 }
 
+@Suite("Autocomplete symlink follow")
+struct AutocompleteSymlinkFollowTests {
+    @Test("fuzzy @ search follows symlinked directories")
+    func fuzzySearchFollowsSymlinkedDirectories() throws {
+        guard let fdPath = findFdForPhase3Tests() else { return }
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("phase3-symlink-\(UUID().uuidString)")
+        let base = root.appendingPathComponent("base")
+        let outside = root.appendingPathComponent("outside")
+        try FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: outside, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let realDir = base.appendingPathComponent("dir")
+        try FileManager.default.createDirectory(at: realDir, withIntermediateDirectories: true)
+        try "real".write(to: realDir.appendingPathComponent("some_file.txt"), atomically: true, encoding: .utf8)
+        try "symlinked".write(to: outside.appendingPathComponent("some_file.txt"), atomically: true, encoding: .utf8)
+        try FileManager.default.createSymbolicLink(
+            at: base.appendingPathComponent("symlinked_dir"),
+            withDestinationURL: URL(fileURLWithPath: "../outside")
+        )
+
+        let provider = CombinedAutocompleteProvider(commands: [], items: [], basePath: base.path, fdPath: fdPath)
+        let result = provider.getSuggestions(lines: ["@some"], cursorLine: 0, cursorCol: 5)
+        let values = result?.items.map(\.value) ?? []
+
+        #expect(values.contains("@dir/some_file.txt"))
+        #expect(values.contains("@symlinked_dir/some_file.txt"))
+    }
+
+    @Test("fuzzy @ search returns symlinked directories by name")
+    func fuzzySearchReturnsSymlinkedDirectoryByName() throws {
+        guard let fdPath = findFdForPhase3Tests() else { return }
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("phase3-symlink-dir-\(UUID().uuidString)")
+        let base = root.appendingPathComponent("base")
+        let outside = root.appendingPathComponent("outside")
+        try FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: outside.appendingPathComponent("nested"), withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        try "symlinked".write(to: outside.appendingPathComponent("nested/file.txt"), atomically: true, encoding: .utf8)
+        try FileManager.default.createSymbolicLink(
+            at: base.appendingPathComponent("symlinked_dir"),
+            withDestinationURL: URL(fileURLWithPath: "../outside")
+        )
+
+        let provider = CombinedAutocompleteProvider(commands: [], items: [], basePath: base.path, fdPath: fdPath)
+        let result = provider.getSuggestions(lines: ["@symlinked"], cursorLine: 0, cursorCol: 10)
+        let values = result?.items.map(\.value) ?? []
+
+        #expect(values.contains("@symlinked_dir/"))
+    }
+}
+
+private func findFdForPhase3Tests() -> String? {
+    for path in ["/opt/homebrew/bin/fd", "/usr/local/bin/fd", "/usr/bin/fd"] {
+        if FileManager.default.isExecutableFile(atPath: path) { return path }
+    }
+    return nil
+}
+
 // MARK: - super-modifier key matching (v0.67.2)
 
 @Suite("super-modifier key matching")

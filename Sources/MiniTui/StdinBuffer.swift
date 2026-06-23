@@ -173,6 +173,18 @@ private func extractCompleteSequences(_ buffer: String) -> (sequences: [String],
 
                 switch status {
                 case .complete:
+                    if candidate == "\(esc)\(esc)" {
+                        let nextIndex = remaining.index(remaining.startIndex, offsetBy: seqEnd)
+                        if nextIndex < remaining.endIndex {
+                            let nextChar = remaining[nextIndex]
+                            if nextChar == "[" || nextChar == "]" || nextChar == "O" || nextChar == "P" || nextChar == "_" {
+                                sequences.append(esc)
+                                pos += 1
+                                found = true
+                                break
+                            }
+                        }
+                    }
                     sequences.append(candidate)
                     pos += seqEnd
                     found = true
@@ -262,6 +274,7 @@ public final class StdinBuffer {
     private let timeoutSeconds: TimeInterval
     private var pasteMode = false
     private var pasteBuffer = ""
+    private var pendingKittyDuplicate: Character?
     private let listeners = StdinBufferListeners()
 
     public init(options: StdinBufferOptions = StdinBufferOptions()) {
@@ -339,7 +352,11 @@ public final class StdinBuffer {
         buffer = result.remainder
 
         for sequence in result.sequences {
+            if shouldDropPendingKittyDuplicate(sequence) {
+                continue
+            }
             emit(.data, payload: sequence)
+            pendingKittyDuplicate = kittyPrintableCharacter(sequence)
         }
 
         if !buffer.isEmpty {
@@ -375,6 +392,7 @@ public final class StdinBuffer {
         buffer = ""
         pasteMode = false
         pasteBuffer = ""
+        pendingKittyDuplicate = nil
     }
 
     public func getBuffer() -> String {
@@ -412,4 +430,26 @@ public final class StdinBuffer {
         }
         listeners.emit(event, payload: payload)
     }
+
+    private func shouldDropPendingKittyDuplicate(_ sequence: String) -> Bool {
+        guard let pendingKittyDuplicate else { return false }
+        guard sequence.count == 1, sequence.first == pendingKittyDuplicate else {
+            self.pendingKittyDuplicate = nil
+            return false
+        }
+        self.pendingKittyDuplicate = nil
+        return true
+    }
+}
+
+private func kittyPrintableCharacter(_ sequence: String) -> Character? {
+    let pattern = "^\\x1B\\[(\\d+)u$"
+    guard let regex = try? NSRegularExpression(pattern: pattern),
+          let match = regex.firstMatch(in: sequence, range: NSRange(sequence.startIndex..<sequence.endIndex, in: sequence)),
+          let codepointRange = Range(match.range(at: 1), in: sequence),
+          let codepoint = Int(sequence[codepointRange]),
+          let scalar = UnicodeScalar(codepoint) else {
+        return nil
+    }
+    return Character(scalar)
 }

@@ -673,6 +673,10 @@ public final class Editor: SystemCursorAware, KillBufferAware, EditorComponent {
             insertCharacter(" ")
             return
         }
+        if let printable = decodePrintableKey(input) {
+            insertCharacter(printable)
+            return
+        }
         if input.first?.unicodeScalars.first?.value ?? 0 >= 32 {
             insertCharacter(input)
         }
