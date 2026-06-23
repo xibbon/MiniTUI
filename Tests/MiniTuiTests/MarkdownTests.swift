@@ -554,3 +554,104 @@ func rendersHtmlInCodeBlocks() {
     let joined = plainLines.joined(separator: "\n")
     #expect(joined.contains("<div>") && joined.contains("</div>"))
 }
+
+@MainActor
+@Test("preserves heading styling after inline code")
+func preservesHeadingStylingAfterInlineCode() {
+    let markdown = Markdown("### Why `sourceInfo` should not be optional", paddingX: 0, paddingY: 0, theme: defaultMarkdownTheme)
+    let output = markdown.render(width: 80).joined(separator: "\n")
+
+    #expect(output.contains("\u{001B}[33m"))
+    let afterCodeIndex = output.range(of: "should not be optional")?.lowerBound
+    #expect(afterCodeIndex != nil)
+    if let afterCodeIndex {
+        let chunkStart = output.index(afterCodeIndex, offsetBy: -min(40, output.distance(from: output.startIndex, to: afterCodeIndex)))
+        let precedingChunk = String(output[chunkStart..<afterCodeIndex])
+        #expect(precedingChunk.contains("\u{001B}[1m"))
+        #expect(precedingChunk.contains("\u{001B}[1;36m") || precedingChunk.contains("\u{001B}[36m"))
+    }
+}
+
+@MainActor
+@Test("preserves h1 styling after inline code")
+func preservesH1StylingAfterInlineCode() {
+    let markdown = Markdown("# Title with `code` inside", paddingX: 0, paddingY: 0, theme: defaultMarkdownTheme)
+    let output = markdown.render(width: 80).joined(separator: "\n")
+
+    let afterCodeIndex = output.range(of: "inside")?.lowerBound
+    #expect(afterCodeIndex != nil)
+    if let afterCodeIndex {
+        let chunkStart = output.index(afterCodeIndex, offsetBy: -min(50, output.distance(from: output.startIndex, to: afterCodeIndex)))
+        let precedingChunk = String(output[chunkStart..<afterCodeIndex])
+        #expect(precedingChunk.contains("\u{001B}[1m"))
+        #expect(precedingChunk.contains("\u{001B}[1;36m") || precedingChunk.contains("\u{001B}[36m"))
+        #expect(precedingChunk.contains("\u{001B}[4m"))
+    }
+}
+
+@MainActor
+@Test("does not leave h1 style prefix after trailing inline code")
+func removesTrailingH1StylePrefixAfterInlineCode() {
+    let markdown = Markdown("# Important distinction from `open()`", paddingX: 0, paddingY: 0, theme: defaultMarkdownTheme)
+    let line = markdown.render(width: 80)[0]
+    #expect(!line.hasSuffix("\u{001B}[1;36m\u{001B}[1m\u{001B}[4m"))
+}
+
+@MainActor
+@Test("preserves heading styling after bold text")
+func preservesHeadingStylingAfterBoldText() {
+    let markdown = Markdown("## Heading with **bold** and more", paddingX: 0, paddingY: 0, theme: defaultMarkdownTheme)
+    let output = markdown.render(width: 80).joined(separator: "\n")
+
+    let afterBoldIndex = output.range(of: "and more")?.lowerBound
+    #expect(afterBoldIndex != nil)
+    if let afterBoldIndex {
+        let chunkStart = output.index(afterBoldIndex, offsetBy: -min(40, output.distance(from: output.startIndex, to: afterBoldIndex)))
+        let precedingChunk = String(output[chunkStart..<afterBoldIndex])
+        #expect(precedingChunk.contains("\u{001B}[1m"))
+        #expect(precedingChunk.contains("\u{001B}[1;36m") || precedingChunk.contains("\u{001B}[36m"))
+    }
+}
+
+@MainActor
+@Test("renders double tilde text as strikethrough")
+func rendersDoubleTildeAsStrikethrough() {
+    let markdown = Markdown("Use ~~strikethrough~~ here", paddingX: 0, paddingY: 0, theme: defaultMarkdownTheme)
+    let lines = markdown.render(width: 80)
+    let output = lines.joined(separator: "\n")
+    let plain = lines.map(stripAnsiCodes).joined(separator: " ")
+
+    #expect(output.contains("\u{001B}[9m"))
+    #expect(plain.contains("strikethrough"))
+    #expect(!plain.contains("~~strikethrough~~"))
+}
+
+@MainActor
+@Test("keeps single tilde text plain")
+func keepsSingleTildeTextPlain() {
+    let markdown = Markdown("Use ~strikethrough~ literally", paddingX: 0, paddingY: 0, theme: defaultMarkdownTheme)
+    let lines = markdown.render(width: 80)
+    let output = lines.joined(separator: "\n")
+    let plain = lines.map(stripAnsiCodes).joined(separator: " ")
+
+    #expect(plain.contains("~strikethrough~"))
+    #expect(!output.contains("\u{001B}[9m"))
+}
+
+@MainActor
+@Test("restores blockquote style after inline link")
+func restoresBlockquoteStyleAfterInlineLink() {
+    setCapabilities(TerminalCapabilities(images: nil, trueColor: true, hyperlinks: false))
+    defer { setCapabilities(nil) }
+
+    let markdown = Markdown("> Quote [link](https://example.com) after", paddingX: 0, paddingY: 0, theme: defaultMarkdownTheme)
+    let output = markdown.render(width: 80).joined(separator: "\n")
+    let afterIndex = output.range(of: "after")?.lowerBound
+
+    #expect(afterIndex != nil)
+    if let afterIndex {
+        let chunkStart = output.index(afterIndex, offsetBy: -min(50, output.distance(from: output.startIndex, to: afterIndex)))
+        let precedingChunk = String(output[chunkStart..<afterIndex])
+        #expect(precedingChunk.contains("\u{001B}[3m"))
+    }
+}

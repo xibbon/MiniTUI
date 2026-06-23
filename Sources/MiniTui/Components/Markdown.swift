@@ -105,6 +105,11 @@ public struct MarkdownTheme: Sendable {
 
 /// Markdown renderer that outputs styled terminal lines.
 public final class Markdown: Component {
+    private struct InlineStyleContext {
+        let applyText: (String) -> String
+        let stylePrefix: String
+    }
+
     private var text: String
     private let paddingX: Int
     private let paddingY: Int
@@ -160,7 +165,7 @@ public final class Markdown: Component {
             return result
         }
 
-        let normalizedText = text.replacingOccurrences(of: "\t", with: "   ")
+        let normalizedText = escapeSingleTildeDelimiters(text.replacingOccurrences(of: "\t", with: "   "))
         let document = Document(parsing: normalizedText)
         let blocks = Array(document.children)
 
@@ -306,19 +311,90 @@ public final class Markdown: Component {
         return ""
     }
 
-    private func renderBlock(_ block: Markup, width: Int) -> [String] {
-        if let heading = block as? Heading {
-            let headingText = renderInlineChildren(heading)
-            let level = heading.level
-            if level == 1 {
-                return [theme.heading(theme.bold(theme.underline(headingText)))]
-            } else if level == 2 {
-                return [theme.heading(theme.bold(headingText))]
+    private func getStylePrefix(_ style: (String) -> String) -> String {
+        let sentinel = "\u{0000}"
+        let styled = style(sentinel)
+        guard let sentinelIndex = styled.firstIndex(of: "\u{0000}") else {
+            return ""
+        }
+        return String(styled[..<sentinelIndex])
+    }
+
+    private func defaultInlineStyleContext() -> InlineStyleContext {
+        InlineStyleContext(
+            applyText: { [weak self] text in
+                self?.applyDefaultStyle(text) ?? text
+            },
+            stylePrefix: getDefaultStylePrefix()
+        )
+    }
+
+    private func applyTextWithNewlines(_ text: String, context: InlineStyleContext) -> String {
+        text.components(separatedBy: "\n").map(context.applyText).joined(separator: "\n")
+    }
+
+    private func escapeSingleTildeDelimiters(_ text: String) -> String {
+        let characters = Array(text)
+        var result = ""
+        result.reserveCapacity(text.count)
+
+        for index in characters.indices {
+            let character = characters[index]
+            guard character == "~" else {
+                result.append(character)
+                continue
             }
-            return [theme.heading(theme.bold(String(repeating: "#", count: level) + " " + headingText))]
+
+            let previousIsTilde = index > characters.startIndex && characters[characters.index(before: index)] == "~"
+            let nextIndex = characters.index(after: index)
+            let nextIsTilde = nextIndex < characters.endIndex && characters[nextIndex] == "~"
+            if previousIsTilde || nextIsTilde {
+                result.append(character)
+            } else {
+                result += "\\~"
+            }
+        }
+
+        return result
+    }
+
+    private func removeTrailingStylePrefix(from text: String, stylePrefix: String) -> String {
+        guard !stylePrefix.isEmpty else { return text }
+        var result = text
+        while result.hasSuffix(stylePrefix) {
+            let start = result.index(result.endIndex, offsetBy: -stylePrefix.count)
+            result.removeSubrange(start..<result.endIndex)
+        }
+        return result
+    }
+
+    private func renderBlock(_ block: Markup, width: Int, context: InlineStyleContext? = nil) -> [String] {
+        if let heading = block as? Heading {
+            let level = heading.level
+            let headingStyle: (String) -> String
+            if level == 1 {
+                headingStyle = { [theme] text in theme.heading(theme.bold(theme.underline(text))) }
+            } else {
+                headingStyle = { [theme] text in theme.heading(theme.bold(text)) }
+            }
+
+            let context = InlineStyleContext(
+                applyText: headingStyle,
+                stylePrefix: getStylePrefix(headingStyle)
+            )
+            let headingText = renderInlineChildren(heading, context: context)
+            if level >= 3 {
+                return [headingStyle(String(repeating: "#", count: level) + " ") + headingText]
+            } else if level == 2 {
+                return [headingText]
+            }
+            return [headingText]
         }
 
         if let paragraph = block as? Paragraph {
+            if let context {
+                return [renderInlineChildren(paragraph, context: context)]
+            }
             return [renderInlineChildren(paragraph)]
         }
 
@@ -339,11 +415,11 @@ public final class Markdown: Component {
         }
 
         if let list = block as? UnorderedList {
-            return renderList(listItems: Array(list.listItems), ordered: false, startIndex: 1, depth: 0)
+            return renderList(listItems: Array(list.listItems), ordered: false, startIndex: 1, depth: 0, context: context)
         }
 
         if let list = block as? OrderedList {
-            return renderList(listItems: Array(list.listItems), ordered: true, startIndex: Int(list.startIndex), depth: 0)
+            return renderList(listItems: Array(list.listItems), ordered: true, startIndex: Int(list.startIndex), depth: 0, context: context)
         }
 
         if let table = block as? Table {
@@ -351,15 +427,25 @@ public final class Markdown: Component {
         }
 
         if let blockquote = block as? BlockQuote {
+            let quoteStyle: (String) -> String = { [theme] text in theme.quote(text) }
+            let quoteStylePrefix = getStylePrefix(quoteStyle)
+            let quoteContext = InlineStyleContext(
+                applyText: { text in text },
+                stylePrefix: quoteStylePrefix
+            )
+
             // Use renderBlocks (block-level traversal) so nested lists and code blocks
             // inside blockquotes are rendered correctly, not just inline paragraphs.
             // Reset style context to avoid parent style bleed-through into blockquote content.
             let savedDefaultStylePrefix = defaultStylePrefix
             defaultStylePrefix = ""
-            let quoteLines = renderBlocks(Array(blockquote.children), width: max(1, width - 2))
+            let quoteLines = renderBlocks(Array(blockquote.children), width: max(1, width - 2), context: quoteContext)
             defaultStylePrefix = savedDefaultStylePrefix
             return quoteLines.map { line in
-                theme.quoteBorder("│ ") + "\u{001B}[0m" + theme.quote(line)
+                let lineWithRestoredQuoteStyle = quoteStylePrefix.isEmpty
+                    ? line
+                    : line.replacingOccurrences(of: "\u{001B}[0m", with: "\u{001B}[0m\(quoteStylePrefix)")
+                return theme.quoteBorder("│ ") + "\u{001B}[0m" + quoteStyle(lineWithRestoredQuoteStyle)
             }
         }
 
@@ -374,9 +460,9 @@ public final class Markdown: Component {
         return renderBlocks(Array(block.children), width: width)
     }
 
-    private func renderBlocks(_ blocks: [Markup], width: Int) -> [String] {
+    private func renderBlocks(_ blocks: [Markup], width: Int, context: InlineStyleContext? = nil) -> [String] {
         let blockOutputs: [(lines: [String], isBlank: Bool)] = blocks.map { block in
-            let lines = renderBlock(block, width: width)
+            let lines = renderBlock(block, width: width, context: context)
             let isBlank = lines.allSatisfy { $0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
             return (lines, isBlank)
         }
@@ -398,21 +484,26 @@ public final class Markdown: Component {
     }
 
     private func renderInlineChildren(_ markup: Markup) -> String {
-        return markup.children.map { renderInline($0) }.joined()
+        renderInlineChildren(markup, context: defaultInlineStyleContext())
     }
 
-    private func renderInline(_ markup: Markup) -> String {
+    private func renderInlineChildren(_ markup: Markup, context: InlineStyleContext) -> String {
+        let rendered = markup.children.map { renderInline($0, context: context) }.joined()
+        return removeTrailingStylePrefix(from: rendered, stylePrefix: context.stylePrefix)
+    }
+
+    private func renderInline(_ markup: Markup, context: InlineStyleContext) -> String {
         if let strong = markup as? Strong {
-            return theme.bold(renderInlineChildren(strong)) + getDefaultStylePrefix()
+            return theme.bold(renderInlineChildren(strong, context: context)) + context.stylePrefix
         }
         if let emphasis = markup as? Emphasis {
-            return theme.italic(renderInlineChildren(emphasis)) + getDefaultStylePrefix()
+            return theme.italic(renderInlineChildren(emphasis, context: context)) + context.stylePrefix
         }
         if let code = markup as? InlineCode {
-            return theme.code(code.code) + getDefaultStylePrefix()
+            return theme.code(code.code) + context.stylePrefix
         }
         if let link = markup as? Link {
-            let linkText = renderInlineChildren(link)
+            let linkText = renderInlineChildren(link, context: context)
             // v0.67.6: when the terminal advertises OSC 8 support (and isn't running under tmux/
             // screen, where the sequence is silently dropped), wrap the styled link text with
             // the OSC 8 escape so the link is clickable. Otherwise fall back to the legacy
@@ -420,17 +511,17 @@ public final class Markdown: Component {
             let supportsHyperlink = getCapabilities().hyperlinks
             if link.isAutolink {
                 if supportsHyperlink, let destination = link.destination {
-                    return hyperlink(theme.link(theme.underline(linkText)), url: destination) + getDefaultStylePrefix()
+                    return hyperlink(theme.link(theme.underline(linkText)), url: destination) + context.stylePrefix
                 }
-                return theme.link(theme.underline(linkText)) + getDefaultStylePrefix()
+                return theme.link(theme.underline(linkText)) + context.stylePrefix
             }
             if let destination = link.destination {
                 if supportsHyperlink {
-                    return hyperlink(theme.link(theme.underline(linkText)), url: destination) + getDefaultStylePrefix()
+                    return hyperlink(theme.link(theme.underline(linkText)), url: destination) + context.stylePrefix
                 }
-                return theme.link(theme.underline(linkText)) + theme.linkUrl(" (\(destination))") + getDefaultStylePrefix()
+                return theme.link(theme.underline(linkText)) + theme.linkUrl(" (\(destination))") + context.stylePrefix
             }
-            return theme.link(theme.underline(linkText)) + getDefaultStylePrefix()
+            return theme.link(theme.underline(linkText)) + context.stylePrefix
         }
         if markup is LineBreak {
             return "\n"
@@ -439,14 +530,14 @@ public final class Markdown: Component {
             return soft.plainText
         }
         if let del = markup as? Strikethrough {
-            return theme.strikethrough(renderInlineChildren(del)) + getDefaultStylePrefix()
+            return theme.strikethrough(renderInlineChildren(del, context: context)) + context.stylePrefix
         }
         if let html = markup as? InlineHTML {
-            return applyDefaultStyle(html.rawHTML)
+            return applyTextWithNewlines(html.rawHTML, context: context)
         }
 
         if let text = (markup as? InlineMarkup)?.plainText {
-            return applyDefaultStyle(text)
+            return applyTextWithNewlines(text, context: context)
         }
 
         return ""
@@ -457,13 +548,13 @@ public final class Markdown: Component {
         let isNested: Bool
     }
 
-    private func renderList(listItems: [ListItem], ordered: Bool, startIndex: Int, depth: Int) -> [String] {
+    private func renderList(listItems: [ListItem], ordered: Bool, startIndex: Int, depth: Int, context: InlineStyleContext? = nil) -> [String] {
         var lines: [String] = []
         let indent = String(repeating: "  ", count: depth)
 
         for (index, item) in listItems.enumerated() {
             let bullet = ordered ? "\(startIndex + index). " : "- "
-            let itemLines = renderListItem(item, depth: depth)
+            let itemLines = renderListItem(item, depth: depth, context: context)
 
             if let first = itemLines.first {
                 if first.isNested {
@@ -487,18 +578,18 @@ public final class Markdown: Component {
         return lines
     }
 
-    private func renderListItem(_ item: ListItem, depth: Int) -> [ListLine] {
+    private func renderListItem(_ item: ListItem, depth: Int, context: InlineStyleContext? = nil) -> [ListLine] {
         var lines: [ListLine] = []
 
         for child in item.children {
             if let nestedUnordered = child as? UnorderedList {
-                let nested = renderList(listItems: Array(nestedUnordered.listItems), ordered: false, startIndex: 1, depth: depth + 1)
+                let nested = renderList(listItems: Array(nestedUnordered.listItems), ordered: false, startIndex: 1, depth: depth + 1, context: context)
                 lines.append(contentsOf: nested.map { ListLine(text: $0, isNested: true) })
             } else if let nestedOrdered = child as? OrderedList {
-                let nested = renderList(listItems: Array(nestedOrdered.listItems), ordered: true, startIndex: Int(nestedOrdered.startIndex), depth: depth + 1)
+                let nested = renderList(listItems: Array(nestedOrdered.listItems), ordered: true, startIndex: Int(nestedOrdered.startIndex), depth: depth + 1, context: context)
                 lines.append(contentsOf: nested.map { ListLine(text: $0, isNested: true) })
             } else if let paragraph = child as? Paragraph {
-                let text = renderInlineChildren(paragraph)
+                let text = context.map { renderInlineChildren(paragraph, context: $0) } ?? renderInlineChildren(paragraph)
                 lines.append(ListLine(text: text, isNested: false))
             } else if let codeBlock = child as? CodeBlock {
                 lines.append(ListLine(text: theme.codeBlockBorder("```\(codeBlock.language ?? "")"), isNested: false))

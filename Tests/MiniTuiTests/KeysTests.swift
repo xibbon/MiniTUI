@@ -152,6 +152,8 @@ struct MatchesKeyTests {
             #expect(parseKey("\u{001B}[27;5;127~") == "ctrl+backspace")
             #expect(matchesKey("\u{001B}[27;7;104~", "ctrl+alt+h") == true)
             #expect(parseKey("\u{001B}[27;7;104~") == "ctrl+alt+h")
+            #expect(matchesKey("\u{001B}[104;7u", "ctrl+alt+h") == true)
+            #expect(parseKey("\u{001B}[104;7u") == "ctrl+alt+h")
         }
 
         @Test("should parse shifted xterm modifyOtherKeys printable letters")

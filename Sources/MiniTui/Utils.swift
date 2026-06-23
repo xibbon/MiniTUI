@@ -383,78 +383,180 @@ public func applyBackgroundToLine(_ line: String, width: Int, bgFn: (String) -> 
 /// Truncate text to a visible width, preserving ANSI codes and adding an ellipsis.
 /// Optionally pad the result with spaces to reach exactly maxWidth.
 public func truncateToWidth(_ text: String, maxWidth: Int, ellipsis: String = "...", pad: Bool = false) -> String {
-    let textVisibleWidth = visibleWidth(text)
-    if textVisibleWidth <= maxWidth {
-        if pad {
-            return text + String(repeating: " ", count: maxWidth - textVisibleWidth)
-        }
-        return text
+    if maxWidth <= 0 {
+        return ""
+    }
+
+    if text.isEmpty {
+        return pad ? String(repeating: " ", count: maxWidth) : ""
     }
 
     let ellipsisWidth = visibleWidth(ellipsis)
-    let targetWidth = maxWidth - ellipsisWidth
-    if targetWidth <= 0 {
-        let truncated = String(ellipsis.prefix(maxWidth))
-        if pad {
-            let truncatedWidth = visibleWidth(truncated)
-            return truncated + String(repeating: " ", count: max(0, maxWidth - truncatedWidth))
+    if ellipsisWidth >= maxWidth {
+        let textWidth = visibleWidth(text)
+        if textWidth <= maxWidth {
+            return pad ? text + String(repeating: " ", count: maxWidth - textWidth) : text
         }
-        return truncated
+
+        let clippedEllipsis = truncateFragmentToWidth(ellipsis, maxWidth: maxWidth)
+        if clippedEllipsis.width == 0 {
+            return pad ? String(repeating: " ", count: maxWidth) : ""
+        }
+        return finalizeTruncatedResult(prefix: "", prefixWidth: 0, ellipsis: clippedEllipsis.text, ellipsisWidth: clippedEllipsis.width, maxWidth: maxWidth, pad: pad)
     }
 
-    var segments: [(type: SegmentType, value: String)] = []
-    var i = 0
-    let length = text.count
-
-    while i < length {
-        if let ansiResult = extractAnsiCode(text, at: i) {
-            segments.append((.ansi, ansiResult.code))
-            i += ansiResult.length
-            continue
+    if isPrintableAscii(text) {
+        if text.count <= maxWidth {
+            return pad ? text + String(repeating: " ", count: maxWidth - text.count) : text
         }
+        let targetWidth = maxWidth - ellipsisWidth
+        return finalizeTruncatedResult(
+            prefix: text.prefixCharacters(targetWidth),
+            prefixWidth: targetWidth,
+            ellipsis: ellipsis,
+            ellipsisWidth: ellipsisWidth,
+            maxWidth: maxWidth,
+            pad: pad
+        )
+    }
 
-        var end = i
-        while end < length {
-            if extractAnsiCode(text, at: end) != nil {
+    let targetWidth = maxWidth - ellipsisWidth
+    var result = ""
+    var pendingAnsi = ""
+    var visibleSoFar = 0
+    var keptWidth = 0
+    var keepContiguousPrefix = true
+    var overflowed = false
+    var index = 0
+    let length = text.count
+    let hasAnsi = text.contains(ansiEscape)
+    let hasTabs = text.contains("\t")
+
+    if !hasAnsi && !hasTabs {
+        for character in text {
+            let width = graphemeWidth(character)
+            if keepContiguousPrefix, keptWidth + width <= targetWidth {
+                result.append(character)
+                keptWidth += width
+            } else {
+                keepContiguousPrefix = false
+            }
+            visibleSoFar += width
+            if visibleSoFar > maxWidth {
+                overflowed = true
                 break
             }
-            end += 1
+            index += 1
         }
+    } else {
+        while index < length {
+            if let ansiResult = extractAnsiCode(text, at: index) {
+                pendingAnsi += ansiResult.code
+                index += ansiResult.length
+                continue
+            }
 
-        let textPortion = text.substring(from: i, length: end - i)
-        for character in textPortion {
-            segments.append((.grapheme, String(character)))
+            let character = text[text.index(at: index)]
+            let width = character == "\t" ? 3 : graphemeWidth(character)
+
+            if keepContiguousPrefix, keptWidth + width <= targetWidth {
+                if !pendingAnsi.isEmpty {
+                    result += pendingAnsi
+                    pendingAnsi = ""
+                }
+                result.append(character)
+                keptWidth += width
+            } else {
+                keepContiguousPrefix = false
+                pendingAnsi = ""
+            }
+
+            visibleSoFar += width
+            if visibleSoFar > maxWidth {
+                overflowed = true
+                break
+            }
+            index += 1
         }
-        i = end
+    }
+
+    if !overflowed, index >= length {
+        return pad ? text + String(repeating: " ", count: max(0, maxWidth - visibleSoFar)) : text
+    }
+
+    return finalizeTruncatedResult(
+        prefix: result,
+        prefixWidth: keptWidth,
+        ellipsis: ellipsis,
+        ellipsisWidth: ellipsisWidth,
+        maxWidth: maxWidth,
+        pad: pad
+    )
+}
+
+private func isPrintableAscii(_ text: String) -> Bool {
+    for scalar in text.unicodeScalars {
+        if scalar.value < 0x20 || scalar.value > 0x7E {
+            return false
+        }
+    }
+    return true
+}
+
+private func truncateFragmentToWidth(_ text: String, maxWidth: Int) -> (text: String, width: Int) {
+    if maxWidth <= 0 || text.isEmpty {
+        return ("", 0)
+    }
+
+    if isPrintableAscii(text) {
+        let clipped = text.prefixCharacters(maxWidth)
+        return (clipped, clipped.count)
     }
 
     var result = ""
-    var currentWidth = 0
+    var width = 0
+    var pendingAnsi = ""
+    var index = 0
+    let length = text.count
 
-    for segment in segments {
-        switch segment.type {
-        case .ansi:
-            result += segment.value
-        case .grapheme:
-            let grapheme = segment.value
-            if grapheme.isEmpty {
-                continue
-            }
-            let graphemeWidth = visibleWidth(grapheme)
-            if currentWidth + graphemeWidth > targetWidth {
-                break
-            }
-            result += grapheme
-            currentWidth += graphemeWidth
+    while index < length {
+        if let ansiResult = extractAnsiCode(text, at: index) {
+            pendingAnsi += ansiResult.code
+            index += ansiResult.length
+            continue
         }
+
+        let character = text[text.index(at: index)]
+        let characterWidth = character == "\t" ? 3 : graphemeWidth(character)
+        if width + characterWidth > maxWidth {
+            break
+        }
+        if !pendingAnsi.isEmpty {
+            result += pendingAnsi
+            pendingAnsi = ""
+        }
+        result.append(character)
+        width += characterWidth
+        index += 1
     }
 
-    let truncated = "\(result)\u{001B}[0m\(ellipsis)"
-    if pad {
-        let truncatedWidth = visibleWidth(truncated)
-        return truncated + String(repeating: " ", count: max(0, maxWidth - truncatedWidth))
+    return (result, width)
+}
+
+private func finalizeTruncatedResult(prefix: String, prefixWidth: Int, ellipsis: String, ellipsisWidth: Int, maxWidth: Int, pad: Bool) -> String {
+    let reset = "\u{001B}[0m"
+    let visibleWidth = prefixWidth + ellipsisWidth
+    let result: String
+    if ellipsis.isEmpty {
+        result = prefix + reset
+    } else {
+        result = prefix + reset + ellipsis + reset
     }
-    return truncated
+
+    if pad {
+        return result + String(repeating: " ", count: max(0, maxWidth - visibleWidth))
+    }
+    return result
 }
 
 /// Extract a range of visible columns from a line. Handles ANSI codes and wide chars.

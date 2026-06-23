@@ -497,15 +497,6 @@ public final class Editor: SystemCursorAware, KillBufferAware, EditorComponent {
                     setCursorCol(result.cursorCol)
                     cancelAutocomplete()
                     onChange?(getText())
-
-                    // Chain: after completing a slash command (e.g. "/model "),
-                    // re-trigger autocomplete for slash command arguments.
-                    let completedLine = state.lines[safe: state.cursorLine] ?? ""
-                    let beforeCursor = completedLine.prefixCharacters(state.cursorCol)
-                    let trimmed = beforeCursor.trimmingCharacters(in: .whitespaces)
-                    if trimmed.hasPrefix("/") && beforeCursor.hasSuffix(" ") {
-                        tryTriggerAutocomplete(explicitTab: false)
-                    }
                 }
                 return
             }

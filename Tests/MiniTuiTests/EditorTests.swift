@@ -10,6 +10,32 @@ func editorInsertsShiftedModifyOtherKeysLetters() {
 }
 
 @MainActor
+@Test("slash command tab completion does not chain into argument completions")
+func slashCommandTabCompletionDoesNotChainIntoArguments() {
+    let editor = Editor(theme: defaultEditorTheme)
+    let provider = CombinedAutocompleteProvider(commands: [
+        SlashCommand(
+            name: "model",
+            description: "Select model",
+            getArgumentCompletions: { _ in
+                [AutocompleteItem(value: "gpt-4.1", label: "gpt-4.1")]
+            }
+        ),
+    ])
+    editor.setAutocompleteProvider(provider)
+
+    editor.handleInput("/")
+    editor.handleInput("m")
+    editor.handleInput("o")
+    editor.handleInput("\t")
+    editor.handleInput("\t")
+
+    #expect(editor.getText() == "/model ")
+    let rendered = editor.render(width: 80).joined(separator: "\n")
+    #expect(!rendered.contains("gpt-4.1"))
+}
+
+@MainActor
 @Test("does nothing on Up arrow when history is empty")
 func historyUpWhenEmpty() {
     let editor = Editor(theme: defaultEditorTheme)
