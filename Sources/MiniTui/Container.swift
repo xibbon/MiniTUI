@@ -55,7 +55,7 @@ open class Container: Component {
     }
 
     /// Render all children sequentially and concatenate their lines.
-    public func render(width: Int) -> [String] {
+    open func render(width: Int) -> [String] {
         if let trace = RenderTrace.active {
             func componentLabel(_ component: AnyObject) -> String {
                 let ptr = Unmanaged.passUnretained(component).toOpaque()

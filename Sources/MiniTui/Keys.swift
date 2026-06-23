@@ -322,6 +322,44 @@ private enum FunctionalCodepoints {
     static let end = -15
 }
 
+/// v0.70.5: Kitty functional-key codepoints emitted by KP_* (numeric keypad) keys when
+/// keypad-mode is engaged. We normalize these to their semantic equivalents (digits, arrows,
+/// nav keys) so a binding for `Up` works whether the user pressed the main arrow or KP_8 with
+/// num-lock off. Mirror of `KITTY_FUNCTIONAL_KEY_EQUIVALENTS` in upstream `keys.ts`.
+private let kittyFunctionalKeyEquivalents: [Int: Int] = [
+    57399: 48,   // KP_0 -> 0
+    57400: 49,   // KP_1 -> 1
+    57401: 50,   // KP_2 -> 2
+    57402: 51,   // KP_3 -> 3
+    57403: 52,   // KP_4 -> 4
+    57404: 53,   // KP_5 -> 5
+    57405: 54,   // KP_6 -> 6
+    57406: 55,   // KP_7 -> 7
+    57407: 56,   // KP_8 -> 8
+    57408: 57,   // KP_9 -> 9
+    57409: 46,   // KP_DECIMAL -> .
+    57410: 47,   // KP_DIVIDE -> /
+    57411: 42,   // KP_MULTIPLY -> *
+    57412: 45,   // KP_SUBTRACT -> -
+    57413: 43,   // KP_ADD -> +
+    57415: 61,   // KP_EQUAL -> =
+    57416: 44,   // KP_SEPARATOR -> ,
+    57417: ArrowCodepoints.left,
+    57418: ArrowCodepoints.right,
+    57419: ArrowCodepoints.up,
+    57420: ArrowCodepoints.down,
+    57421: FunctionalCodepoints.pageUp,
+    57422: FunctionalCodepoints.pageDown,
+    57423: FunctionalCodepoints.home,
+    57424: FunctionalCodepoints.end,
+    57425: FunctionalCodepoints.insert,
+    57426: FunctionalCodepoints.delete,
+]
+
+private func normalizeKittyFunctionalCodepoint(_ codepoint: Int) -> Int {
+    kittyFunctionalKeyEquivalents[codepoint] ?? codepoint
+}
+
 public enum KeyEventType: String, Sendable {
     case press
     case `repeat`
@@ -455,8 +493,12 @@ private func matchesKittySequence(_ data: String, expectedCodepoint: Int, expect
     // Check if modifiers match
     if actualMod != expectedMod { return false }
 
-    // Primary match: codepoint matches directly
-    if parsed.codepoint == expectedCodepoint { return true }
+    // Primary match: codepoint matches directly. v0.70.5: also normalize Kitty functional
+    // KP_* codepoints (57399-57426) to their semantic equivalents (digits, arrows, nav) so
+    // a binding for "Up" matches both the dedicated arrow and KP_8 with num-lock off.
+    let normalizedActual = normalizeKittyFunctionalCodepoint(parsed.codepoint)
+    let normalizedExpected = normalizeKittyFunctionalCodepoint(expectedCodepoint)
+    if normalizedActual == normalizedExpected { return true }
 
     // Alternate match: use base layout key for non-Latin keyboard layouts
     // This allows Ctrl+С (Cyrillic) to match Ctrl+c (Latin) when terminal reports

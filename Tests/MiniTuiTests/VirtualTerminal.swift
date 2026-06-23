@@ -151,6 +151,12 @@ final class VirtualTerminal: Terminal {
         await Task.yield()
     }
 
+    @MainActor
+    func waitForRender(_ tui: TUI) async {
+        await tui.waitForRender()
+        await flush()
+    }
+
     private func handleEscapeSequence(in data: String, from start: String.Index) -> String.Index {
         let nextIndex = data.index(after: start)
         guard nextIndex < data.endIndex else { return data.index(after: start) }

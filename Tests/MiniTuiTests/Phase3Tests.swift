@@ -112,8 +112,8 @@ struct BracketedPasteCtrlLetterDecodeTests {
         let pasted = "x\u{001B}[1;5Ay"
         let buffer = StdinBuffer()
         var pasteEmissions: [String] = []
-        buffer.on(.paste) { value in
-            if let text = value as? String { pasteEmissions.append(text) }
+        _ = buffer.on(.paste) { text in
+            pasteEmissions.append(text)
         }
         buffer.process("\u{001B}[200~\(pasted)\u{001B}[201~")
 
@@ -126,8 +126,8 @@ struct BracketedPasteCtrlLetterDecodeTests {
         let pasted = "[\u{001B}[97;5u-\u{001B}[122;5u]"
         let buffer = StdinBuffer()
         var pasteEmissions: [String] = []
-        buffer.on(.paste) { value in
-            if let text = value as? String { pasteEmissions.append(text) }
+        _ = buffer.on(.paste) { text in
+            pasteEmissions.append(text)
         }
         buffer.process("\u{001B}[200~\(pasted)\u{001B}[201~")
 
@@ -203,5 +203,125 @@ struct SuperModifierTests {
     func cmdAliasAccepted() {
         // cmd+ is treated as super+ (Kitty doesn't expose cmd separately).
         #expect(matchesKey("k", "cmd+k") == false)
+    }
+}
+
+// MARK: - Autocomplete cancellation (v0.65.0)
+
+@Suite("Autocomplete cancellation")
+struct AutocompleteCancellationTests {
+    @Test("getSuggestions returns nil when signal is pre-cancelled")
+    func bailsOutOnPrecancelled() {
+        let provider = CombinedAutocompleteProvider(commands: [
+            SlashCommand(name: "search"),
+            SlashCommand(name: "set"),
+        ])
+        let signal = CancellationSignal()
+        signal.cancel()
+        let result = provider.getSuggestions(lines: ["/se"], cursorLine: 0, cursorCol: 3, signal: signal)
+        #expect(result == nil)
+    }
+
+    @Test("default signal:nil overload still works")
+    func defaultsToNoCancellation() {
+        let provider = CombinedAutocompleteProvider(commands: [
+            SlashCommand(name: "search"),
+        ])
+        // Calling without signal should still produce results (uses extension default).
+        let result = provider.getSuggestions(lines: ["/se"], cursorLine: 0, cursorCol: 3)
+        #expect(result != nil)
+    }
+}
+
+// MARK: - Markdown OSC 8 hyperlinks (v0.67.6)
+
+@Suite("Markdown OSC 8 hyperlinks")
+struct MarkdownHyperlinkTests {
+    @Test("link rendering emits OSC 8 escape on capable terminal")
+    @MainActor
+    func emitsOsc8WhenCapable() throws {
+        setCapabilities(TerminalCapabilities(images: nil, trueColor: true, hyperlinks: true))
+        defer { setCapabilities(nil) }
+
+        let theme = makeBasicTheme()
+        let component = Markdown("[click](https://example.com)", paddingX: 0, paddingY: 0, theme: theme)
+        let lines = component.render(width: 80)
+        let joined = lines.joined(separator: "\n")
+        #expect(joined.contains("\u{001B}]8;;https://example.com\u{001B}\\"))
+        #expect(joined.contains("click"))
+        // No legacy "(url)" suffix when OSC 8 is on.
+        #expect(!joined.contains("(https://example.com)"))
+    }
+
+    @Test("link rendering falls back to plain text + url on non-capable terminal")
+    @MainActor
+    func fallsBackOnIncapable() throws {
+        setCapabilities(TerminalCapabilities(images: nil, trueColor: true, hyperlinks: false))
+        defer { setCapabilities(nil) }
+
+        let theme = makeBasicTheme()
+        let component = Markdown("[click](https://example.com)", paddingX: 0, paddingY: 0, theme: theme)
+        let lines = component.render(width: 80)
+        let joined = lines.joined(separator: "\n")
+        #expect(!joined.contains("\u{001B}]8;;"))
+        // URL still present so user can copy it manually.
+        #expect(joined.contains("https://example.com"))
+    }
+
+    /// Build a theme with identity color closures so we don't hit terminal styling in tests.
+    private func makeBasicTheme() -> MarkdownTheme {
+        return MarkdownTheme(
+            heading: { $0 },
+            link: { $0 },
+            linkUrl: { $0 },
+            code: { $0 },
+            codeBlock: { $0 },
+            codeBlockBorder: { $0 },
+            quote: { $0 },
+            quoteBorder: { $0 },
+            hr: { $0 },
+            listBullet: { $0 },
+            bold: { $0 },
+            italic: { $0 },
+            strikethrough: { $0 },
+            underline: { $0 }
+        )
+    }
+}
+
+// MARK: - TUI write log path resolution (v0.63.0)
+
+@Suite("PI_TUI_WRITE_LOG path resolution")
+struct TUIWriteLogPathTests {
+    @Test("empty value disables write logging")
+    func emptyDisablesLogging() {
+        #expect(ProcessTerminal.resolveWriteLogPath(env: "") == nil)
+    }
+
+    @Test("file path is used as-is")
+    func filePathUsedAsIs() {
+        let path = FileManager.default.temporaryDirectory
+            .appendingPathComponent("mini-tui-write-log-\(UUID().uuidString).log")
+        let resolved = ProcessTerminal.resolveWriteLogPath(env: path.path)
+        #expect(resolved?.path == path.path)
+    }
+
+    @Test("directory path creates unique per-instance log filename")
+    func directoryCreatesUniqueLogFilename() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("mini-tui-write-log-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let resolved = try #require(ProcessTerminal.resolveWriteLogPath(
+            env: directory.path,
+            now: Date(timeIntervalSince1970: 0),
+            pid: 12345
+        ))
+
+        #expect(resolved.deletingLastPathComponent().path == directory.path)
+        #expect(resolved.lastPathComponent.hasPrefix("tui-"))
+        #expect(resolved.lastPathComponent.hasSuffix("-12345.log"))
+        #expect(resolved.lastPathComponent.count == "tui-YYYY-MM-DD_HH-mm-ss-12345.log".count)
     }
 }

@@ -413,10 +413,21 @@ public final class Markdown: Component {
         }
         if let link = markup as? Link {
             let linkText = renderInlineChildren(link)
+            // v0.67.6: when the terminal advertises OSC 8 support (and isn't running under tmux/
+            // screen, where the sequence is silently dropped), wrap the styled link text with
+            // the OSC 8 escape so the link is clickable. Otherwise fall back to the legacy
+            // "text (url)" rendering so the URL doesn't disappear on terminals that swallow OSC 8.
+            let supportsHyperlink = getCapabilities().hyperlinks
             if link.isAutolink {
+                if supportsHyperlink, let destination = link.destination {
+                    return hyperlink(theme.link(theme.underline(linkText)), url: destination) + getDefaultStylePrefix()
+                }
                 return theme.link(theme.underline(linkText)) + getDefaultStylePrefix()
             }
             if let destination = link.destination {
+                if supportsHyperlink {
+                    return hyperlink(theme.link(theme.underline(linkText)), url: destination) + getDefaultStylePrefix()
+                }
                 return theme.link(theme.underline(linkText)) + theme.linkUrl(" (\(destination))") + getDefaultStylePrefix()
             }
             return theme.link(theme.underline(linkText)) + getDefaultStylePrefix()

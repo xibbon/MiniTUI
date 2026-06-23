@@ -66,6 +66,9 @@ public final class ProcessTerminal: Terminal {
     private var kittyQueryBuffer = ""
     private var kittyQueryWorkItem: DispatchWorkItem?
     private var stdinBuffer: StdinBuffer?
+    private let writeLogPath = ProcessTerminal.resolveWriteLogPath(
+        env: ProcessInfo.processInfo.environment["PI_TUI_WRITE_LOG"] ?? ""
+    )
 
     /// Create a new process-backed terminal.
     public init() {}
@@ -283,7 +286,51 @@ public final class ProcessTerminal: Terminal {
     public func write(_ data: String) {
         if let output = data.data(using: .utf8) {
             FileHandle.standardOutput.write(output)
+            if let writeLogPath {
+                do {
+                    if FileManager.default.fileExists(atPath: writeLogPath.path) {
+                        let handle = try FileHandle(forWritingTo: writeLogPath)
+                        try handle.seekToEnd()
+                        try handle.write(contentsOf: output)
+                        try handle.close()
+                    } else {
+                        try output.write(to: writeLogPath)
+                    }
+                } catch {
+                    // Best-effort debug logging only.
+                }
+            }
         }
+    }
+
+    static func resolveWriteLogPath(
+        env: String,
+        now: Date = Date(),
+        pid: Int32 = getpid(),
+        fileManager: FileManager = .default
+    ) -> URL? {
+        guard !env.isEmpty else { return nil }
+
+        var isDirectory: ObjCBool = false
+        if fileManager.fileExists(atPath: env, isDirectory: &isDirectory), isDirectory.boolValue {
+            return URL(fileURLWithPath: env).appendingPathComponent("tui-\(logTimestamp(now))-\(pid).log")
+        }
+
+        return URL(fileURLWithPath: env)
+    }
+
+    private static func logTimestamp(_ date: Date) -> String {
+        let calendar = Calendar(identifier: .gregorian)
+        let components = calendar.dateComponents([.year, .month, .day, .hour, .minute, .second], from: date)
+        return String(
+            format: "%04d-%02d-%02d_%02d-%02d-%02d",
+            components.year ?? 0,
+            components.month ?? 0,
+            components.day ?? 0,
+            components.hour ?? 0,
+            components.minute ?? 0,
+            components.second ?? 0
+        )
     }
 
     /// Current terminal column count.

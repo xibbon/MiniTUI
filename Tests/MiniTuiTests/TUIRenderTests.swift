@@ -12,7 +12,7 @@ final class TestComponent: Component {
 @MainActor
 private func renderAndFlush(_ tui: TUI, _ terminal: VirtualTerminal, force: Bool = true) async {
     tui.requestRender(force: force)
-    await terminal.flush()
+    await terminal.waitForRender(tui)
 }
 
 @MainActor

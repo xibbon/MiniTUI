@@ -160,6 +160,14 @@ public final class TUI: Container {
     private var clearOnShrink = ProcessInfo.processInfo.environment["PI_CLEAR_ON_SHRINK"] == "1"
     private var maxLinesRendered = 0
     private var fullRedrawCount = 0
+    /// v0.70.5: rate-limit renders to ~60Hz so streaming token bursts don't redraw faster
+    /// than terminals can repaint. `lastRenderAt` is updated each time `doRender()` actually
+    /// runs, and `pendingRenderTask` holds the throttled follow-up if a render is requested
+    /// during the throttle window.
+    private static let minRenderIntervalMs: Double = 16
+    private var lastRenderAt: DispatchTime = .now()
+    private var pendingRenderTask: Task<Void, Never>?
+    private var renderCompletionContinuations: [CheckedContinuation<Void, Never>] = []
     private var overlayStack: [OverlayEntry] = []
     /// v0.69.0 + v0.70.0: keep-alive timer for OSC 9;4 progress indicator.
     private var progressTimer: DispatchSourceTimer?
@@ -367,7 +375,9 @@ public final class TUI: Container {
         terminal.stop()
     }
 
-    /// Request a render, optionally forcing a full redraw.
+    /// Request a render, optionally forcing a full redraw. v0.70.5: renders are throttled to
+    /// `minRenderIntervalMs` (~60Hz) — burst requests during the throttle window collapse into
+    /// a single follow-up render at the end of the window. Force-renders skip the throttle.
     public func requestRender(force: Bool = false) {
         if stopped { return }
         if force {
@@ -375,13 +385,70 @@ public final class TUI: Container {
             previousWidth = -1
             previousHeight = -1
             cursorRow = 0
+            pendingRenderTask?.cancel()
+            pendingRenderTask = nil
+            renderRequested = true
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                if self.stopped || !self.renderRequested { return }
+                self.renderRequested = false
+                self.lastRenderAt = .now()
+                self.doRender()
+                self.flushRenderCompletionContinuations()
+            }
+            return
         }
         if renderRequested { return }
         renderRequested = true
-        Task { @MainActor [weak self] in
-            guard let self else { return }
+        scheduleRender()
+    }
+
+    @MainActor
+    private func scheduleRender() {
+        if stopped || !renderRequested || pendingRenderTask != nil { return }
+        let elapsedMs = Double(DispatchTime.now().uptimeNanoseconds &- lastRenderAt.uptimeNanoseconds) / 1_000_000
+        let delayMs = max(0, TUI.minRenderIntervalMs - elapsedMs)
+        if delayMs == 0 {
+            // Cache stays warm with a microtask-style yield so synchronous requestRender bursts
+            // collapse into a single render rather than each spawning their own task.
+            Task { @MainActor [weak self] in
+                guard let self, !self.stopped, self.renderRequested else { return }
+                self.renderRequested = false
+                self.lastRenderAt = .now()
+                self.doRender()
+                self.flushRenderCompletionContinuations()
+                if self.renderRequested { self.scheduleRender() }
+            }
+            return
+        }
+        pendingRenderTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(delayMs * 1_000_000))
+            guard let self, !Task.isCancelled else { return }
+            self.pendingRenderTask = nil
+            if self.stopped || !self.renderRequested { return }
             self.renderRequested = false
+            self.lastRenderAt = .now()
             self.doRender()
+            self.flushRenderCompletionContinuations()
+            if self.renderRequested { self.scheduleRender() }
+        }
+    }
+
+    /// v0.70.5: suspend until any in-flight render completes. Used by tests that drive the TUI
+    /// imperatively and need the pixel state to settle before asserting on `previousLines`.
+    public func waitForRender() async {
+        if !renderRequested && pendingRenderTask == nil { return }
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            renderCompletionContinuations.append(continuation)
+        }
+    }
+
+    @MainActor
+    private func flushRenderCompletionContinuations() {
+        let continuations = renderCompletionContinuations
+        renderCompletionContinuations = []
+        for cont in continuations {
+            cont.resume()
         }
     }
 

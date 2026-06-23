@@ -290,6 +290,15 @@ public final class Editor: SystemCursorAware, KillBufferAware, EditorComponent {
     }
     private var jumpMode: JumpMode? = nil
     private var preferredVisualCol: Int? = nil
+    /// v0.70.5: when the cursor is snapped to the start of an atomic segment (e.g. a paste
+    /// marker), `state.cursorCol` no longer reflects the visual column the cursor would have
+    /// landed at. Stash that pre-snap column so the next vertical move can resolve it
+    /// against whatever visual line it ends up on.
+    private var snappedFromCursorCol: Int? = nil
+    /// v0.70.5: in-flight autocomplete cancellation signal. New @ / # autocomplete refreshes
+    /// cancel the prior signal and install a fresh one, so a slow fuzzy-file lookup spawned
+    /// for an earlier keystroke never overwrites the suggestions for the latest one.
+    private var autocompleteSignal: CancellationSignal?
 
     private var pastes: [Int: String] = [:]
     private var pasteCounter = 0
@@ -956,6 +965,40 @@ public final class Editor: SystemCursorAware, KillBufferAware, EditorComponent {
         let targetCol = targetVL.startCol + moveToVisualCol
         let logicalLine = state.lines[safe: targetVL.logicalLine] ?? ""
         state.cursorCol = min(targetCol, logicalLine.count)
+
+        // v0.70.5: snap to atomic segment boundary so the cursor never lands inside a paste
+        // marker. If the segment is a continuation from a previous VL and we're moving down,
+        // skip remaining continuation VLs and recurse onto the first VL past the segment.
+        let segments = segmentWithMarkers(logicalLine, validPasteIds: validPasteIds())
+        for seg in segments {
+            if seg.startIndex > state.cursorCol { break }
+            if seg.text.count <= 1 { continue }
+            if state.cursorCol < seg.endIndex {
+                let isContinuation = seg.startIndex < targetVL.startCol
+                let isMovingDown = targetVisualLine > currentVisualLine
+                if isContinuation && isMovingDown {
+                    let segEnd = seg.endIndex
+                    var next = targetVisualLine + 1
+                    while next < visualLines.count
+                        && visualLines[next].logicalLine == targetVL.logicalLine
+                        && visualLines[next].startCol < segEnd {
+                        next += 1
+                    }
+                    if next < visualLines.count {
+                        moveToVisualLine(visualLines, currentVisualLine: currentVisualLine, targetVisualLine: next)
+                        return
+                    }
+                }
+                snappedFromCursorCol = state.cursorCol
+                state.cursorCol = seg.startIndex
+                return
+            }
+        }
+        snappedFromCursorCol = nil
+    }
+
+    private func validPasteIds() -> Set<Int> {
+        Set(pastes.keys)
     }
 
     private func computeVerticalMoveColumn(
@@ -1624,7 +1667,13 @@ public final class Editor: SystemCursorAware, KillBufferAware, EditorComponent {
             }
         }
 
-        if let suggestions = provider.getSuggestions(lines: state.lines, cursorLine: state.cursorLine, cursorCol: state.cursorCol), !suggestions.items.isEmpty {
+        // v0.70.5: cancel any in-flight autocomplete request so its results don't overwrite
+        // the suggestions for this newer trigger.
+        autocompleteSignal?.cancel()
+        let signal = CancellationSignal()
+        autocompleteSignal = signal
+
+        if let suggestions = provider.getSuggestions(lines: state.lines, cursorLine: state.cursorLine, cursorCol: state.cursorCol, signal: signal), !suggestions.items.isEmpty {
             autocompletePrefix = suggestions.prefix
             autocompleteList = SelectList(items: suggestions.items, maxVisible: autocompleteMaxVisible, theme: theme.selectList)
             isAutocompleting = true
@@ -1669,11 +1718,17 @@ public final class Editor: SystemCursorAware, KillBufferAware, EditorComponent {
         isAutocompleting = false
         autocompleteList = nil
         autocompletePrefix = ""
+        autocompleteSignal?.cancel()
+        autocompleteSignal = nil
     }
 
     private func updateAutocomplete() {
         guard isAutocompleting, let provider = autocompleteProvider else { return }
-        if let suggestions = provider.getSuggestions(lines: state.lines, cursorLine: state.cursorLine, cursorCol: state.cursorCol), !suggestions.items.isEmpty {
+        // v0.70.5: cancel any prior in-flight request so its result doesn't race the new one.
+        autocompleteSignal?.cancel()
+        let signal = CancellationSignal()
+        autocompleteSignal = signal
+        if let suggestions = provider.getSuggestions(lines: state.lines, cursorLine: state.cursorLine, cursorCol: state.cursorCol, signal: signal), !suggestions.items.isEmpty {
             autocompletePrefix = suggestions.prefix
             let list = SelectList(items: suggestions.items, maxVisible: autocompleteMaxVisible, theme: theme.selectList)
             // Move highlight to the first item whose value starts with the typed prefix.

@@ -172,11 +172,26 @@ public struct SlashCommand {
 }
 
 /// Provider interface for editor autocomplete suggestions.
+///
+/// v0.65.0: an optional `CancellationSignal` is threaded through `getSuggestions` so callers
+/// can abort long-running fuzzy searches (e.g., slow `fd` over network mounts) when the
+/// user keeps typing. Implementations should voluntarily check `signal?.isCancelled`
+/// at safe checkpoints; the legacy 0-arg form remains the default for source compat.
 public protocol AutocompleteProvider {
     /// Return suggestions and the prefix that should be replaced, or nil for none.
-    func getSuggestions(lines: [String], cursorLine: Int, cursorCol: Int) -> (items: [AutocompleteItem], prefix: String)?
+    /// Implementations should poll `signal?.isCancelled` periodically and bail out early
+    /// when set; returning nil on cancel is the convention.
+    func getSuggestions(lines: [String], cursorLine: Int, cursorCol: Int, signal: CancellationSignal?) -> (items: [AutocompleteItem], prefix: String)?
     /// Apply a chosen completion and return updated text and cursor.
     func applyCompletion(lines: [String], cursorLine: Int, cursorCol: Int, item: AutocompleteItem, prefix: String) -> (lines: [String], cursorLine: Int, cursorCol: Int)
+}
+
+public extension AutocompleteProvider {
+    /// Convenience overload — defaults `signal` to `nil` for callers that don't need
+    /// cancellation.
+    func getSuggestions(lines: [String], cursorLine: Int, cursorCol: Int) -> (items: [AutocompleteItem], prefix: String)? {
+        getSuggestions(lines: lines, cursorLine: cursorLine, cursorCol: cursorCol, signal: nil)
+    }
 }
 
 /// Autocomplete provider that combines slash commands and file suggestions.
@@ -234,13 +249,15 @@ public final class CombinedAutocompleteProvider: AutocompleteProvider {
     }
 
     /// Return suggestions for the current cursor position, if any.
-    public func getSuggestions(lines: [String], cursorLine: Int, cursorCol: Int) -> (items: [AutocompleteItem], prefix: String)? {
+    public func getSuggestions(lines: [String], cursorLine: Int, cursorCol: Int, signal: CancellationSignal?) -> (items: [AutocompleteItem], prefix: String)? {
+        if signal?.isCancelled == true { return nil }
         let currentLine = lines[safe: cursorLine] ?? ""
         let textBeforeCursor = currentLine.substring(from: 0, length: cursorCol)
 
         if let atPrefix = extractAtPrefix(textBeforeCursor) {
             let parsed = parsePathPrefix(atPrefix)
-            let suggestions = getFuzzyFileSuggestions(query: parsed.rawPrefix, isQuotedPrefix: parsed.isQuotedPrefix)
+            let suggestions = getFuzzyFileSuggestions(query: parsed.rawPrefix, isQuotedPrefix: parsed.isQuotedPrefix, signal: signal)
+            if signal?.isCancelled == true { return nil }
             if suggestions.isEmpty { return nil }
             return (suggestions, atPrefix)
         }
@@ -577,15 +594,17 @@ public final class CombinedAutocompleteProvider: AutocompleteProvider {
         return score
     }
 
-    private func getFuzzyFileSuggestions(query: String, isQuotedPrefix: Bool) -> [AutocompleteItem] {
+    private func getFuzzyFileSuggestions(query: String, isQuotedPrefix: Bool, signal: CancellationSignal? = nil) -> [AutocompleteItem] {
         guard let fdPath, !fdPath.isEmpty else {
             return []
         }
+        if signal?.isCancelled == true { return [] }
 
         let scopedQuery = resolveScopedFuzzyQuery(query)
         let fdBaseDir = scopedQuery?.baseDir ?? basePath
         let fdQuery = scopedQuery?.query ?? query
         let entries = walkDirectoryWithFd(baseDir: fdBaseDir, fdPath: fdPath, query: fdQuery, maxResults: 100)
+        if signal?.isCancelled == true { return [] }
         let scored = entries
             .map { entry in
                 (entry: entry, score: fdQuery.isEmpty ? 1 : scoreEntry(filePath: entry.path, query: fdQuery, isDirectory: entry.isDirectory))
@@ -593,6 +612,7 @@ public final class CombinedAutocompleteProvider: AutocompleteProvider {
             .filter { $0.score > 0 }
             .sorted { $0.score > $1.score }
             .prefix(20)
+        if signal?.isCancelled == true { return [] }
 
         return scored.map { scoredEntry in
             let entryPath = scoredEntry.entry.path
