@@ -34,6 +34,17 @@ public struct DefaultTextStyle: Sendable {
     }
 }
 
+/// Options that control source-preservation behavior in Markdown rendering.
+public struct MarkdownOptions: Sendable {
+    /// Preserve source backslashes before escaped punctuation. By default, Markdown escapes
+    /// are normalized to their literal punctuation.
+    public var preserveBackslashEscapes: Bool
+
+    public init(preserveBackslashEscapes: Bool = false) {
+        self.preserveBackslashEscapes = preserveBackslashEscapes
+    }
+}
+
 /// Theme configuration for Markdown rendering.
 public struct MarkdownTheme: Sendable {
     /// Style for headings.
@@ -115,7 +126,9 @@ public final class Markdown: Component {
     private let paddingY: Int
     private let theme: MarkdownTheme
     private let defaultTextStyle: DefaultTextStyle?
+    private let options: MarkdownOptions
     private var defaultStylePrefix: String?
+    private var sourceText = ""
 
     private var cachedText: String?
     private var cachedWidth: Int?
@@ -127,13 +140,15 @@ public final class Markdown: Component {
         paddingX: Int,
         paddingY: Int,
         theme: MarkdownTheme,
-        defaultTextStyle: DefaultTextStyle? = nil
+        defaultTextStyle: DefaultTextStyle? = nil,
+        options: MarkdownOptions = MarkdownOptions()
     ) {
         self.text = text
         self.paddingX = paddingX
         self.paddingY = paddingY
         self.theme = theme
         self.defaultTextStyle = defaultTextStyle
+        self.options = options
     }
 
     /// Update the Markdown text and invalidate cached lines.
@@ -165,7 +180,10 @@ public final class Markdown: Component {
             return result
         }
 
-        let normalizedText = escapeSingleTildeDelimiters(text.replacingOccurrences(of: "\t", with: "   "))
+        let normalizedText = trimPartialClosingFence(
+            escapeSingleTildeDelimiters(text.replacingOccurrences(of: "\t", with: "   "))
+        )
+        sourceText = normalizedText
         let document = Document(parsing: normalizedText)
         let blocks = Array(document.children)
 
@@ -358,6 +376,44 @@ public final class Markdown: Component {
         return result
     }
 
+    /// Remove a still-streaming partial closing fence from the final source line. Otherwise the
+    /// parser treats it as code content, adding a transient row immediately before the border.
+    private func trimPartialClosingFence(_ text: String) -> String {
+        var lines = text.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+        guard let finalLine = lines.last,
+              let finalMarker = fenceMarker(in: finalLine) else {
+            return text
+        }
+
+        var openFence: (character: Character, length: Int)?
+        for line in lines.dropLast() {
+            guard let marker = fenceMarker(in: line), marker.length >= 3 else { continue }
+            if let fence = openFence {
+                if marker.character == fence.character, marker.length >= fence.length {
+                    openFence = nil
+                }
+            } else {
+                openFence = marker
+            }
+        }
+
+        guard let fence = openFence,
+              finalMarker.character == fence.character,
+              finalMarker.length < fence.length,
+              finalLine == String(repeating: String(finalMarker.character), count: finalMarker.length) else {
+            return text
+        }
+        lines.removeLast()
+        return lines.joined(separator: "\n")
+    }
+
+    private func fenceMarker(in line: String) -> (character: Character, length: Int)? {
+        let trimmed = line.drop(while: { $0 == " " })
+        guard let first = trimmed.first, first == "`" || first == "~" else { return nil }
+        let length = trimmed.prefix(while: { $0 == first }).count
+        return (first, length)
+    }
+
     private func removeTrailingStylePrefix(from text: String, stylePrefix: String) -> String {
         guard !stylePrefix.isEmpty else { return text }
         var result = text
@@ -401,12 +457,13 @@ public final class Markdown: Component {
         if let codeBlock = block as? CodeBlock {
             var lines: [String] = []
             lines.append(theme.codeBlockBorder("```\(codeBlock.language ?? "")"))
+            let code = codeBlock.code.hasSuffix("\n") ? String(codeBlock.code.dropLast()) : codeBlock.code
             if let highlightCode = theme.highlightCode {
-                for line in highlightCode(codeBlock.code, codeBlock.language) {
+                for line in highlightCode(code, codeBlock.language) {
                     lines.append("  \(line)")
                 }
             } else {
-                for line in codeBlock.code.split(separator: "\n", omittingEmptySubsequences: false) {
+                for line in code.split(separator: "\n", omittingEmptySubsequences: false) {
                     lines.append("  \(theme.codeBlock(String(line)))")
                 }
             }
@@ -537,10 +594,59 @@ public final class Markdown: Component {
         }
 
         if let text = (markup as? InlineMarkup)?.plainText {
-            return applyTextWithNewlines(text, context: context)
+            let renderedText = options.preserveBackslashEscapes
+                ? sourceText(for: markup) ?? text
+                : text
+            return applyTextWithNewlines(renderedText, context: context)
         }
 
         return ""
+    }
+
+    /// Swift Markdown retains source ranges for parsed text nodes. Use that source when asked
+    /// to preserve escaping; otherwise its `Text.string` intentionally normalizes escapes.
+    private func sourceText(for markup: Markup) -> String? {
+        guard let range = markup.range,
+              range.lowerBound.line == range.upperBound.line else {
+            return nil
+        }
+
+        let lines = sourceText.split(separator: "\n", omittingEmptySubsequences: false)
+        let lineIndex = range.lowerBound.line - 1
+        guard lines.indices.contains(lineIndex) else { return nil }
+        let line = lines[lineIndex]
+        let startOffset = range.lowerBound.column - 1
+        let endOffset = range.upperBound.column - 1
+        guard startOffset >= 0, endOffset >= startOffset,
+              startOffset <= line.utf8.count, endOffset <= line.utf8.count else {
+            return nil
+        }
+
+        let start = line.utf8.index(line.utf8.startIndex, offsetBy: startOffset)
+        let end = line.utf8.index(line.utf8.startIndex, offsetBy: endOffset)
+        guard let stringStart = String.Index(start, within: line),
+              let stringEnd = String.Index(end, within: line) else {
+            return nil
+        }
+        let source = String(line[stringStart..<stringEnd])
+        if source.contains("\\") {
+            return source
+        }
+
+        // cmark can place the escape character immediately before the text node's range.
+        // Keep it when it escapes Markdown punctuation instead of treating a literal backslash
+        // from an earlier text node as part of this node.
+        if startOffset > 0 {
+            let before = line.utf8.index(line.utf8.startIndex, offsetBy: startOffset - 1)
+            if line.utf8[before] == 0x5C, let first = source.first, isMarkdownEscapable(first) {
+                return "\\" + source
+            }
+        }
+        return source
+    }
+
+    private func isMarkdownEscapable(_ character: Character) -> Bool {
+        "!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~".contains(character)
     }
 
     private struct ListLine {
@@ -593,12 +699,13 @@ public final class Markdown: Component {
                 lines.append(ListLine(text: text, isNested: false))
             } else if let codeBlock = child as? CodeBlock {
                 lines.append(ListLine(text: theme.codeBlockBorder("```\(codeBlock.language ?? "")"), isNested: false))
+                let code = codeBlock.code.hasSuffix("\n") ? String(codeBlock.code.dropLast()) : codeBlock.code
                 if let highlightCode = theme.highlightCode {
-                    for line in highlightCode(codeBlock.code, codeBlock.language) {
+                    for line in highlightCode(code, codeBlock.language) {
                         lines.append(ListLine(text: "  \(line)", isNested: false))
                     }
                 } else {
-                    for line in codeBlock.code.split(separator: "\n", omittingEmptySubsequences: false) {
+                    for line in code.split(separator: "\n", omittingEmptySubsequences: false) {
                         lines.append(ListLine(text: "  \(theme.codeBlock(String(line)))", isNested: false))
                     }
                 }

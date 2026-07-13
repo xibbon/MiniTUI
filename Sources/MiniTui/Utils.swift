@@ -8,6 +8,8 @@ private let ansiApcRegex = try! NSRegularExpression(pattern: "\u{001B}_[^\u{0007
 
 private let visibleWidthCache = VisibleWidthCache(maxSize: 512)
 
+/// SAFETY: cache dictionaries and eviction order are accessed only while
+/// holding `lock`.
 private final class VisibleWidthCache: @unchecked Sendable {
     private let lock = NSLock()
     private var values: [String: Int] = [:]

@@ -2,6 +2,20 @@ import Testing
 import Foundation
 @testable import MiniTui
 
+@Test("detects Warp Kitty graphics support")
+func detectsWarpCapabilities() {
+    for environment in [
+        ["TERM_PROGRAM": "WarpTerminal"],
+        ["WARP_SESSION_ID": "some-session-id"],
+        ["WARP_TERMINAL_SESSION_UUID": "d0e1a2e5-7ca7-44cd-9037-ac7222011161"],
+    ] {
+        let capabilities = detectCapabilities(environment: environment)
+        #expect(capabilities.images == .kitty)
+        #expect(capabilities.trueColor)
+        #expect(capabilities.hyperlinks)
+    }
+}
+
 @Suite("isImageLine")
 struct IsImageLineTests {
 

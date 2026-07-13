@@ -1,6 +1,61 @@
 import Testing
 import MiniTui
 
+private struct TriggerAutocompleteProvider: AutocompleteProvider {
+    let triggerCharacters: [String]
+
+    func getSuggestions(lines: [String], cursorLine: Int, cursorCol: Int, signal: CancellationSignal?) -> (items: [AutocompleteItem], prefix: String)? {
+        let currentLine = lines.indices.contains(cursorLine) ? lines[cursorLine] : ""
+        let cursorIndex = currentLine.index(currentLine.startIndex, offsetBy: min(cursorCol, currentLine.count))
+        let beforeCursor = String(currentLine[..<cursorIndex])
+        guard let token = beforeCursor.split(whereSeparator: { $0.isWhitespace }).last,
+              let first = token.first,
+              triggerCharacters.contains(String(first)) else {
+            return nil
+        }
+        return (
+            [AutocompleteItem(value: "\(token)-completion", label: "\(token)-completion")],
+            String(token)
+        )
+    }
+
+    func applyCompletion(lines: [String], cursorLine: Int, cursorCol: Int, item: AutocompleteItem, prefix: String) -> (lines: [String], cursorLine: Int, cursorCol: Int) {
+        var nextLines = lines
+        let currentLine = lines.indices.contains(cursorLine) ? lines[cursorLine] : ""
+        let prefixStartOffset = max(0, cursorCol - prefix.count)
+        let prefixStart = currentLine.index(currentLine.startIndex, offsetBy: min(prefixStartOffset, currentLine.count))
+        let cursorIndex = currentLine.index(currentLine.startIndex, offsetBy: min(cursorCol, currentLine.count))
+        let beforePrefix = String(currentLine[..<prefixStart])
+        let afterCursor = String(currentLine[cursorIndex...])
+        nextLines[cursorLine] = beforePrefix + item.value + afterCursor
+        return (nextLines, cursorLine, beforePrefix.count + item.value.count)
+    }
+}
+
+private final class CountingTriggerAutocompleteProvider: AutocompleteProvider {
+    let triggerCharacters: [String]
+    private(set) var suggestionCalls = 0
+
+    init(triggerCharacters: [String]) {
+        self.triggerCharacters = triggerCharacters
+    }
+
+    func getSuggestions(lines: [String], cursorLine: Int, cursorCol: Int, signal: CancellationSignal?) -> (items: [AutocompleteItem], prefix: String)? {
+        suggestionCalls += 1
+        return TriggerAutocompleteProvider(triggerCharacters: triggerCharacters)
+            .getSuggestions(lines: lines, cursorLine: cursorLine, cursorCol: cursorCol, signal: signal)
+    }
+
+    func applyCompletion(lines: [String], cursorLine: Int, cursorCol: Int, item: AutocompleteItem, prefix: String) -> (lines: [String], cursorLine: Int, cursorCol: Int) {
+        TriggerAutocompleteProvider(triggerCharacters: triggerCharacters)
+            .applyCompletion(lines: lines, cursorLine: cursorLine, cursorCol: cursorCol, item: item, prefix: prefix)
+    }
+}
+
+private func waitForAutocompleteDebounce() async {
+    try? await Task.sleep(nanoseconds: 60_000_000)
+}
+
 @MainActor
 @Test("inserts shifted xterm modifyOtherKeys letters as text")
 func editorInsertsShiftedModifyOtherKeysLetters() {
@@ -503,6 +558,124 @@ func wrapsWideEmoji() {
 }
 
 @MainActor
+@Test("editor horizontal padding is configurable and non-negative")
+func editorHorizontalPaddingConfigurable() {
+    let editor = Editor(theme: defaultEditorTheme, options: EditorOptions(paddingX: 2))
+    #expect(editor.getPaddingX() == 2)
+
+    editor.setPaddingX(-4)
+    #expect(editor.getPaddingX() == 0)
+
+    editor.setPaddingX(3)
+    #expect(editor.getPaddingX() == 3)
+}
+
+@MainActor
+@Test("renders editor content with horizontal padding")
+func rendersEditorContentWithHorizontalPadding() {
+    let editor = Editor(theme: defaultEditorTheme, options: EditorOptions(paddingX: 2))
+    editor.setText("abc")
+
+    let lines = editor.render(width: 12)
+    #expect(visibleWidth(lines[1]) == 12)
+
+    let stripped = stripVTControlCharacters(lines[1])
+    #expect(stripped.hasPrefix("  abc"))
+}
+
+@MainActor
+@Test("wraps editor text using padded content width")
+func wrapsEditorTextUsingPaddedContentWidth() {
+    let editor = Editor(theme: defaultEditorTheme, options: EditorOptions(paddingX: 2))
+    editor.setText("abcdefg")
+
+    let lines = editor.render(width: 10)
+    let contentLines = Array(lines.dropFirst().dropLast())
+
+    #expect(contentLines.count == 2)
+    #expect(contentLines.allSatisfy { visibleWidth($0) == 10 })
+    #expect(stripVTControlCharacters(contentLines[0]).hasPrefix("  abcdef"))
+    #expect(stripVTControlCharacters(contentLines[1]).hasPrefix("  g"))
+}
+
+@MainActor
+@Test("renders autocomplete list inside editor padding")
+func rendersAutocompleteInsideEditorPadding() {
+    let editor = Editor(theme: defaultEditorTheme, options: EditorOptions(paddingX: 2, autocompleteMaxVisible: 3))
+    editor.setAutocompleteProvider(CombinedAutocompleteProvider(commands: [
+        SlashCommand(name: "help", description: "Show help"),
+        SlashCommand(name: "history", description: "Show history"),
+    ]))
+
+    editor.handleInput("/")
+
+    let lines = editor.render(width: 30)
+    let autocompleteLine = lines.first { stripVTControlCharacters($0).contains("help") }
+
+    #expect(autocompleteLine != nil)
+    if let autocompleteLine {
+        #expect(visibleWidth(autocompleteLine) == 30)
+        #expect(stripVTControlCharacters(autocompleteLine).hasPrefix("  "))
+    }
+}
+
+@MainActor
+@Test("custom autocomplete trigger characters open suggestions at token boundary")
+func customAutocompleteTriggerCharactersOpenSuggestions() async {
+    let editor = Editor(theme: defaultEditorTheme)
+    let provider = CountingTriggerAutocompleteProvider(triggerCharacters: ["!"])
+    editor.setAutocompleteProvider(provider)
+
+    editor.handleInput("!")
+
+    #expect(provider.suggestionCalls == 0)
+    #expect(!editor.isShowingAutocomplete())
+
+    await waitForAutocompleteDebounce()
+
+    #expect(provider.suggestionCalls == 1)
+    #expect(editor.isShowingAutocomplete())
+    let rendered = editor.render(width: 40).joined(separator: "\n")
+    #expect(stripVTControlCharacters(rendered).contains("!-completion"))
+}
+
+@MainActor
+@Test("custom autocomplete trigger characters do not fire inside words")
+func customAutocompleteTriggerCharactersDoNotFireInsideWords() async {
+    let editor = Editor(theme: defaultEditorTheme)
+    let provider = CountingTriggerAutocompleteProvider(triggerCharacters: ["!"])
+    editor.setAutocompleteProvider(provider)
+
+    editor.handleInput("a")
+    editor.handleInput("!")
+
+    await waitForAutocompleteDebounce()
+
+    #expect(provider.suggestionCalls == 0)
+    #expect(!editor.isShowingAutocomplete())
+}
+
+@MainActor
+@Test("custom autocomplete trigger context updates while typing token")
+func customAutocompleteTriggerContextUpdatesWhileTypingToken() async {
+    let editor = Editor(theme: defaultEditorTheme)
+    let provider = CountingTriggerAutocompleteProvider(triggerCharacters: ["!"])
+    editor.setAutocompleteProvider(provider)
+
+    editor.handleInput("!")
+    editor.handleInput("a")
+
+    #expect(provider.suggestionCalls == 0)
+
+    await waitForAutocompleteDebounce()
+
+    #expect(provider.suggestionCalls == 1)
+    #expect(editor.isShowingAutocomplete())
+    let rendered = editor.render(width: 40).joined(separator: "\n")
+    #expect(stripVTControlCharacters(rendered).contains("!a-completion"))
+}
+
+@MainActor
 @Test("wraps long text with emojis at correct positions")
 func wrapsLongEmoji() {
     let editor = Editor(theme: defaultEditorTheme)
@@ -526,8 +699,8 @@ func wrapsCjk() {
     }
     let contentLines = lines.dropFirst().dropLast().map { stripVTControlCharacters($0).trimmingCharacters(in: .whitespaces) }
     #expect(contentLines.count == 2)
-    #expect(contentLines[0] == "日本語テス")
-    #expect(contentLines[1] == "ト")
+    #expect(contentLines[0] == "日本語テ")
+    #expect(contentLines[1] == "スト")
 }
 
 @MainActor
@@ -538,8 +711,8 @@ func wrapsMixedWidth() {
     editor.setText("Test ✅ OK 日本")
     let lines = editor.render(width: width)
     let contentLines = Array(lines.dropFirst().dropLast())
-    #expect(contentLines.count == 1)
-    #expect(visibleWidth(contentLines[0]) == width)
+    #expect(contentLines.count == 2)
+    #expect(contentLines.allSatisfy { visibleWidth($0) == width })
 }
 
 @MainActor
@@ -870,6 +1043,43 @@ struct StickyColumnTests {
 }
 
 // MARK: - Paste marker tests
+
+@MainActor
+@Test("deleting a paste marker removes stale paste state and renumbers later markers")
+func deletingPasteMarkerCompactsPasteState() {
+    let editor = Editor(theme: defaultEditorTheme)
+    let firstPaste = (1...11).map { "first \($0)" }.joined(separator: "\n")
+    let secondPaste = (1...11).map { "second \($0)" }.joined(separator: "\n")
+    let thirdPaste = (1...11).map { "third \($0)" }.joined(separator: "\n")
+
+    editor.handleInput("\u{001B}[200~\(firstPaste)\u{001B}[201~")
+    editor.handleInput(" ")
+    editor.handleInput("\u{001B}[200~\(secondPaste)\u{001B}[201~")
+
+    editor.handleInput("\u{0001}") // Ctrl+A, immediately before the first marker.
+    editor.handleInput("\u{001B}[3~") // Forward delete removes that marker atomically.
+
+    #expect(editor.getText().contains("[paste #1 +11 lines]"))
+    #expect(!editor.getExpandedText().contains("first 1"))
+    #expect(editor.getExpandedText().contains("second 1"))
+
+    editor.handleInput("\u{001B}[200~\(thirdPaste)\u{001B}[201~")
+    #expect(editor.getText().contains("[paste #2 +11 lines]"))
+}
+
+@MainActor
+@Test("setText clears paste-marker accounting")
+func setTextClearsPasteMarkerState() {
+    let editor = Editor(theme: defaultEditorTheme)
+    let pasted = (1...11).map { "line \($0)" }.joined(separator: "\n")
+
+    editor.handleInput("\u{001B}[200~\(pasted)\u{001B}[201~")
+    editor.setText("")
+    editor.handleInput("\u{001B}[200~\(pasted)\u{001B}[201~")
+
+    #expect(editor.getText().contains("[paste #1 +11 lines]"))
+    #expect(editor.getExpandedText() == pasted)
+}
 
 @Test("segmentWithMarkers returns atomic segments for valid paste markers")
 func segmentWithMarkersAtomicMarkers() {

@@ -157,6 +157,8 @@ public final class TUI: Container {
     private var lastLineOrigins: [String] = []
     private var inputBuffer = ""
     private var cellSizeQueryPending = false
+    private var terminalColorSchemeListeners: [UUID: (TerminalColorScheme) -> Void] = [:]
+    private var terminalColorSchemeNotificationsEnabled = false
     private var clearOnShrink = ProcessInfo.processInfo.environment["PI_CLEAR_ON_SHRINK"] == "1"
     private var maxLinesRendered = 0
     private var fullRedrawCount = 0
@@ -171,6 +173,21 @@ public final class TUI: Container {
     private var overlayStack: [OverlayEntry] = []
     /// v0.69.0 + v0.70.0: keep-alive timer for OSC 9;4 progress indicator.
     private var progressTimer: DispatchSourceTimer?
+
+    private final class TerminalColorSchemeQuery {
+        var settled = false
+        var unsubscribe: (() -> Void)?
+        var continuation: CheckedContinuation<TerminalColorScheme?, Never>?
+
+        func settle(_ scheme: TerminalColorScheme?) {
+            guard !settled else { return }
+            settled = true
+            unsubscribe?()
+            unsubscribe = nil
+            continuation?.resume(returning: scheme)
+            continuation = nil
+        }
+    }
 
     private final class LineOrigins {
         var values: [String]
@@ -349,6 +366,9 @@ public final class TUI: Container {
             }
         })
         updateCursorMode()
+        if terminalColorSchemeNotificationsEnabled {
+            terminal.write("\u{001B}[?2031h")
+        }
         queryCellSize()
         requestRender()
     }
@@ -361,6 +381,9 @@ public final class TUI: Container {
         progressTimer?.cancel()
         progressTimer = nil
         terminal.setProgress(false)
+        if terminalColorSchemeNotificationsEnabled {
+            terminal.write("\u{001B}[?2031l")
+        }
         if !previousLines.isEmpty {
             let targetRow = previousLines.count
             let lineDiff = targetRow - cursorRow
@@ -455,6 +478,10 @@ public final class TUI: Container {
     private func handleTerminalInput(_ data: String) {
         var input = data
 
+        if consumeTerminalColorSchemeReport(input) {
+            return
+        }
+
         if cellSizeQueryPending {
             inputBuffer += input
             let filtered = parseCellSizeResponse()
@@ -509,6 +536,54 @@ public final class TUI: Container {
         }
         cellSizeQueryPending = true
         terminal.write("\u{001B}[16t")
+    }
+
+    /// Subscribe to terminal color-scheme reports. Returns an unsubscribe closure.
+    @discardableResult
+    public func onTerminalColorSchemeChange(_ listener: @escaping (TerminalColorScheme) -> Void) -> () -> Void {
+        let id = UUID()
+        terminalColorSchemeListeners[id] = listener
+        return { [weak self] in
+            Task { @MainActor in
+                self?.terminalColorSchemeListeners[id] = nil
+            }
+        }
+    }
+
+    /// Enable or disable terminal color-scheme change notifications.
+    public func setTerminalColorSchemeNotifications(_ enabled: Bool) {
+        guard terminalColorSchemeNotificationsEnabled != enabled else { return }
+        terminalColorSchemeNotificationsEnabled = enabled
+        if !stopped {
+            terminal.write(enabled ? "\u{001B}[?2031h" : "\u{001B}[?2031l")
+        }
+    }
+
+    /// Query the terminal's preferred color scheme. Unsupported terminals resolve to `nil`
+    /// after `timeoutMs` milliseconds.
+    public func queryTerminalColorScheme(timeoutMs: Int) async -> TerminalColorScheme? {
+        let query = TerminalColorSchemeQuery()
+        return await withCheckedContinuation { continuation in
+            query.continuation = continuation
+            query.unsubscribe = onTerminalColorSchemeChange { scheme in
+                query.settle(scheme)
+            }
+            let nanoseconds = UInt64(max(0, timeoutMs)) * 1_000_000
+            Task { @MainActor [weak query] in
+                try? await Task.sleep(nanoseconds: nanoseconds)
+                query?.settle(nil)
+            }
+            terminal.write("\u{001B}[?996n")
+        }
+    }
+
+    private func consumeTerminalColorSchemeReport(_ data: String) -> Bool {
+        guard let scheme = parseTerminalColorSchemeReport(data) else { return false }
+        let listeners = Array(terminalColorSchemeListeners.values)
+        for listener in listeners {
+            listener(scheme)
+        }
+        return true
     }
 
     private func parseCellSizeResponse() -> String {
@@ -1032,6 +1107,9 @@ public final class TUI: Container {
                     errorLines.append("")
                     errorLines.append("Debug log written to: \(crashLogPath.path)")
                     let errorMsg = errorLines.joined(separator: "\n")
+                    // Internal component contract violation: renderers must not emit
+                    // lines wider than the terminal. Crash with a debug log instead of
+                    // corrupting terminal state with an unrecoverable frame.
                     fatalError(errorMsg)
                 }
                 buffer += line

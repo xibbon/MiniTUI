@@ -82,6 +82,8 @@ public struct ImageRenderOptions {
     }
 }
 
+/// SAFETY: the wrapped terminal capability/dimension value is read and replaced
+/// only while holding `lock`.
 private final class LockedValue<T>: @unchecked Sendable {
     private let lock = NSLock()
     private var value: T
@@ -123,7 +125,12 @@ public func setCellDimensions(_ dims: CellDimensions) {
 /// OSC 8). This prevents markdown link URLs from disappearing on terminals that silently
 /// swallow OSC 8 sequences.
 public func detectCapabilities() -> TerminalCapabilities {
-    let env = ProcessInfo.processInfo.environment
+    detectCapabilities(environment: ProcessInfo.processInfo.environment)
+}
+
+/// Detect terminal capabilities from an explicit environment. This keeps capability checks
+/// deterministic for tests while the public entry point uses the process environment.
+func detectCapabilities(environment env: [String: String]) -> TerminalCapabilities {
     let termProgram = env["TERM_PROGRAM"]?.lowercased() ?? ""
     let term = env["TERM"]?.lowercased() ?? ""
     let colorTerm = env["COLORTERM"]?.lowercased() ?? ""
@@ -142,6 +149,11 @@ public func detectCapabilities() -> TerminalCapabilities {
     }
 
     if env["WEZTERM_PANE"] != nil || termProgram == "wezterm" || term.contains("wezterm") {
+        return TerminalCapabilities(images: .kitty, trueColor: true, hyperlinks: !isMultiplexed)
+    }
+
+    // Warp supports Kitty graphics and OSC 8 hyperlinks.
+    if termProgram == "warpterminal" || env["WARP_SESSION_ID"] != nil || env["WARP_TERMINAL_SESSION_UUID"] != nil {
         return TerminalCapabilities(images: .kitty, trueColor: true, hyperlinks: !isMultiplexed)
     }
 

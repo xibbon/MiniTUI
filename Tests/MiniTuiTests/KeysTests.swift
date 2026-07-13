@@ -1,6 +1,14 @@
 import Testing
 @testable import MiniTui
 
+@Test("Ctrl+J is a default newline binding")
+func ctrlJIsDefaultNewlineBinding() {
+    let keybindings = TUIKeybindingsManager()
+    #expect(keybindings.getKeys(TUIKeybinding.inputNewLine) == [Key.shift("enter"), Key.ctrl("j")])
+    #expect(keybindings.matches("\n", TUIKeybinding.inputNewLine))
+    #expect(keybindings.matches("\u{001B}[106;5u", TUIKeybinding.inputNewLine))
+}
+
 // MARK: - matchesKey Tests
 
 @Suite("matchesKey", .serialized)

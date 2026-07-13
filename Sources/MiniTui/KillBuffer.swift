@@ -1,5 +1,6 @@
 import Foundation
 
+/// SAFETY: ring-buffer state is accessed only through `withLock`.
 final class KillBuffer: @unchecked Sendable {
     static let shared = KillBuffer()
 

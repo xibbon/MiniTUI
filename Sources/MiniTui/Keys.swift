@@ -2,6 +2,7 @@ import Foundation
 
 public typealias KeyId = String
 
+/// SAFETY: the boolean value is accessed only while holding `lock`.
 private final class LockedBool: @unchecked Sendable {
     private let lock = NSLock()
     private var value: Bool

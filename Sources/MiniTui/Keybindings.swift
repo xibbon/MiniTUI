@@ -88,7 +88,7 @@ public let TUI_KEYBINDINGS: [String: KeybindingDefinition] = [
     TUIKeybinding.editorYank: KeybindingDefinition(defaultKey: Key.ctrl("y"), description: "Yank"),
     TUIKeybinding.editorYankPop: KeybindingDefinition(defaultKey: Key.alt("y"), description: "Yank pop"),
     TUIKeybinding.editorUndo: KeybindingDefinition(defaultKey: Key.ctrl(Key.hyphen), description: "Undo"),
-    TUIKeybinding.inputNewLine: KeybindingDefinition(defaultKey: Key.shift("enter"), description: "Insert newline"),
+    TUIKeybinding.inputNewLine: KeybindingDefinition(defaultKeys: [Key.shift("enter"), Key.ctrl("j")], description: "Insert newline"),
     TUIKeybinding.inputSubmit: KeybindingDefinition(defaultKey: Key.enter, description: "Submit input"),
     TUIKeybinding.inputTab: KeybindingDefinition(defaultKey: Key.tab, description: "Tab / autocomplete"),
     TUIKeybinding.inputCopy: KeybindingDefinition(defaultKey: Key.ctrl("c"), description: "Copy selection"),
@@ -189,6 +189,8 @@ public final class TUIKeybindingsManager {
 
 // MARK: - Global keybindings singleton
 
+/// SAFETY: the global TUI keybinding manager reference is read and replaced only
+/// while holding `lock`.
 private final class LockedTUIKeybindings: @unchecked Sendable {
     private let lock = NSLock()
     private var value: TUIKeybindingsManager
@@ -336,7 +338,7 @@ public let DEFAULT_EDITOR_KEYBINDINGS: [EditorAction: [KeyId]] = [
     .deleteWordForward: [Key.alt("d"), Key.alt("delete")],
     .deleteToLineStart: [Key.ctrl("u")],
     .deleteToLineEnd: [Key.ctrl("k")],
-    .newLine: [Key.shift("enter")],
+    .newLine: [Key.shift("enter"), Key.ctrl("j")],
     .submit: [Key.enter],
     .tab: [Key.tab],
     .selectUp: [Key.up],
@@ -387,6 +389,8 @@ public final class EditorKeybindingsManager {
     }
 }
 
+/// SAFETY: the global editor keybinding manager reference is read and replaced
+/// only while holding `lock`.
 private final class LockedKeybindings: @unchecked Sendable {
     private let lock = NSLock()
     private var value: EditorKeybindingsManager

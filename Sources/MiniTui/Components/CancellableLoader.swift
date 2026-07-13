@@ -1,29 +1,48 @@
 import Foundation
 
 /// Simple cancellation token for coordinating cancelable work.
+///
+/// SAFETY: cancellation state and handlers are protected by `lock`; handlers are
+/// invoked outside the lock so callbacks can safely register more work.
 public final class CancellationSignal: @unchecked Sendable {
-    private(set) var isCancelled = false
+    private let lock = NSLock()
+    private var cancelled = false
     private var handlers: [() -> Void] = []
+
+    public var isCancelled: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return cancelled
+    }
 
     /// Create a new cancellation signal.
     public init() {}
 
     /// Cancel the signal and invoke all registered handlers once.
     public func cancel() {
-        guard !isCancelled else { return }
-        isCancelled = true
-        for handler in handlers {
+        let handlersToRun: [() -> Void] = lock.withLock {
+            guard !cancelled else { return [] }
+            cancelled = true
+            let snapshot = handlers
+            handlers.removeAll()
+            return snapshot
+        }
+        for handler in handlersToRun {
             handler()
         }
-        handlers.removeAll()
     }
 
     /// Register a handler to run on cancellation.
     public func onCancel(_ handler: @escaping () -> Void) {
-        if isCancelled {
-            handler()
-        } else {
+        let shouldRunNow = lock.withLock {
+            if cancelled {
+                return true
+            }
             handlers.append(handler)
+            return false
+        }
+        if shouldRunNow {
+            handler()
         }
     }
 }

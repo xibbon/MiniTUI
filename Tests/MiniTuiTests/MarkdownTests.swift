@@ -2,6 +2,35 @@ import Testing
 import MiniTui
 
 @MainActor
+@Test("normalizes backslash escapes by default and preserves them on request")
+func markdownBackslashEscapeOption() {
+    let source = "\\\""
+    let defaultMarkdown = Markdown(source, paddingX: 0, paddingY: 0, theme: defaultMarkdownTheme)
+    let preservingMarkdown = Markdown(
+        source,
+        paddingX: 0,
+        paddingY: 0,
+        theme: defaultMarkdownTheme,
+        options: MarkdownOptions(preserveBackslashEscapes: true)
+    )
+
+    #expect(stripAnsiCodes(defaultMarkdown.render(width: 80)[0]).trimmedRight() == "\"")
+    #expect(stripAnsiCodes(preservingMarkdown.render(width: 80)[0]).trimmedRight() == source)
+}
+
+@MainActor
+@Test("stabilizes partial closing code fences while streaming")
+func markdownPartialClosingFence() {
+    let partial = Markdown("```ts\nconst x = 1;\n``", paddingX: 0, paddingY: 0, theme: defaultMarkdownTheme)
+    let complete = Markdown("```ts\nconst x = 1;\n```", paddingX: 0, paddingY: 0, theme: defaultMarkdownTheme)
+
+    let partialLines = partial.render(width: 80).map { stripAnsiCodes($0).trimmedRight() }
+    let completeLines = complete.render(width: 80).map { stripAnsiCodes($0).trimmedRight() }
+    #expect(partialLines == ["```ts", "  const x = 1;", "```"])
+    #expect(partialLines.count == completeLines.count)
+}
+
+@MainActor
 @Test("renders simple nested list")
 func rendersSimpleNestedList() {
     let markdown = Markdown(

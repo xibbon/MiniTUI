@@ -183,6 +183,9 @@ public struct SlashCommand {
 /// user keeps typing. Implementations should voluntarily check `signal?.isCancelled`
 /// at safe checkpoints; the legacy 0-arg form remains the default for source compat.
 public protocol AutocompleteProvider {
+    /// Characters that should naturally trigger this provider at token boundaries.
+    var triggerCharacters: [String] { get }
+
     /// Return suggestions and the prefix that should be replaced, or nil for none.
     /// Implementations should poll `signal?.isCancelled` periodically and bail out early
     /// when set; returning nil on cancel is the convention.
@@ -192,6 +195,8 @@ public protocol AutocompleteProvider {
 }
 
 public extension AutocompleteProvider {
+    var triggerCharacters: [String] { [] }
+
     /// Convenience overload — defaults `signal` to `nil` for callers that don't need
     /// cancellation.
     func getSuggestions(lines: [String], cursorLine: Int, cursorCol: Int) -> (items: [AutocompleteItem], prefix: String)? {

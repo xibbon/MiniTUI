@@ -110,9 +110,11 @@ public struct EditorTheme: Sendable {
 
 /// Options for configuring the editor.
 public struct EditorOptions: Sendable {
+    public var paddingX: Int?
     public var autocompleteMaxVisible: Int?
 
-    public init(autocompleteMaxVisible: Int? = nil) {
+    public init(paddingX: Int? = nil, autocompleteMaxVisible: Int? = nil) {
+        self.paddingX = paddingX
         self.autocompleteMaxVisible = autocompleteMaxVisible
     }
 }
@@ -268,6 +270,9 @@ private struct LayoutLine {
     var cursorPos: Int?
 }
 
+private let defaultAutocompleteTriggerCharacters: Set<Character> = ["@", "#"]
+private let attachmentAutocompleteDebounceMilliseconds = 20
+
 /// Multi-line editor with history and autocomplete support.
 public final class Editor: SystemCursorAware, KillBufferAware, EditorComponent {
     private var state = EditorState(lines: [""], cursorLine: 0, cursorCol: 0)
@@ -280,9 +285,13 @@ public final class Editor: SystemCursorAware, KillBufferAware, EditorComponent {
     public var usesSystemCursor = false
 
     private var autocompleteProvider: AutocompleteProvider?
+    private var autocompleteTriggerCharacters = defaultAutocompleteTriggerCharacters
     private var autocompleteList: SelectList?
     private var isAutocompleting = false
     private var autocompletePrefix = ""
+    private var autocompleteDebounceWorkItem: DispatchWorkItem?
+    private var autocompleteRequestToken = 0
+    private var paddingX: Int = 0
     private var autocompleteMaxVisible: Int = 5
     private enum JumpMode {
         case forward
@@ -327,10 +336,23 @@ public final class Editor: SystemCursorAware, KillBufferAware, EditorComponent {
     public init(theme: EditorTheme, options: EditorOptions = EditorOptions()) {
         self.theme = theme
         self.borderColor = theme.borderColor
+        if let paddingX = options.paddingX {
+            self.paddingX = max(0, paddingX)
+        }
         if let maxVisible = options.autocompleteMaxVisible {
             let clamped = max(3, min(20, maxVisible))
             self.autocompleteMaxVisible = clamped
         }
+    }
+
+    /// Return the horizontal editor padding.
+    public func getPaddingX() -> Int {
+        paddingX
+    }
+
+    /// Set the horizontal editor padding.
+    public func setPaddingX(_ padding: Int) {
+        paddingX = max(0, padding)
     }
 
     /// Return the max visible autocomplete items.
@@ -346,7 +368,9 @@ public final class Editor: SystemCursorAware, KillBufferAware, EditorComponent {
 
     /// Provide an autocomplete provider for slash commands and file suggestions.
     public func setAutocompleteProvider(_ provider: AutocompleteProvider) {
+        cancelAutocomplete()
         autocompleteProvider = provider
+        setAutocompleteTriggerCharacters(provider.triggerCharacters)
     }
 
     /// Add a string to the history, ignoring empty or duplicate entries.
@@ -362,16 +386,23 @@ public final class Editor: SystemCursorAware, KillBufferAware, EditorComponent {
 
     /// Render the editor content and optional autocomplete list.
     public func render(width: Int) -> [String] {
-        lastWidth = width
+        let maxPadding = max(0, (width - 1) / 2)
+        let effectivePaddingX = min(paddingX, maxPadding)
+        let contentWidth = max(1, width - effectivePaddingX * 2)
+        let layoutWidth = max(1, contentWidth - (effectivePaddingX == 0 ? 1 : 0))
+        lastWidth = layoutWidth
         let horizontal = borderColor("─")
-        let layoutLines = layoutText(contentWidth: width)
+        let layoutLines = layoutText(contentWidth: layoutWidth)
         var result: [String] = []
+        let leftPadding = String(repeating: " ", count: effectivePaddingX)
+        let rightPadding = leftPadding
 
         result.append(String(repeating: horizontal, count: width))
 
         for layoutLine in layoutLines {
             var displayText = layoutLine.text
             var lineVisibleWidth = visibleWidth(displayText)
+            var cursorInPadding = false
 
             if layoutLine.hasCursor, let cursorPos = layoutLine.cursorPos {
                 let before = displayText.prefixCharacters(cursorPos)
@@ -388,6 +419,9 @@ public final class Editor: SystemCursorAware, KillBufferAware, EditorComponent {
                     let cursor = "\u{001B}[7m \u{001B}[0m"
                     displayText = before + cursor
                     lineVisibleWidth += 1
+                    if lineVisibleWidth > contentWidth && effectivePaddingX > 0 {
+                        cursorInPadding = true
+                    }
                 } else {
                     let beforeChars = Array(before)
                     if let last = beforeChars.last {
@@ -398,14 +432,19 @@ public final class Editor: SystemCursorAware, KillBufferAware, EditorComponent {
                 }
             }
 
-            let padding = String(repeating: " ", count: max(0, width - lineVisibleWidth))
-            result.append(displayText + padding)
+            let padding = String(repeating: " ", count: max(0, contentWidth - lineVisibleWidth))
+            let lineRightPadding = cursorInPadding ? String(rightPadding.dropFirst()) : rightPadding
+            result.append(leftPadding + displayText + padding + lineRightPadding)
         }
 
         result.append(String(repeating: horizontal, count: width))
 
         if isAutocompleting, let autocompleteList {
-            result.append(contentsOf: autocompleteList.render(width: width))
+            for line in autocompleteList.render(width: contentWidth) {
+                let lineWidth = visibleWidth(line)
+                let linePadding = String(repeating: " ", count: max(0, contentWidth - lineWidth))
+                result.append(leftPadding + line + linePadding + rightPadding)
+            }
         }
 
         return result
@@ -710,6 +749,8 @@ public final class Editor: SystemCursorAware, KillBufferAware, EditorComponent {
         }
         setLastAction(nil)
         historyIndex = -1
+        pastes.removeAll()
+        pasteCounter = 0
         setTextInternal(text)
     }
 
@@ -779,16 +820,19 @@ public final class Editor: SystemCursorAware, KillBufferAware, EditorComponent {
         if !isAutocompleting {
             if text == "/" && isAtStartOfMessage() {
                 tryTriggerAutocomplete(explicitTab: false)
-            } else if text == "@" {
+            } else if isAutocompleteTriggerCharacter(text) {
                 let currentLine = state.lines[safe: state.cursorLine] ?? ""
                 let textBeforeCursor = currentLine.prefixCharacters(max(0, state.cursorCol))
-                if textBeforeCursor.count == 1 || textBeforeCursor.suffixCharacters(2).first == " " {
+                let charBeforeSymbol = textBeforeCursor.count > 1 ? textBeforeCursor.suffixCharacters(2).first : nil
+                if textBeforeCursor.count == 1 || charBeforeSymbol.map(isWhitespaceChar) == true {
                     tryTriggerAutocomplete(explicitTab: false)
                 }
             } else if text.range(of: "^[a-zA-Z0-9._-]$", options: .regularExpression) != nil {
                 let currentLine = state.lines[safe: state.cursorLine] ?? ""
                 let textBeforeCursor = currentLine.prefixCharacters(max(0, state.cursorCol))
                 if textBeforeCursor.trimmingCharacters(in: .whitespaces).hasPrefix("/") {
+                    tryTriggerAutocomplete(explicitTab: false)
+                } else if isInSymbolCompletionContext(textBeforeCursor) {
                     tryTriggerAutocomplete(explicitTab: false)
                 }
             }
@@ -855,19 +899,26 @@ public final class Editor: SystemCursorAware, KillBufferAware, EditorComponent {
             // Check if cursor is right after a paste marker — delete the whole marker
             let validIds = Set(pastes.keys)
             var deleteCount = 1
+            var deletedPasteId: Int?
             if !validIds.isEmpty {
                 // Scan backwards to see if the character before cursor is the end of a marker
-                for (start, end) in findPasteMarkerRanges(in: line, validIds: validIds) {
+                for (start, end, pasteId) in findPasteMarkerRanges(in: line, validIds: validIds) {
                     if end == state.cursorCol {
                         deleteCount = end - start
+                        deletedPasteId = pasteId
                         break
                     }
                 }
             }
 
+            if let deletedPasteId {
+                removePasteMarker(id: deletedPasteId)
+            }
+
+            let currentLine = state.lines[safe: state.cursorLine] ?? ""
             let deleteStart = max(0, state.cursorCol - deleteCount)
-            let before = line.prefixCharacters(deleteStart)
-            let after = line.substring(from: state.cursorCol, length: max(0, line.count - state.cursorCol))
+            let before = currentLine.prefixCharacters(deleteStart)
+            let after = currentLine.substring(from: state.cursorCol, length: max(0, currentLine.count - state.cursorCol))
             state.lines[state.cursorLine] = before + after
             setCursorCol(deleteStart)
         } else if state.cursorLine > 0 {
@@ -889,7 +940,7 @@ public final class Editor: SystemCursorAware, KillBufferAware, EditorComponent {
             let textBeforeCursor = currentLine.prefixCharacters(state.cursorCol)
             if textBeforeCursor.trimmingCharacters(in: .whitespaces).hasPrefix("/") {
                 tryTriggerAutocomplete(explicitTab: false)
-            } else if textBeforeCursor.range(of: "(?:^|\\s)@[\\S]*$", options: .regularExpression) != nil {
+            } else if isInSymbolCompletionContext(textBeforeCursor) {
                 tryTriggerAutocomplete(explicitTab: false)
             }
         }
@@ -902,8 +953,18 @@ public final class Editor: SystemCursorAware, KillBufferAware, EditorComponent {
 
         if state.cursorCol < currentLine.count {
             pushUndoSnapshot()
-            let before = currentLine.prefixCharacters(state.cursorCol)
-            let after = currentLine.substring(from: state.cursorCol + 1, length: max(0, currentLine.count - state.cursorCol - 1))
+            let marker = findPasteMarkerRanges(in: currentLine, validIds: Set(pastes.keys))
+                .first { $0.start == state.cursorCol }
+            if let marker {
+                removePasteMarker(id: marker.id)
+            }
+            let updatedLine = state.lines[safe: state.cursorLine] ?? ""
+            let deleteCount = marker.map { $0.end - $0.start } ?? 1
+            let before = updatedLine.prefixCharacters(state.cursorCol)
+            let after = updatedLine.substring(
+                from: state.cursorCol + deleteCount,
+                length: max(0, updatedLine.count - state.cursorCol - deleteCount)
+            )
             state.lines[state.cursorLine] = before + after
         } else if state.cursorLine < state.lines.count - 1 {
             pushUndoSnapshot()
@@ -920,7 +981,7 @@ public final class Editor: SystemCursorAware, KillBufferAware, EditorComponent {
             let textBeforeCursor = currentLine.prefixCharacters(state.cursorCol)
             if textBeforeCursor.trimmingCharacters(in: .whitespaces).hasPrefix("/") {
                 tryTriggerAutocomplete(explicitTab: false)
-            } else if textBeforeCursor.range(of: "(?:^|\\s)@[\\S]*$", options: .regularExpression) != nil {
+            } else if isInSymbolCompletionContext(textBeforeCursor) {
                 tryTriggerAutocomplete(explicitTab: false)
             }
         }
@@ -1522,10 +1583,10 @@ public final class Editor: SystemCursorAware, KillBufferAware, EditorComponent {
     }
 
     /// Find all valid paste marker character ranges in a line.
-    private func findPasteMarkerRanges(in line: String, validIds: Set<Int>) -> [(start: Int, end: Int)] {
+    private func findPasteMarkerRanges(in line: String, validIds: Set<Int>) -> [(start: Int, end: Int, id: Int)] {
         let nsRange = NSRange(line.startIndex..<line.endIndex, in: line)
         let matches = pasteMarkerRegex.matches(in: line, options: [], range: nsRange)
-        var ranges: [(Int, Int)] = []
+        var ranges: [(Int, Int, Int)] = []
         for match in matches {
             guard let idRange = Range(match.range(at: 1), in: line),
                   let pasteId = Int(line[idRange]),
@@ -1533,9 +1594,40 @@ public final class Editor: SystemCursorAware, KillBufferAware, EditorComponent {
                   let fullRange = Range(match.range, in: line) else { continue }
             let start = line.distance(from: line.startIndex, to: fullRange.lowerBound)
             let end = line.distance(from: line.startIndex, to: fullRange.upperBound)
-            ranges.append((start, end))
+            ranges.append((start, end, pasteId))
         }
         return ranges
+    }
+
+    /// Remove a stored paste and compact later marker IDs so marker text still points at the
+    /// correct paste content after an atomic marker is deleted.
+    private func removePasteMarker(id targetId: Int) {
+        guard pastes.removeValue(forKey: targetId) != nil else { return }
+        pasteCounter = max(0, pasteCounter - 1)
+
+        var renumberedPastes: [Int: String] = [:]
+        for (id, content) in pastes {
+            renumberedPastes[id > targetId ? id - 1 : id] = content
+        }
+        pastes = renumberedPastes
+
+        state.lines = state.lines.map { line in
+            let range = NSRange(line.startIndex..<line.endIndex, in: line)
+            let matches = pasteMarkerRegex.matches(in: line, options: [], range: range)
+            var rewritten = line
+            for match in matches.reversed() {
+                guard let idRange = Range(match.range(at: 1), in: line),
+                      let id = Int(line[idRange]), id > targetId,
+                      let fullRange = Range(match.range, in: rewritten) else {
+                    continue
+                }
+                let suffix = match.range(at: 2).location == NSNotFound
+                    ? ""
+                    : String(line[Range(match.range(at: 2), in: line)!])
+                rewritten.replaceSubrange(fullRange, with: "[paste #\(id - 1)\(suffix)]")
+            }
+            return rewritten
+        }
     }
 
     private func isEditorEmpty() -> Bool {
@@ -1653,6 +1745,29 @@ public final class Editor: SystemCursorAware, KillBufferAware, EditorComponent {
         return nil
     }
 
+    private func setAutocompleteTriggerCharacters(_ triggerCharacters: [String]) {
+        var next = defaultAutocompleteTriggerCharacters
+        for trigger in triggerCharacters {
+            guard trigger.count == 1, let character = trigger.first else { continue }
+            guard character != "/", !isWhitespaceChar(character) else { continue }
+            next.insert(character)
+        }
+        autocompleteTriggerCharacters = next
+    }
+
+    private func isAutocompleteTriggerCharacter(_ text: String) -> Bool {
+        guard text.count == 1, let character = text.first else { return false }
+        return autocompleteTriggerCharacters.contains(character)
+    }
+
+    private func isInSymbolCompletionContext(_ textBeforeCursor: String) -> Bool {
+        guard let token = textBeforeCursor.split(whereSeparator: isWhitespaceChar).last,
+              let first = token.first else {
+            return false
+        }
+        return autocompleteTriggerCharacters.contains(first)
+    }
+
     private func tryTriggerAutocomplete(explicitTab: Bool) {
         guard let provider = autocompleteProvider else { return }
 
@@ -1662,16 +1777,62 @@ public final class Editor: SystemCursorAware, KillBufferAware, EditorComponent {
             }
         }
 
+        requestAutocomplete(provider: provider, explicitTab: explicitTab)
+    }
+
+    private func requestAutocomplete(provider: AutocompleteProvider, explicitTab: Bool) {
+        let requestToken = beginAutocompleteRequest()
+        let debounceMs = getAutocompleteDebounceMilliseconds(explicitTab: explicitTab)
+        if debounceMs > 0 {
+            let workItem = DispatchWorkItem { [weak self] in
+                guard let self else { return }
+                self.autocompleteDebounceWorkItem = nil
+                self.runAutocompleteRequest(provider: provider, requestToken: requestToken)
+            }
+            autocompleteDebounceWorkItem = workItem
+            DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(debounceMs), execute: workItem)
+            return
+        }
+
+        runAutocompleteRequest(provider: provider, requestToken: requestToken)
+    }
+
+    @discardableResult
+    private func beginAutocompleteRequest() -> Int {
+        cancelPendingAutocompleteRequest()
+        autocompleteRequestToken += 1
+        return autocompleteRequestToken
+    }
+
+    private func cancelPendingAutocompleteRequest() {
+        autocompleteDebounceWorkItem?.cancel()
+        autocompleteDebounceWorkItem = nil
+        autocompleteSignal?.cancel()
+        autocompleteSignal = nil
+    }
+
+    private func runAutocompleteRequest(provider: AutocompleteProvider, requestToken: Int) {
+        guard requestToken == autocompleteRequestToken else { return }
+        let wasAutocompleting = isAutocompleting
+
         // v0.70.5: cancel any in-flight autocomplete request so its results don't overwrite
         // the suggestions for this newer trigger.
         autocompleteSignal?.cancel()
         let signal = CancellationSignal()
         autocompleteSignal = signal
 
-        if let suggestions = provider.getSuggestions(lines: state.lines, cursorLine: state.cursorLine, cursorCol: state.cursorCol, signal: signal), !suggestions.items.isEmpty {
-            autocompletePrefix = suggestions.prefix
-            autocompleteList = SelectList(items: suggestions.items, maxVisible: autocompleteMaxVisible, theme: theme.selectList)
-            isAutocompleting = true
+        if let suggestions = provider.getSuggestions(lines: state.lines, cursorLine: state.cursorLine, cursorCol: state.cursorCol, signal: signal),
+           requestToken == autocompleteRequestToken,
+           !signal.isCancelled,
+           !suggestions.items.isEmpty {
+            autocompleteSignal = nil
+            if wasAutocompleting {
+                applyUpdatedAutocomplete(suggestions)
+            } else {
+                autocompletePrefix = suggestions.prefix
+                autocompleteList = SelectList(items: suggestions.items, maxVisible: autocompleteMaxVisible, theme: theme.selectList)
+                isAutocompleting = true
+            }
         } else {
             cancelAutocomplete()
         }
@@ -1698,7 +1859,9 @@ public final class Editor: SystemCursorAware, KillBufferAware, EditorComponent {
         guard let provider = autocompleteProvider else { return }
 
         if let combined = provider as? CombinedAutocompleteProvider {
+            let requestToken = beginAutocompleteRequest()
             if let suggestions = combined.getForceFileSuggestions(lines: state.lines, cursorLine: state.cursorLine, cursorCol: state.cursorCol), !suggestions.items.isEmpty {
+                guard requestToken == autocompleteRequestToken else { return }
                 autocompletePrefix = suggestions.prefix
                 autocompleteList = SelectList(items: suggestions.items, maxVisible: autocompleteMaxVisible, theme: theme.selectList)
                 isAutocompleting = true
@@ -1710,33 +1873,39 @@ public final class Editor: SystemCursorAware, KillBufferAware, EditorComponent {
     }
 
     private func cancelAutocomplete() {
+        cancelPendingAutocompleteRequest()
+        autocompleteRequestToken += 1
         isAutocompleting = false
         autocompleteList = nil
         autocompletePrefix = ""
-        autocompleteSignal?.cancel()
-        autocompleteSignal = nil
     }
 
     private func updateAutocomplete() {
         guard isAutocompleting, let provider = autocompleteProvider else { return }
-        // v0.70.5: cancel any prior in-flight request so its result doesn't race the new one.
-        autocompleteSignal?.cancel()
-        let signal = CancellationSignal()
-        autocompleteSignal = signal
-        if let suggestions = provider.getSuggestions(lines: state.lines, cursorLine: state.cursorLine, cursorCol: state.cursorCol, signal: signal), !suggestions.items.isEmpty {
-            autocompletePrefix = suggestions.prefix
-            let list = SelectList(items: suggestions.items, maxVisible: autocompleteMaxVisible, theme: theme.selectList)
-            // Move highlight to the first item whose value starts with the typed prefix.
-            if !suggestions.prefix.isEmpty {
-                let lowered = suggestions.prefix.lowercased()
-                if let matchIndex = suggestions.items.firstIndex(where: { $0.value.lowercased().hasPrefix(lowered) }) {
-                    list.setSelectedIndex(matchIndex)
-                }
+        requestAutocomplete(provider: provider, explicitTab: false)
+    }
+
+    private func applyUpdatedAutocomplete(_ suggestions: (items: [AutocompleteItem], prefix: String)) {
+        autocompletePrefix = suggestions.prefix
+        let list = SelectList(items: suggestions.items, maxVisible: autocompleteMaxVisible, theme: theme.selectList)
+        // Move highlight to the first item whose value starts with the typed prefix.
+        if !suggestions.prefix.isEmpty {
+            let lowered = suggestions.prefix.lowercased()
+            if let matchIndex = suggestions.items.firstIndex(where: { $0.value.lowercased().hasPrefix(lowered) }) {
+                list.setSelectedIndex(matchIndex)
             }
-            autocompleteList = list
-        } else {
-            cancelAutocomplete()
         }
+        autocompleteList = list
+    }
+
+    private func getAutocompleteDebounceMilliseconds(explicitTab: Bool) -> Int {
+        if explicitTab {
+            return 0
+        }
+
+        let currentLine = state.lines[safe: state.cursorLine] ?? ""
+        let textBeforeCursor = currentLine.prefixCharacters(state.cursorCol)
+        return isInSymbolCompletionContext(textBeforeCursor) ? attachmentAutocompleteDebounceMilliseconds : 0
     }
 }
 
