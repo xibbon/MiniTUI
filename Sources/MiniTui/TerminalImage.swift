@@ -106,10 +106,166 @@ private final class LockedValue<T>: @unchecked Sendable {
         value = newValue
         lock.unlock()
     }
+
+    func update<R>(_ body: (inout T) -> R) -> R {
+        lock.lock()
+        defer { lock.unlock() }
+        return body(&value)
+    }
 }
 
 private let cachedCapabilities = LockedValue<TerminalCapabilities?>(nil)
 private let cellDimensions = LockedValue(CellDimensions(widthPx: 9, heightPx: 18))
+
+struct KittyImageMetadata {
+    let imageID: UInt32
+    let columns: Int
+    let rows: Int
+    let widthPx: Int
+    let heightPx: Int
+    let transmissionGeneration: Int
+}
+
+struct KittyImagePlacement {
+    let imageID: UInt32
+    let transmissionGeneration: Int
+    let transmissionBytes: Int
+    let estimatedDecodedBytes: Int
+    let replacementLine: String
+}
+
+private let kittyLayoutMetadata = LockedValue<[UInt32: KittyImageMetadata]>([:])
+private let kittyTransmissionGeneration = LockedValue(0)
+
+private func kittyTransmission(in line: String) -> String? {
+    guard let firstStart = line.range(of: kittyPrefix)?.lowerBound else { return nil }
+    var commandStart = firstStart
+    while true {
+        guard let controlsEnd = line[commandStart...].firstIndex(of: ";"),
+              let terminator = line[controlsEnd...].range(of: "\u{001B}\\") else {
+            return nil
+        }
+        let controlsStart = line.index(commandStart, offsetBy: kittyPrefix.count)
+        let controls = line[controlsStart..<controlsEnd].split(separator: ",")
+        let transmissionEnd = terminator.upperBound
+        if !controls.contains("m=1") {
+            return String(line[firstStart..<transmissionEnd])
+        }
+        guard transmissionEnd < line.endIndex, line[transmissionEnd...].hasPrefix(kittyPrefix) else {
+            return nil
+        }
+        commandStart = transmissionEnd
+    }
+}
+
+private func kittyImageID(in line: String) -> UInt32? {
+    guard let commandStart = line.range(of: kittyPrefix)?.lowerBound,
+          let controlsEnd = line[commandStart...].firstIndex(of: ";") else {
+        return nil
+    }
+    let controlsStart = line.index(commandStart, offsetBy: kittyPrefix.count)
+    for control in line[controlsStart..<controlsEnd].split(separator: ",") {
+        guard control.hasPrefix("i=") else { continue }
+        return UInt32(control.dropFirst(2))
+    }
+    return nil
+}
+
+private func registerKittyLayoutMetadata(metadata: KittyImageMetadata) {
+    kittyLayoutMetadata.update { values in
+        values.removeValue(forKey: metadata.imageID)
+        values[metadata.imageID] = metadata
+        if values.count > 1_000, let oldestKey = values.keys.first {
+            values.removeValue(forKey: oldestKey)
+        }
+    }
+}
+
+func getKittyImageMetadata(_ line: String) -> KittyImageMetadata? {
+    guard let imageID = kittyImageID(in: line) else { return nil }
+    return kittyLayoutMetadata.get()[imageID]
+}
+
+func getKittyImagePlacement(_ line: String) -> KittyImagePlacement? {
+    guard let firstRange = line.range(of: kittyPrefix),
+          let metadata = getKittyImageMetadata(line) else {
+        return nil
+    }
+    let firstStart = firstRange.lowerBound
+    var commandStart = firstStart
+    var transmissionEnd: String.Index?
+    while true {
+        guard let controlsEnd = line[commandStart...].firstIndex(of: ";"),
+              let terminator = line[controlsEnd...].range(of: "\u{001B}\\") else {
+            return nil
+        }
+        let controlsStart = line.index(commandStart, offsetBy: kittyPrefix.count)
+        let controls = line[controlsStart..<controlsEnd].split(separator: ",")
+        transmissionEnd = terminator.upperBound
+        if !controls.contains("m=1") { break }
+        guard terminator.upperBound < line.endIndex,
+              line[terminator.upperBound...].hasPrefix(kittyPrefix) else {
+            return nil
+        }
+        commandStart = terminator.upperBound
+    }
+    guard let transmissionEnd,
+          let controlsEnd = line[firstStart...].firstIndex(of: ";") else {
+        return nil
+    }
+    let controlsStart = line.index(firstStart, offsetBy: kittyPrefix.count)
+    let placementKeys: Set<String> = [
+        "i", "p", "x", "y", "w", "h", "X", "Y", "c", "r", "C", "U",
+        "z", "P", "Q", "H", "V",
+    ]
+    let controls = line[controlsStart..<controlsEnd]
+        .split(separator: ",")
+        .map(String.init)
+        .filter { placementKeys.contains(String($0.split(separator: "=", maxSplits: 1)[0])) }
+    let placement = kittyPrefix + "a=p,q=2," + controls.joined(separator: ",") + "\u{001B}\\"
+    let transmission = line[firstStart..<transmissionEnd]
+    let replacement = String(line[..<firstStart]) + placement + String(line[transmissionEnd...])
+    return KittyImagePlacement(
+        imageID: metadata.imageID,
+        transmissionGeneration: metadata.transmissionGeneration,
+        transmissionBytes: transmission.utf8.count,
+        estimatedDecodedBytes: metadata.widthPx * metadata.heightPx * 4,
+        replacementLine: replacement
+    )
+}
+
+func cropKittyImageLine(_ line: String, hiddenRows: Int, visibleRows: Int) -> String {
+    guard let metadata = getKittyImageMetadata(line),
+          hiddenRows >= 0,
+          hiddenRows < metadata.rows,
+          visibleRows > 0,
+          let commandStart = line.range(of: "\u{001B}_G")?.lowerBound,
+          let controlsEnd = line[commandStart...].firstIndex(of: ";") else {
+        return line
+    }
+
+    let croppedRows = min(visibleRows, metadata.rows - hiddenRows)
+    if hiddenRows == 0, croppedRows == metadata.rows { return line }
+    let sourceY = metadata.heightPx * hiddenRows / metadata.rows
+    let sourceEnd = Int(ceil(Double(metadata.heightPx * (hiddenRows + croppedRows)) / Double(metadata.rows)))
+    let sourceHeight = max(1, min(metadata.heightPx, sourceEnd) - sourceY)
+    let controlsStart = line.index(commandStart, offsetBy: 3)
+    var controls = line[controlsStart..<controlsEnd]
+        .split(separator: ",")
+        .map(String.init)
+        .filter { control in
+            !control.hasPrefix("y=") && !control.hasPrefix("h=") && !control.hasPrefix("r=")
+        }
+    controls.append("y=\(sourceY)")
+    controls.append("h=\(sourceHeight)")
+    controls.append("r=\(croppedRows)")
+    let suffixStart = line.index(after: controlsEnd)
+    return String(line[..<commandStart])
+        + "\u{001B}_G"
+        + controls.joined(separator: ",")
+        + ";"
+        + String(line[suffixStart...])
+}
 
 /// Return the current terminal cell dimensions.
 public func getCellDimensions() -> CellDimensions {
@@ -212,13 +368,18 @@ public func allocateImageId() -> UInt32 {
 
 /// Delete a specific Kitty graphics image by ID.
 public func deleteKittyImage(imageId: UInt32) -> String {
-    return "\u{001B}_Ga=d,d=I,i=\(imageId)\u{001B}\\"
+    return "\u{001B}_Ga=d,d=I,i=\(imageId),q=2\u{001B}\\"
 }
 
 /// Delete all visible Kitty graphics images.
 /// Uses uppercase 'A' to also free the image data.
 public func deleteAllKittyImages() -> String {
-    return "\u{001B}_Ga=d,d=A\u{001B}\\"
+    return "\u{001B}_Ga=d,d=A,q=2\u{001B}\\"
+}
+
+/// Delete all Kitty placements while retaining uploaded image data.
+public func deleteAllKittyPlacements() -> String {
+    return "\u{001B}_Ga=d,d=a,q=2\u{001B}\\"
 }
 
 /// Encode base64 image data using the Kitty graphics protocol.
@@ -437,7 +598,27 @@ public func renderImage(
 
     switch images {
     case .kitty:
-        let sequence = encodeKitty(base64Data: base64Data, columns: maxWidth, rows: rows, imageId: nil)
+        let imageID = allocateImageId()
+        let sequence = encodeKitty(
+            base64Data: base64Data,
+            columns: maxWidth,
+            rows: rows,
+            imageId: Int(imageID)
+        )
+        let generation = kittyTransmissionGeneration.update { value in
+            value += 1
+            return value
+        }
+        registerKittyLayoutMetadata(
+            metadata: KittyImageMetadata(
+                imageID: imageID,
+                columns: maxWidth,
+                rows: rows,
+                widthPx: imageDimensions.widthPx,
+                heightPx: imageDimensions.heightPx,
+                transmissionGeneration: generation
+            )
+        )
         return (sequence, rows)
     case .iterm2:
         let sequence = encodeITerm2(

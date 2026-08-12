@@ -684,3 +684,93 @@ func restoresBlockquoteStyleAfterInlineLink() {
         #expect(precedingChunk.contains("\u{001B}[3m"))
     }
 }
+
+@MainActor
+@Test("renders inline and display math when enabled")
+func markdownRendersOptInMath() {
+    let inline = Markdown(
+        "Value: $x^2$",
+        paddingX: 0,
+        paddingY: 0,
+        theme: defaultMarkdownTheme,
+        options: MarkdownOptions(renderLatex: true)
+    )
+    let display = Markdown(
+        #"$$\frac{x^2+1}{x-1}$$"#,
+        paddingX: 0,
+        paddingY: 0,
+        theme: defaultMarkdownTheme,
+        options: MarkdownOptions(renderLatex: true)
+    )
+
+    #expect(stripAnsiCodes(inline.render(width: 80)[0]).trimmedRight() == "Value: x²")
+    #expect(
+        display.render(width: 80).map { stripAnsiCodes($0).trimmedRight() }
+            == ["x²+1", "────", "x-1"]
+    )
+}
+
+@MainActor
+@Test("does not transform math in code")
+func markdownProtectsMathInCode() {
+    let source = """
+`$x^2$`
+
+```tex
+$x^2$
+```
+"""
+    let markdown = Markdown(
+        source,
+        paddingX: 0,
+        paddingY: 0,
+        theme: defaultMarkdownTheme,
+        options: MarkdownOptions(renderLatex: true)
+    )
+    let output = markdown.render(width: 80).map { stripAnsiCodes($0).trimmedRight() }.joined(separator: "\n")
+
+    #expect(output.contains("$x^2$"))
+    #expect(output.components(separatedBy: "$x^2$").count == 3)
+    #expect(!output.contains("x²"))
+}
+
+@MainActor
+@Test("keeps math source unchanged by default")
+func markdownMathIsDisabledByDefault() {
+    let markdown = Markdown("Value: $x^2$", paddingX: 0, paddingY: 0, theme: defaultMarkdownTheme)
+    #expect(stripAnsiCodes(markdown.render(width: 80)[0]).trimmedRight() == "Value: $x^2$")
+}
+
+@MainActor
+@Test("applies source transforms in order")
+func markdownChainsSourceTransforms() {
+    let markdown = Markdown(
+        "source",
+        paddingX: 0,
+        paddingY: 0,
+        theme: defaultMarkdownTheme,
+        options: MarkdownOptions(sourceTransforms: [
+            { source, _ in source + " A" },
+            { source, _ in source + " B" },
+        ])
+    )
+    #expect(stripAnsiCodes(markdown.render(width: 80)[0]).trimmedRight() == "source A B")
+}
+
+@MainActor
+@Test("re-renders width-dependent transformed math")
+func markdownMathCacheUsesTransformResult() {
+    let markdown = Markdown(
+        "source",
+        paddingX: 0,
+        paddingY: 0,
+        theme: defaultMarkdownTheme,
+        options: MarkdownOptions(
+            renderLatex: true,
+            sourceTransforms: [{ _, width in width >= 40 ? "$x^2$" : "$y^3$" }]
+        )
+    )
+
+    #expect(stripAnsiCodes(markdown.render(width: 80)[0]).trimmedRight() == "x²")
+    #expect(stripAnsiCodes(markdown.render(width: 20)[0]).trimmedRight() == "y³")
+}

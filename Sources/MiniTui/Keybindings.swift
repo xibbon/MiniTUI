@@ -32,6 +32,8 @@ public enum TUIKeybinding {
     // Editor navigation and editing
     public static let editorCursorUp = "tui.editor.cursorUp"
     public static let editorCursorDown = "tui.editor.cursorDown"
+    public static let editorHistoryPrevious = "tui.editor.historyPrevious"
+    public static let editorHistoryNext = "tui.editor.historyNext"
     public static let editorCursorLeft = "tui.editor.cursorLeft"
     public static let editorCursorRight = "tui.editor.cursorRight"
     public static let editorCursorWordLeft = "tui.editor.cursorWordLeft"
@@ -63,22 +65,33 @@ public enum TUIKeybinding {
     public static let selectPageDown = "tui.select.pageDown"
     public static let selectConfirm = "tui.select.confirm"
     public static let selectCancel = "tui.select.cancel"
+    // Alternate-screen viewport navigation
+    public static let altScreenPageUp = "tui.altScreen.pageUp"
+    public static let altScreenPageDown = "tui.altScreen.pageDown"
+    public static let altScreenHalfPageUp = "tui.altScreen.halfPageUp"
+    public static let altScreenHalfPageDown = "tui.altScreen.halfPageDown"
+    public static let altScreenPreviousPrompt = "tui.altScreen.previousPrompt"
+    public static let altScreenNextPrompt = "tui.altScreen.nextPrompt"
+    public static let altScreenTop = "tui.altScreen.top"
+    public static let altScreenBottom = "tui.altScreen.bottom"
 }
 
 /// Global TUI keybinding definitions.
 public let TUI_KEYBINDINGS: [String: KeybindingDefinition] = [
     TUIKeybinding.editorCursorUp: KeybindingDefinition(defaultKey: Key.up, description: "Move cursor up"),
     TUIKeybinding.editorCursorDown: KeybindingDefinition(defaultKey: Key.down, description: "Move cursor down"),
+    TUIKeybinding.editorHistoryPrevious: KeybindingDefinition(defaultKeys: [], description: "Select previous prompt history entry"),
+    TUIKeybinding.editorHistoryNext: KeybindingDefinition(defaultKeys: [], description: "Select next prompt history entry"),
     TUIKeybinding.editorCursorLeft: KeybindingDefinition(defaultKeys: [Key.left, Key.ctrl("b")], description: "Move cursor left"),
     TUIKeybinding.editorCursorRight: KeybindingDefinition(defaultKeys: [Key.right, Key.ctrl("f")], description: "Move cursor right"),
     TUIKeybinding.editorCursorWordLeft: KeybindingDefinition(defaultKeys: [Key.alt("left"), Key.ctrl("left"), Key.alt("b")], description: "Move cursor word left"),
     TUIKeybinding.editorCursorWordRight: KeybindingDefinition(defaultKeys: [Key.alt("right"), Key.ctrl("right"), Key.alt("f")], description: "Move cursor word right"),
-    TUIKeybinding.editorCursorLineStart: KeybindingDefinition(defaultKeys: [Key.home, Key.ctrl("a")], description: "Move to line start"),
-    TUIKeybinding.editorCursorLineEnd: KeybindingDefinition(defaultKeys: [Key.end, Key.ctrl("e")], description: "Move to line end"),
+    TUIKeybinding.editorCursorLineStart: KeybindingDefinition(defaultKeys: [Key.home, Key.ctrl(Key.home), Key.ctrl("a")], description: "Move to line start"),
+    TUIKeybinding.editorCursorLineEnd: KeybindingDefinition(defaultKeys: [Key.end, Key.ctrl(Key.end), Key.ctrl("e")], description: "Move to line end"),
     TUIKeybinding.editorJumpForward: KeybindingDefinition(defaultKey: Key.ctrl("]"), description: "Jump forward to character"),
     TUIKeybinding.editorJumpBackward: KeybindingDefinition(defaultKey: Key.ctrlAlt("]"), description: "Jump backward to character"),
-    TUIKeybinding.editorPageUp: KeybindingDefinition(defaultKey: Key.pageUp, description: "Page up"),
-    TUIKeybinding.editorPageDown: KeybindingDefinition(defaultKey: Key.pageDown, description: "Page down"),
+    TUIKeybinding.editorPageUp: KeybindingDefinition(defaultKeys: [Key.pageUp, Key.ctrl(Key.pageUp)], description: "Page up"),
+    TUIKeybinding.editorPageDown: KeybindingDefinition(defaultKeys: [Key.pageDown, Key.ctrl(Key.pageDown)], description: "Page down"),
     TUIKeybinding.editorDeleteCharBackward: KeybindingDefinition(defaultKey: Key.backspace, description: "Delete character backward"),
     TUIKeybinding.editorDeleteCharForward: KeybindingDefinition(defaultKeys: [Key.delete, Key.ctrl("d")], description: "Delete character forward"),
     TUIKeybinding.editorDeleteWordBackward: KeybindingDefinition(defaultKeys: [Key.ctrl("w"), Key.alt("backspace")], description: "Delete word backward"),
@@ -98,6 +111,14 @@ public let TUI_KEYBINDINGS: [String: KeybindingDefinition] = [
     TUIKeybinding.selectPageDown: KeybindingDefinition(defaultKey: Key.pageDown, description: "Selection page down"),
     TUIKeybinding.selectConfirm: KeybindingDefinition(defaultKey: Key.enter, description: "Confirm selection"),
     TUIKeybinding.selectCancel: KeybindingDefinition(defaultKeys: [Key.escape, Key.ctrl("c")], description: "Cancel selection"),
+    TUIKeybinding.altScreenPageUp: KeybindingDefinition(defaultKey: Key.pageUp, description: "Scroll viewport up one page"),
+    TUIKeybinding.altScreenPageDown: KeybindingDefinition(defaultKey: Key.pageDown, description: "Scroll viewport down one page"),
+    TUIKeybinding.altScreenHalfPageUp: KeybindingDefinition(defaultKeys: [], description: "Scroll viewport up half a page"),
+    TUIKeybinding.altScreenHalfPageDown: KeybindingDefinition(defaultKeys: [], description: "Scroll viewport down half a page"),
+    TUIKeybinding.altScreenPreviousPrompt: KeybindingDefinition(defaultKey: Key.ctrlShift(Key.up), description: "Jump to previous semantic prompt"),
+    TUIKeybinding.altScreenNextPrompt: KeybindingDefinition(defaultKey: Key.ctrlShift(Key.down), description: "Jump to next semantic prompt"),
+    TUIKeybinding.altScreenTop: KeybindingDefinition(defaultKey: Key.home, description: "Scroll viewport to top"),
+    TUIKeybinding.altScreenBottom: KeybindingDefinition(defaultKey: Key.end, description: "Scroll viewport to bottom"),
 ]
 
 /// Unified keybindings manager with namespaced IDs.

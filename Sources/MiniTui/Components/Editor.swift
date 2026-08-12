@@ -654,6 +654,15 @@ public final class Editor: SystemCursorAware, KillBufferAware, EditorComponent {
             return
         }
 
+        if kb.matches(input, TUIKeybinding.editorHistoryPrevious) {
+            navigateHistory(direction: -1)
+            return
+        }
+        if kb.matches(input, TUIKeybinding.editorHistoryNext) {
+            navigateHistory(direction: 1)
+            return
+        }
+
         if kb.matches(input, TUIKeybinding.editorCursorUp) {
             if isEditorEmpty() {
                 navigateHistory(direction: -1)

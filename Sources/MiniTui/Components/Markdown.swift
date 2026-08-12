@@ -40,8 +40,20 @@ public struct MarkdownOptions: Sendable {
     /// are normalized to their literal punctuation.
     public var preserveBackslashEscapes: Bool
 
-    public init(preserveBackslashEscapes: Bool = false) {
+    /// Render supported LaTeX math spans as Unicode text.
+    public var renderLatex: Bool
+
+    /// Apply these width-aware transforms in order before Markdown parsing.
+    public var sourceTransforms: [MarkdownSourceTransform]
+
+    public init(
+        preserveBackslashEscapes: Bool = false,
+        renderLatex: Bool = false,
+        sourceTransforms: [MarkdownSourceTransform] = []
+    ) {
         self.preserveBackslashEscapes = preserveBackslashEscapes
+        self.renderLatex = renderLatex
+        self.sourceTransforms = sourceTransforms
     }
 }
 
@@ -131,6 +143,7 @@ public final class Markdown: Component {
     private var sourceText = ""
 
     private var cachedText: String?
+    private var cachedTransformedText: String?
     private var cachedWidth: Int?
     private var cachedLines: [String]?
 
@@ -160,28 +173,40 @@ public final class Markdown: Component {
     /// Clear cached render state.
     public func invalidate() {
         cachedText = nil
+        cachedTransformedText = nil
         cachedWidth = nil
         cachedLines = nil
     }
 
     /// Render the Markdown content into terminal lines.
     public func render(width: Int) -> [String] {
-        if let cachedLines, cachedText == text, cachedWidth == width {
+        let contentWidth = max(1, width - paddingX * 2)
+        var transformedText = text
+        for transform in options.sourceTransforms {
+            transformedText = transform(transformedText, contentWidth)
+        }
+        if options.renderLatex {
+            transformedText = transformMarkdownLatex(transformedText, width: contentWidth)
+        }
+
+        if let cachedLines,
+           cachedText == text,
+           cachedTransformedText == transformedText,
+           cachedWidth == width {
             return cachedLines
         }
 
-        let contentWidth = max(1, width - paddingX * 2)
-
-        if text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        if transformedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             let result: [String] = []
             cachedText = text
+            cachedTransformedText = transformedText
             cachedWidth = width
             cachedLines = result
             return result
         }
 
         let normalizedText = trimPartialClosingFence(
-            escapeSingleTildeDelimiters(text.replacingOccurrences(of: "\t", with: "   "))
+            escapeSingleTildeDelimiters(transformedText.replacingOccurrences(of: "\t", with: "   "))
         )
         sourceText = normalizedText
         let document = Document(parsing: normalizedText)
@@ -266,6 +291,7 @@ public final class Markdown: Component {
 
         let result = emptyLines + collapsedContentLines + emptyLines
         cachedText = text
+        cachedTransformedText = transformedText
         cachedWidth = width
         cachedLines = result
 

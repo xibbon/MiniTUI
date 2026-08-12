@@ -833,7 +833,8 @@ private func trimTrailingSpaces(_ text: String) -> String {
     return result
 }
 
-private func extractAnsiCode(_ text: String, at index: Int) -> (code: String, length: Int)? {
+/// Extract one ANSI, OSC, or APC escape sequence at a character offset.
+public func extractAnsiCode(_ text: String, at index: Int) -> (code: String, length: Int)? {
     guard index >= 0, index < text.count else {
         return nil
     }

@@ -78,6 +78,37 @@ public func parseOsc11BackgroundColor(_ data: String) -> RgbColor? {
     return RgbColor(r: r, g: g, b: b)
 }
 
+/// Parse an OSC 11 response at the start of `data`, including malformed color values.
+func parseOsc11BackgroundColorResponsePrefix(_ data: String) -> (color: RgbColor?, length: Int)? {
+    let prefix = "\u{001B}]11;"
+    guard data.hasPrefix(prefix) else { return nil }
+
+    var index = data.index(data.startIndex, offsetBy: prefix.count)
+    while index < data.endIndex {
+        let responseEnd: String.Index?
+        if data[index] == "\u{0007}" {
+            responseEnd = data.index(after: index)
+        } else if data[index] == "\u{001B}" {
+            let nextIndex = data.index(after: index)
+            if nextIndex < data.endIndex, data[nextIndex] == "\\" {
+                responseEnd = data.index(after: nextIndex)
+            } else {
+                responseEnd = nil
+            }
+        } else {
+            responseEnd = nil
+        }
+
+        if let responseEnd {
+            let response = String(data[..<responseEnd])
+            return (parseOsc11BackgroundColor(response), response.count)
+        }
+        index = data.index(after: index)
+    }
+
+    return nil
+}
+
 /// Parse a terminal color-scheme report (`CSI ? 997 ; 1 n` / `CSI ? 997 ; 2 n`).
 public func parseTerminalColorSchemeReport(_ data: String) -> TerminalColorScheme? {
     guard let report = parseTerminalColorSchemeReportPrefix(data), report.length == data.count else {

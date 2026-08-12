@@ -130,10 +130,11 @@ public final class OverlayHandle {
 public final class TUI: Container {
     /// Terminal implementation used for IO.
     public let terminal: Terminal
-    private var previousLines: [String] = []
-    private var previousResetSource: [String] = []
-    private var previousWidth: Int = 0
-    private var previousHeight: Int = 0
+    /// The screen that the active renderer controls.
+    public var mode: TuiMode { activeRenderer.mode }
+
+    private var activeRenderer: any TuiRenderer
+    private var renderers: [TuiMode: any TuiRenderer]
     private var focusedComponent: Component?
 
     /// Optional handler for Shift+Ctrl+D debug trigger.
@@ -152,16 +153,13 @@ public final class TUI: Container {
 
     private var renderRequested = false
     private var stopped = false
-    private var cursorRow = 0
-    private var lastSystemCursor: CursorPosition?
-    private var lastLineOrigins: [String] = []
+    private var terminalStarted = false
     private var inputBuffer = ""
     private var cellSizeQueryPending = false
     private var terminalColorSchemeListeners: [UUID: (TerminalColorScheme) -> Void] = [:]
+    private var terminalBackgroundColorQueries: [UUID: TerminalBackgroundColorQuery] = [:]
     private var terminalColorSchemeNotificationsEnabled = false
     private var clearOnShrink = ProcessInfo.processInfo.environment["PI_CLEAR_ON_SHRINK"] == "1"
-    private var maxLinesRendered = 0
-    private var fullRedrawCount = 0
     /// v0.70.5: rate-limit renders to ~60Hz so streaming token bursts don't redraw faster
     /// than terminals can repaint. `lastRenderAt` is updated each time `doRender()` actually
     /// runs, and `pendingRenderTask` holds the throttled follow-up if a render is requested
@@ -185,6 +183,21 @@ public final class TUI: Container {
             unsubscribe?()
             unsubscribe = nil
             continuation?.resume(returning: scheme)
+            continuation = nil
+        }
+    }
+
+    private final class TerminalBackgroundColorQuery {
+        var settled = false
+        var continuation: CheckedContinuation<RgbColor?, Never>?
+        var removeFromPendingQueries: (() -> Void)?
+
+        func settle(_ color: RgbColor?) {
+            guard !settled else { return }
+            settled = true
+            removeFromPendingQueries?()
+            removeFromPendingQueries = nil
+            continuation?.resume(returning: color)
             continuation = nil
         }
     }
@@ -213,8 +226,58 @@ public final class TUI: Container {
 
     /// Create a TUI bound to a terminal.
     public init(terminal: Terminal) {
+        let renderer = MainScreenRenderer(terminal: terminal)
         self.terminal = terminal
+        self.activeRenderer = renderer
+        self.renderers = [.mainScreen: renderer]
         super.init()
+        renderer.setRenderFailureHandler { [weak self] in
+            self?.stop()
+        }
+    }
+
+    /// Register a renderer that can become active in a later mode switch.
+    public func registerRenderer(_ renderer: any TuiRenderer) {
+        if let renderer = renderer as? MainScreenRenderer {
+            renderer.setRenderFailureHandler { [weak self] in
+                self?.stop()
+            }
+        }
+        if let renderer = renderer as? any TuiHostedRenderer {
+            renderer.attach(
+                root: self,
+                requestRender: { [weak self] in self?.requestRender() },
+                hasOverlay: { [weak self] in self?.hasOverlay() ?? false }
+            )
+        }
+        renderers[renderer.mode] = renderer
+    }
+
+    /// Create and register an alternate-screen renderer.
+    @discardableResult
+    public func enableAltScreen(options: AltScreenRendererOptions = AltScreenRendererOptions()) -> AltScreenRenderer {
+        let renderer = AltScreenRenderer(terminal: terminal, options: options)
+        registerRenderer(renderer)
+        return renderer
+    }
+
+    /// Switch to a registered renderer. Return false if the mode is not registered.
+    @discardableResult
+    public func switchRenderer(to mode: TuiMode) -> Bool {
+        guard let nextRenderer = renderers[mode] else { return false }
+        guard nextRenderer !== activeRenderer else { return true }
+
+        if terminalStarted {
+            activeRenderer.stop(preserveScreen: true)
+        }
+        nextRenderer.takeOverRenderState(from: activeRenderer)
+        activeRenderer = nextRenderer
+        invalidate()
+        if terminalStarted {
+            activeRenderer.start()
+            requestRender()
+        }
+        return true
     }
 
     /// Return true when clearing is enabled on content shrink.
@@ -343,12 +406,7 @@ public final class TUI: Container {
 
     /// Clear stale scrollback state, useful when switching sessions.
     public func clearScrollback() {
-        previousLines = []
-        previousResetSource = []
-        previousWidth = 0
-        previousHeight = 0
-        cursorRow = 0
-        maxLinesRendered = 0
+        activeRenderer.clearRenderState()
         terminal.clearScreen()
         requestRender(force: true)
     }
@@ -356,6 +414,7 @@ public final class TUI: Container {
     /// Start terminal input and initial rendering.
     public func start() {
         stopped = false
+        activeRenderer.start()
         terminal.start(onInput: { [weak self] data in
             Task { @MainActor in
                 self?.handleTerminalInput(data)
@@ -365,6 +424,7 @@ public final class TUI: Container {
                 self?.requestRender()
             }
         })
+        terminalStarted = true
         updateCursorMode()
         if terminalColorSchemeNotificationsEnabled {
             terminal.write("\u{001B}[?2031h")
@@ -384,18 +444,10 @@ public final class TUI: Container {
         if terminalColorSchemeNotificationsEnabled {
             terminal.write("\u{001B}[?2031l")
         }
-        if !previousLines.isEmpty {
-            let targetRow = previousLines.count
-            let lineDiff = targetRow - cursorRow
-            if lineDiff > 0 {
-                terminal.write("\u{001B}[\(lineDiff)B")
-            } else if lineDiff < 0 {
-                terminal.write("\u{001B}[\(-lineDiff)A")
-            }
-            terminal.write("\r\n")
-        }
+        activeRenderer.stop(preserveScreen: false)
         terminal.showCursor()
         terminal.stop()
+        terminalStarted = false
     }
 
     /// Request a render, optionally forcing a full redraw. v0.70.5: renders are throttled to
@@ -404,10 +456,7 @@ public final class TUI: Container {
     public func requestRender(force: Bool = false) {
         if stopped { return }
         if force {
-            previousLines = []
-            previousWidth = -1
-            previousHeight = -1
-            cursorRow = 0
+            activeRenderer.invalidateRenderState()
             pendingRenderTask?.cancel()
             pendingRenderTask = nil
             renderRequested = true
@@ -478,7 +527,20 @@ public final class TUI: Container {
     private func handleTerminalInput(_ data: String) {
         var input = data
 
-        input = consumeTerminalColorSchemeReportPrefix(input)
+        while !input.isEmpty {
+            let afterColorScheme = consumeTerminalColorSchemeReportPrefix(input)
+            if afterColorScheme.count != input.count {
+                input = afterColorScheme
+                continue
+            }
+
+            let afterBackgroundColor = consumeTerminalBackgroundColorResponsePrefix(input)
+            if afterBackgroundColor.count != input.count {
+                input = afterBackgroundColor
+                continue
+            }
+            break
+        }
         if input.isEmpty {
             return
         }
@@ -496,6 +558,11 @@ public final class TUI: Container {
         }
 
         if let onGlobalInput, onGlobalInput(input) {
+            return
+        }
+
+        if let inputRenderer = activeRenderer as? any TuiInputRenderer,
+           inputRenderer.handleInput(input) {
             return
         }
 
@@ -578,6 +645,27 @@ public final class TUI: Container {
         }
     }
 
+    /// Query the terminal's background color. Unsupported terminals resolve to `nil`
+    /// after `timeoutMs` milliseconds.
+    public func queryTerminalBackgroundColor(timeoutMs: Int) async -> RgbColor? {
+        let id = UUID()
+        let query = TerminalBackgroundColorQuery()
+        terminalBackgroundColorQueries[id] = query
+        query.removeFromPendingQueries = { [weak self] in
+            self?.terminalBackgroundColorQueries[id] = nil
+        }
+
+        return await withCheckedContinuation { continuation in
+            query.continuation = continuation
+            let nanoseconds = UInt64(max(0, timeoutMs)) * 1_000_000
+            Task { @MainActor in
+                try? await Task.sleep(nanoseconds: nanoseconds)
+                query.settle(nil)
+            }
+            terminal.write("\u{001B}]11;?\u{0007}")
+        }
+    }
+
     private func consumeTerminalColorSchemeReportPrefix(_ data: String) -> String {
         guard let report = parseTerminalColorSchemeReportPrefix(data) else { return data }
         let listeners = Array(terminalColorSchemeListeners.values)
@@ -585,6 +673,18 @@ public final class TUI: Container {
             listener(report.scheme)
         }
         return data.substring(from: report.length, length: data.count - report.length)
+    }
+
+    private func consumeTerminalBackgroundColorResponsePrefix(_ data: String) -> String {
+        guard !terminalBackgroundColorQueries.isEmpty,
+              let response = parseOsc11BackgroundColorResponsePrefix(data) else {
+            return data
+        }
+        let queries = Array(terminalBackgroundColorQueries.values)
+        for query in queries {
+            query.settle(response.color)
+        }
+        return data.substring(from: response.length, length: data.count - response.length)
     }
 
     private func parseCellSizeResponse() -> String {
@@ -804,27 +904,6 @@ public final class TUI: Container {
         return result
     }
 
-    private func applyLineResets(
-        _ lines: [String],
-        previousSource: [String],
-        previousLines: [String]
-    ) -> [String] {
-        let reset = TUI.segmentReset
-        var result = lines
-        let canReuse = !previousSource.isEmpty && previousSource.count == previousLines.count
-        for index in result.indices {
-            let line = result[index]
-            if canReuse, index < previousSource.count, previousSource[index] == line, index < previousLines.count {
-                result[index] = previousLines[index]
-                continue
-            }
-            if !containsImage(line) {
-                result[index] = line + reset
-            }
-        }
-        return result
-    }
-
     private func compositeLineAt(
         baseLine: String,
         overlayLine: String,
@@ -869,18 +948,24 @@ public final class TUI: Container {
         return sliceByColumn(result, startCol: 0, length: totalWidth, strict: true)
     }
 
-    private static func isTermuxSession() -> Bool {
-        ProcessInfo.processInfo.environment["TERMUX_VERSION"] != nil
-    }
-
     private func doRender() {
         if stopped { return }
         let width = terminal.columns
         let height = terminal.rows
 
         var renderedLines: [String]
+        var layoutFrame: LayoutFrame?
         var lineOrigins: LineOrigins?
-        if debugLineOrigins {
+        if let layoutRenderer = activeRenderer as? any TuiLayoutRenderer {
+            let nextLayout = layoutRenderer.renderLayout(
+                root: self,
+                width: width,
+                height: height,
+                requestRender: { [weak self] in self?.requestRender() }
+            )
+            layoutFrame = nextLayout
+            renderedLines = nextLayout.lines
+        } else if debugLineOrigins {
             let trace = RenderTrace()
             RenderTrace.active = trace
             renderedLines = render(width: width)
@@ -896,8 +981,14 @@ public final class TUI: Container {
             renderedLines = render(width: width)
         }
         if !overlayStack.isEmpty {
-            renderedLines = compositeOverlays(renderedLines, termWidth: width, termHeight: height, lineOrigins: lineOrigins)
+            renderedLines = compositeOverlays(
+                renderedLines,
+                termWidth: width,
+                termHeight: height,
+                lineOrigins: lineOrigins
+            )
         }
+
         let cursorPosition: CursorPosition?
         let cleanedLines: [String]
         if useSystemCursor {
@@ -908,242 +999,22 @@ public final class TUI: Container {
             cleanedLines = renderedLines
             cursorPosition = nil
         }
-        let normalizedLines = cleanedLines.map(normalizeTerminalOutput)
-        let resetLines = applyLineResets(
-            normalizedLines,
-            previousSource: previousResetSource,
-            previousLines: previousLines
+
+        activeRenderer.present(
+            TuiRenderFrame(
+                lines: cleanedLines,
+                cursor: cursorPosition,
+                width: width,
+                height: height,
+                clearOnShrink: clearOnShrink,
+                hasOverlayEntries: !overlayStack.isEmpty,
+                hasVisibleOverlay: hasOverlay(),
+                useSystemCursor: useSystemCursor,
+                lineOrigins: debugLineOrigins ? (lineOrigins?.values ?? []) : nil,
+                layoutFrame: layoutFrame
+            )
         )
-        let widthChanged = previousWidth != 0 && previousWidth != width
-        let heightChanged = previousHeight != 0 && previousHeight != height
-        let newLines = resetLines
-        lastLineOrigins = debugLineOrigins ? (lineOrigins?.values ?? []) : []
-
-        let debugRedraw = ProcessInfo.processInfo.environment["PI_DEBUG_REDRAW"] == "1"
-        func logRedraw(_ reason: String) {
-            guard debugRedraw else { return }
-            let logPath = FileManager.default.homeDirectoryForCurrentUser
-                .appendingPathComponent(".pi/agent/pi-debug.log")
-            let formatter = ISO8601DateFormatter()
-            let message = "[\(formatter.string(from: Date()))] fullRender: \(reason) (prev=\(previousLines.count), new=\(newLines.count), height=\(height))\n"
-            do {
-                try FileManager.default.createDirectory(at: logPath.deletingLastPathComponent(), withIntermediateDirectories: true)
-                let handle = try FileHandle(forWritingTo: logPath)
-                handle.seekToEndOfFile()
-                if let data = message.data(using: .utf8) {
-                    handle.write(data)
-                }
-                try handle.close()
-            } catch {
-                // Best-effort logging only.
-            }
-        }
-
-        func fullRender(clear: Bool, reason: String) {
-            logRedraw(reason)
-            fullRedrawCount += 1
-            var buffer = "\u{001B}[?2026h"
-            if clear {
-                buffer += "\u{001B}[2J\u{001B}[H\u{001B}[3J"
-            }
-            for i in 0..<newLines.count {
-                if i > 0 { buffer += "\r\n" }
-                buffer += newLines[i]
-            }
-            buffer += "\u{001B}[?2026l"
-            terminal.write(buffer)
-            cursorRow = max(0, newLines.count - 1)
-            if clear {
-                maxLinesRendered = newLines.count
-            } else {
-                maxLinesRendered = max(maxLinesRendered, newLines.count)
-            }
-            previousLines = newLines
-            previousResetSource = normalizedLines
-            previousWidth = width
-            previousHeight = height
-            positionCursorIfNeeded(cursorPosition, width: width)
-        }
-
-        if previousLines.isEmpty && !widthChanged {
-            fullRender(clear: false, reason: "first render")
-            return
-        }
-
-        if widthChanged {
-            fullRender(clear: true, reason: "width changed (\(previousWidth) -> \(width))")
-            return
-        }
-
-        // Height changes normally need a full re-render to keep the visible viewport aligned,
-        // but Termux changes height when the software keyboard shows or hides.
-        // In that environment, a full redraw causes the entire history to replay on every toggle.
-        if heightChanged && !TUI.isTermuxSession() {
-            fullRender(clear: true, reason: "terminal height changed (\(previousHeight) -> \(height))")
-            return
-        }
-
-        if clearOnShrink && newLines.count < maxLinesRendered && overlayStack.isEmpty {
-            fullRender(clear: true, reason: "clearOnShrink (maxLinesRendered=\(maxLinesRendered))")
-            return
-        }
-
-        var firstChanged = -1
-        var lastChanged = -1
-        let maxLines = max(newLines.count, previousLines.count)
-        for i in 0..<maxLines {
-            let oldLine = i < previousLines.count ? previousLines[i] : ""
-            let newLine = i < newLines.count ? newLines[i] : ""
-            if oldLine != newLine {
-                if firstChanged == -1 {
-                    firstChanged = i
-                }
-                lastChanged = i
-            }
-        }
-
-        if firstChanged == -1 {
-            if useSystemCursor, cursorPosition != lastSystemCursor {
-                positionCursorIfNeeded(cursorPosition, width: width)
-            }
-            previousResetSource = normalizedLines
-            previousHeight = height
-            maxLinesRendered = max(maxLinesRendered, newLines.count)
-            return
-        }
-
-        if firstChanged >= newLines.count {
-            if previousLines.count > newLines.count {
-                var buffer = "\u{001B}[?2026h"
-                let targetRow = max(0, newLines.count - 1)
-                let lineDiff = targetRow - cursorRow
-                if lineDiff > 0 {
-                    buffer += "\u{001B}[\(lineDiff)B"
-                } else if lineDiff < 0 {
-                    buffer += "\u{001B}[\(-lineDiff)A"
-                }
-                buffer += "\r"
-                let extraLines = previousLines.count - newLines.count
-                for _ in 0..<extraLines {
-                    buffer += "\r\n\u{001B}[2K"
-                }
-                buffer += "\u{001B}[\(extraLines)A"
-                buffer += "\u{001B}[?2026l"
-                terminal.write(buffer)
-                cursorRow = targetRow
-            }
-            previousLines = newLines
-            previousResetSource = normalizedLines
-            previousWidth = width
-            previousHeight = height
-            maxLinesRendered = max(maxLinesRendered, newLines.count)
-            positionCursorIfNeeded(cursorPosition, width: width)
-            return
-        }
-
-        let viewportTop = cursorRow - height + 1
-        if firstChanged < viewportTop {
-            fullRender(clear: true, reason: "firstChanged < viewportTop (\(firstChanged) < \(viewportTop))")
-            return
-        }
-
-        var buffer = "\u{001B}[?2026h"
-        let lineDiff = firstChanged - cursorRow
-        if lineDiff > 0 {
-            buffer += "\u{001B}[\(lineDiff)B"
-        } else if lineDiff < 0 {
-            buffer += "\u{001B}[\(-lineDiff)A"
-        }
-        buffer += "\r"
-
-        let renderEnd = min(lastChanged, newLines.count - 1)
-        if renderEnd >= firstChanged {
-            for i in firstChanged...renderEnd {
-                if i > firstChanged { buffer += "\r\n" }
-                buffer += "\u{001B}[2K"
-                let line = newLines[i]
-                if !containsImage(line), visibleWidth(line) > width {
-                    let origin = debugLineOrigins && i < lastLineOrigins.count ? lastLineOrigins[i] : nil
-                    let crashLogPath = FileManager.default.homeDirectoryForCurrentUser
-                        .appendingPathComponent(".pi/agent/pi-crash.log")
-                    let formatter = ISO8601DateFormatter()
-                    var crashLines = [
-                        "Crash at \(formatter.string(from: Date()))",
-                        "Terminal width: \(width)",
-                        "Line \(i) visible width: \(visibleWidth(line))",
-                    ]
-                    if let origin {
-                        crashLines.append("Origin: \(origin)")
-                    }
-                    crashLines.append("")
-                    crashLines.append("=== All rendered lines ===")
-                    crashLines.append(contentsOf: newLines.enumerated().map { idx, value in
-                        if debugLineOrigins, idx < lastLineOrigins.count {
-                            return "[\(idx)] (w=\(visibleWidth(value))) [\(lastLineOrigins[idx])] \(value)"
-                        }
-                        return "[\(idx)] (w=\(visibleWidth(value))) \(value)"
-                    })
-                    crashLines.append("")
-                    let crashData = crashLines.joined(separator: "\n")
-                    do {
-                        try FileManager.default.createDirectory(
-                            at: crashLogPath.deletingLastPathComponent(),
-                            withIntermediateDirectories: true
-                        )
-                        try crashData.write(to: crashLogPath, atomically: true, encoding: .utf8)
-                    } catch {
-                        // Best-effort logging, continue to crash.
-                    }
-
-                    stop()
-
-                    var errorLines = [
-                        "Rendered line \(i) exceeds terminal width (\(visibleWidth(line)) > \(width)).",
-                    ]
-                    if let origin {
-                        errorLines.append("Origin: \(origin)")
-                    }
-                    errorLines.append("")
-                    errorLines.append("This is likely caused by a custom TUI component not truncating its output.")
-                    errorLines.append("Use visibleWidth() to measure and truncateToWidth() to truncate lines.")
-                    errorLines.append("")
-                    errorLines.append("Debug log written to: \(crashLogPath.path)")
-                    let errorMsg = errorLines.joined(separator: "\n")
-                    // Internal component contract violation: renderers must not emit
-                    // lines wider than the terminal. Crash with a debug log instead of
-                    // corrupting terminal state with an unrecoverable frame.
-                    fatalError(errorMsg)
-                }
-                buffer += line
-            }
-        }
-
-        var finalCursorRow = renderEnd
-
-        if previousLines.count > newLines.count {
-            if renderEnd < newLines.count - 1 {
-                let moveDown = newLines.count - 1 - renderEnd
-                buffer += "\u{001B}[\(moveDown)B"
-                finalCursorRow = newLines.count - 1
-            }
-            let extraLines = previousLines.count - newLines.count
-            for _ in newLines.count..<previousLines.count {
-                buffer += "\r\n\u{001B}[2K"
-            }
-            buffer += "\u{001B}[\(extraLines)A"
-        }
-
-        buffer += "\u{001B}[?2026l"
-        terminal.write(buffer)
-        cursorRow = finalCursorRow
-        previousLines = newLines
-        previousResetSource = normalizedLines
-        previousWidth = width
-        previousHeight = height
-        maxLinesRendered = max(maxLinesRendered, newLines.count)
-        positionCursorIfNeeded(cursorPosition, width: width)
     }
-
     private func updateCursorMode() {
         let overlayActive = hasOverlay()
         let shouldShowSystemCursor = !overlayActive && useSystemCursor && focusedComponent is SystemCursorAware
@@ -1151,17 +1022,12 @@ public final class TUI: Container {
             terminal.showCursor()
         } else {
             terminal.hideCursor()
-            lastSystemCursor = nil
+            activeRenderer.invalidateCursorState()
         }
 
         if let focusedComponent = focusedComponent as? SystemCursorAware {
             focusedComponent.usesSystemCursor = useSystemCursor
         }
-    }
-
-    private struct CursorPosition: Equatable {
-        let row: Int
-        let col: Int
     }
 
     private func extractCursorPosition(from lines: [String], height: Int) -> (lines: [String], cursor: CursorPosition?) {
@@ -1181,25 +1047,6 @@ public final class TUI: Container {
         }
 
         return (cleaned, cursor)
-    }
-
-    private func positionCursorIfNeeded(_ cursor: CursorPosition?, width: Int) {
-        guard useSystemCursor, !hasOverlay(), let cursor else { return }
-
-        let clampedCol = max(0, min(cursor.col, max(0, width - 1)))
-        var buffer = ""
-        let lineDiff = cursor.row - cursorRow
-        if lineDiff > 0 {
-            buffer += "\u{001B}[\(lineDiff)B"
-        } else if lineDiff < 0 {
-            buffer += "\u{001B}[\(-lineDiff)A"
-        }
-        buffer += "\r"
-        buffer += "\u{001B}[\(clampedCol + 1)G"
-
-        terminal.write(buffer)
-        cursorRow = cursor.row
-        lastSystemCursor = cursor
     }
 
     private func matchRegex(_ pattern: String, in text: String) -> [String]? {
