@@ -1,5 +1,8 @@
 import Foundation
 
+let osc8HyperlinkCloseBell = "\u{001B}]8;;\u{0007}"
+let osc8HyperlinkCloseStringTerminator = "\u{001B}]8;;\u{001B}\\"
+
 /// Terminal image protocols supported by the renderer.
 public enum ImageProtocol: String {
     case kitty
@@ -183,7 +186,7 @@ public func setCapabilities(_ capabilities: TerminalCapabilities?) {
 /// Caller should consult `getCapabilities().hyperlinks` before using this — the helper itself
 /// always emits the escape so it can be unit-tested independently of capability detection.
 public func hyperlink(_ text: String, url: String) -> String {
-    "\u{001B}]8;;\(url)\u{001B}\\\(text)\u{001B}]8;;\u{001B}\\"
+    "\u{001B}]8;;\(url)\u{001B}\\\(text)" + osc8HyperlinkCloseStringTerminator
 }
 
 /// Return cached terminal capabilities, detecting once if needed.
@@ -270,7 +273,8 @@ public func encodeITerm2(
     preserveAspectRatio: Bool? = nil,
     inline: Bool = true
 ) -> String {
-    var params: [String] = ["inline=\(inline ? 1 : 0)"]
+    let payloadSize = Data(base64Encoded: base64Data)?.count ?? 0
+    var params: [String] = ["inline=\(inline ? 1 : 0)", "size=\(payloadSize)"]
 
     if let width { params.append("width=\(width)") }
     if let height { params.append("height=\(height)") }

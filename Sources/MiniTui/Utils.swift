@@ -1,10 +1,6 @@
 import Foundation
 
 private let ansiEscape = "\u{001B}"
-private let ansiCsiRegex = try! NSRegularExpression(pattern: "\u{001B}\\[[0-9;]*[mGKHJ]", options: [])
-private let ansiOscBellRegex = try! NSRegularExpression(pattern: "\u{001B}\\][^\u{0007}]*\u{0007}", options: [])
-private let ansiOscStRegex = try! NSRegularExpression(pattern: "\u{001B}\\][^\u{001B}]*\u{001B}\\\\", options: [])
-private let ansiApcRegex = try! NSRegularExpression(pattern: "\u{001B}_[^\u{0007}\u{001B}]*(?:\u{0007}|\u{001B}\\\\)", options: [])
 
 private let visibleWidthCache = VisibleWidthCache(maxSize: 512)
 
@@ -101,43 +97,37 @@ public func visibleWidth(_ str: String) -> Int {
 }
 
 func stripAnsiCodes(_ text: String) -> String {
-    var result = text
+    stripTerminalSequences(text)
+}
 
-    // Strip SGR + cursor codes.
-    result = ansiCsiRegex.stringByReplacingMatches(
-        in: result,
-        options: [],
-        range: NSRange(result.startIndex..<result.endIndex, in: result),
-        withTemplate: ""
-    )
+/// Remove CSI, OSC, and APC control sequences while preserving visible text.
+public func stripTerminalSequences(_ str: String) -> String {
+    guard str.contains(ansiEscape) else { return str }
 
-    // Strip OSC sequences (BEL or ST terminator).
-    result = ansiOscBellRegex.stringByReplacingMatches(
-        in: result,
-        options: [],
-        range: NSRange(result.startIndex..<result.endIndex, in: result),
-        withTemplate: ""
-    )
-    result = ansiOscStRegex.stringByReplacingMatches(
-        in: result,
-        options: [],
-        range: NSRange(result.startIndex..<result.endIndex, in: result),
-        withTemplate: ""
-    )
-
-    // Strip APC sequences (BEL or ST terminator).
-    result = ansiApcRegex.stringByReplacingMatches(
-        in: result,
-        options: [],
-        range: NSRange(result.startIndex..<result.endIndex, in: result),
-        withTemplate: ""
-    )
-
+    var result = ""
+    var index = 0
+    while index < str.count {
+        if let ansi = extractAnsiCode(str, at: index) {
+            index += ansi.length
+            continue
+        }
+        result.append(str[str.index(at: index)])
+        index += 1
+    }
     return result
 }
 
 private func graphemeWidth(_ grapheme: Character) -> Int {
     let scalars = Array(grapheme.unicodeScalars)
+
+    if grapheme == "\t" {
+        return 3
+    }
+
+    if scalars.allSatisfy(isTerminalSpacingMark) {
+        return scalars.count
+    }
+
     if scalars.allSatisfy({ isZeroWidthScalar($0) }) {
         return 0
     }
@@ -150,13 +140,28 @@ private func graphemeWidth(_ grapheme: Character) -> Int {
         return 0
     }
 
-    var width = eastAsianWidth(scalars[baseIndex])
+    let baseScalars = Array(scalars[baseIndex...])
+    let baseScalar = baseScalars[0]
+    if isRegionalIndicator(baseScalar) {
+        return 2
+    }
 
-    if scalars.count > baseIndex + 1 {
-        for scalar in scalars[(baseIndex + 1)...] {
-            if scalar.value >= 0xFF00 && scalar.value <= 0xFFEF {
+    var width = eastAsianWidth(baseScalar)
+    var followsMark = false
+
+    for scalar in baseScalars.dropFirst() {
+        if isTerminalSpacingMark(scalar) {
+            width += 1
+            followsMark = false
+        } else if isMark(scalar) {
+            followsMark = true
+        } else if !isNonPrintingScalar(scalar) {
+            if followsMark || (0xFF00...0xFFEF).contains(scalar.value) {
                 width += eastAsianWidth(scalar)
+            } else if scalar.value == 0x0E33 || scalar.value == 0x0EB3 {
+                width += 1
             }
+            followsMark = false
         }
     }
 
@@ -164,15 +169,37 @@ private func graphemeWidth(_ grapheme: Character) -> Int {
 }
 
 private func isZeroWidthScalar(_ scalar: Unicode.Scalar) -> Bool {
-    if scalar.properties.isDefaultIgnorableCodePoint {
-        return true
-    }
+    isNonPrintingScalar(scalar)
+}
+
+private func isNonPrintingScalar(_ scalar: Unicode.Scalar) -> Bool {
+    if scalar.properties.isDefaultIgnorableCodePoint { return true }
 
     switch scalar.properties.generalCategory {
     case .nonspacingMark, .spacingMark, .enclosingMark, .format, .control, .surrogate:
         return true
     default:
         return false
+    }
+}
+
+private func isMark(_ scalar: Unicode.Scalar) -> Bool {
+    switch scalar.properties.generalCategory {
+    case .nonspacingMark, .spacingMark, .enclosingMark:
+        return true
+    default:
+        return false
+    }
+}
+
+private func isTerminalSpacingMark(_ scalar: Unicode.Scalar) -> Bool {
+    switch scalar.value {
+    case 0x1734, 0x302E, 0x302F:
+        return false
+    case 0x065F, 0x0F7F, 0x102B, 0x102C, 0x1031, 0x1033...0x1035, 0x1038, 0x103A...0x103E:
+        return true
+    default:
+        return scalar.properties.generalCategory == .spacingMark
     }
 }
 
@@ -192,25 +219,11 @@ private func isEmoji(_ grapheme: Character) -> Bool {
         return true
     }
 
-    if scalars.count > 2 {
-        return true
+    if scalars.contains(where: { $0.value == 0xFE0F }) {
+        return scalars.contains(where: { $0.properties.isEmoji })
     }
 
-    var hasEmojiCandidate = false
-    for scalar in scalars {
-        let value = scalar.value
-        if value == 0xFE0F {
-            return true
-        }
-        if (0x1F000...0x1FBFF).contains(value)
-            || (0x2300...0x23FF).contains(value)
-            || (0x2600...0x27BF).contains(value)
-            || (0x2B50...0x2B55).contains(value) {
-            hasEmojiCandidate = true
-        }
-    }
-
-    return hasEmojiCandidate
+    return scalars.first(where: { !$0.properties.isDefaultIgnorableCodePoint })?.properties.isEmojiPresentation == true
 }
 
 private func eastAsianWidth(_ scalar: Unicode.Scalar) -> Int {
@@ -238,7 +251,10 @@ private func isWideScalar(_ value: UInt32) -> Bool {
 public func wrapTextWithAnsi(_ text: String, width: Int) -> [String] {
     guard !text.isEmpty else { return [""] }
 
-    let inputLines = text.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+    let normalizedLineEndings = text
+        .replacingOccurrences(of: "\r\n", with: "\n")
+        .replacingOccurrences(of: "\r", with: "\n")
+    let inputLines = normalizedLineEndings.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
     var result: [String] = []
     let tracker = AnsiCodeTracker()
 
@@ -569,18 +585,95 @@ private func truncateFragmentToWidth(_ text: String, maxWidth: Int) -> (text: St
 
 private func finalizeTruncatedResult(prefix: String, prefixWidth: Int, ellipsis: String, ellipsisWidth: Int, maxWidth: Int, pad: Bool) -> String {
     let reset = "\u{001B}[0m"
+    let hyperlinkClose = getActiveOsc8Close(prefix)
     let visibleWidth = prefixWidth + ellipsisWidth
     let result: String
     if ellipsis.isEmpty {
-        result = prefix + reset
+        result = prefix + hyperlinkClose + reset
     } else {
-        result = prefix + reset + ellipsis + reset
+        result = prefix + hyperlinkClose + reset + ellipsis + reset
     }
 
     if pad {
         return result + String(repeating: " ", count: max(0, maxWidth - visibleWidth))
     }
     return result
+}
+
+private enum Osc8Terminator {
+    case bell
+    case stringTerminator
+}
+
+private func getActiveOsc8Close(_ prefix: String) -> String {
+    guard prefix.contains("\u{001B}]8;") else { return "" }
+
+    var activeTerminator: Osc8Terminator?
+    var index = 0
+    while index < prefix.count {
+        guard let ansi = extractAnsiCode(prefix, at: index) else {
+            index += 1
+            continue
+        }
+
+        if ansi.code.hasPrefix("\u{001B}]8;") {
+            let terminatorLength = ansi.code.hasSuffix("\u{0007}") ? 1 : 2
+            let bodyLength = ansi.code.count - 4 - terminatorLength
+            let body = ansi.code.substring(from: 4, length: max(0, bodyLength))
+            if let separator = body.firstIndex(of: ";") {
+                let url = body[body.index(after: separator)...]
+                activeTerminator = url.isEmpty ? nil : (terminatorLength == 1 ? .bell : .stringTerminator)
+            }
+        }
+        index += ansi.length
+    }
+
+    switch activeTerminator {
+    case .bell: return osc8HyperlinkCloseBell
+    case .stringTerminator: return osc8HyperlinkCloseStringTerminator
+    default: return ""
+    }
+}
+
+/// The half-open terminal-cell range occupied by a grapheme.
+public struct GraphemeCellRange: Equatable, Sendable {
+    public let start: Int
+    public let end: Int
+
+    public init(start: Int, end: Int) {
+        self.start = start
+        self.end = end
+    }
+}
+
+/// Return the terminal-cell range occupied by the grapheme at a visible column.
+public func getGraphemeCellRange(line: String, column: Int) -> GraphemeCellRange? {
+    guard column >= 0 else { return nil }
+
+    var currentColumn = 0
+    var index = 0
+    while index < line.count {
+        if let ansi = extractAnsiCode(line, at: index) {
+            index += ansi.length
+            continue
+        }
+
+        var textEnd = index
+        while textEnd < line.count, extractAnsiCode(line, at: textEnd) == nil {
+            textEnd += 1
+        }
+
+        let text = line.substring(from: index, length: textEnd - index)
+        for character in text {
+            let width = graphemeWidth(character)
+            if width > 0, column >= currentColumn, column < currentColumn + width {
+                return GraphemeCellRange(start: currentColumn, end: currentColumn + width)
+            }
+            currentColumn += width
+        }
+        index = textEnd
+    }
+    return nil
 }
 
 /// Extract a range of visible columns from a line. Handles ANSI codes and wide chars.
@@ -772,7 +865,7 @@ private func extractAnsiCode(_ text: String, at index: Int) -> (code: String, le
         return nil
     }
 
-    if next == "]" {
+    if next == "]" || next == "_" {
         var j = nextOffset + 1
         while j < text.count {
             let ch = text[text.index(at: j)]

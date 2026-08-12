@@ -264,6 +264,12 @@ private struct EditorState {
     var cursorCol: Int
 }
 
+private struct EditorSnapshot {
+    var state: EditorState
+    var pastes: [Int: String]
+    var pasteCounter: Int
+}
+
 private struct LayoutLine {
     var text: String
     var hasCursor: Bool
@@ -317,7 +323,7 @@ public final class Editor: SystemCursorAware, KillBufferAware, EditorComponent {
 
     private var history: [String] = []
     private var historyIndex = -1
-    private var undoStack: [EditorState] = []
+    private var undoStack: [EditorSnapshot] = []
     private enum LastAction {
         case typingWord
         case kill
@@ -1217,13 +1223,15 @@ public final class Editor: SystemCursorAware, KillBufferAware, EditorComponent {
     }
 
     private func pushUndoSnapshot() {
-        undoStack.append(state)
+        undoStack.append(EditorSnapshot(state: state, pastes: pastes, pasteCounter: pasteCounter))
     }
 
     private func undo() {
         historyIndex = -1
         guard let snapshot = undoStack.popLast() else { return }
-        state = snapshot
+        state = snapshot.state
+        pastes = snapshot.pastes
+        pasteCounter = snapshot.pasteCounter
         setLastAction(nil)
         preferredVisualCol = nil
         onChange?(getText())

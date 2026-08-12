@@ -16,6 +16,12 @@ func detectsWarpCapabilities() {
     }
 }
 
+@Test("iTerm2 encoding includes decoded payload size and dimensions")
+func iTerm2PayloadMetadata() {
+    #expect(encodeITerm2(base64Data: "AAAA", width: "2", height: "auto")
+        == "\u{001B}]1337;File=inline=1;size=3;width=2;height=auto:AAAA\u{0007}")
+}
+
 @Suite("isImageLine")
 struct IsImageLineTests {
 

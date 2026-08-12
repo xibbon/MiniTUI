@@ -1,5 +1,5 @@
 import Testing
-import MiniTui
+@testable import MiniTui
 
 @Test("normalizeTerminalOutput expands visible tabs")
 func normalizeTerminalOutputExpandsVisibleTabs() {
@@ -75,4 +75,45 @@ func truncateAddsTrailingResetWithoutEllipsis() {
 func truncateKeepsContiguousPrefix() {
     let truncated = truncateToWidth("🙂\t界 \u{001B}_abc\u{0007}", maxWidth: 7, ellipsis: "…", pad: true)
     #expect(truncated == "🙂\t\u{001B}[0m…\u{001B}[0m ")
+}
+
+@Test("truncateToWidth closes an active OSC 8 hyperlink")
+func truncateClosesActiveHyperlink() {
+    let open = "\u{001B}]8;;https://example.com\u{001B}\\"
+    let truncated = truncateToWidth(open + "linked text that is too long", maxWidth: 8, ellipsis: "…")
+
+    #expect(truncated.contains(osc8HyperlinkCloseStringTerminator + "\u{001B}[0m…"))
+    #expect(visibleWidth(truncated) == 8)
+}
+
+@Test("visibleWidth follows upstream spacing-mark cell accounting")
+func visibleWidthHandlesIndicThaiAndMyanmarClusters() {
+    // v0.84.1 counts the conjunct consonant and spacing vowel as terminal cells.
+    #expect(visibleWidth("क्षि") == 3)
+    #expect(visibleWidth("र्क") == 2)
+    #expect(visibleWidth("🙂") == 2)
+    #expect(visibleWidth("界") == 2)
+    #expect(visibleWidth("ำ") == 1)
+    #expect(visibleWidth("กำ") == 2)
+    #expect(visibleWidth("ကာ") == 2)
+    #expect(visibleWidth("ကို") == 1)
+}
+
+@Test("stripTerminalSequences removes CSI OSC and APC")
+func stripsTerminalSequences() {
+    let input = "a\u{001B}[31mb\u{001B}[0mc"
+        + "\u{001B}]8;;https://example.com\u{001B}\\d\u{001B}]8;;\u{001B}\\"
+        + "\u{001B}_Gpayload\u{0007}e"
+    #expect(stripTerminalSequences(input) == "abcde")
+}
+
+@Test("getGraphemeCellRange finds wide and combining graphemes")
+func graphemeCellRanges() {
+    let line = "a\u{001B}[31m界\u{001B}[0me\u{0301}z"
+    #expect(getGraphemeCellRange(line: line, column: 0) == GraphemeCellRange(start: 0, end: 1))
+    #expect(getGraphemeCellRange(line: line, column: 1) == GraphemeCellRange(start: 1, end: 3))
+    #expect(getGraphemeCellRange(line: line, column: 2) == GraphemeCellRange(start: 1, end: 3))
+    #expect(getGraphemeCellRange(line: line, column: 3) == GraphemeCellRange(start: 3, end: 4))
+    #expect(getGraphemeCellRange(line: line, column: 4) == GraphemeCellRange(start: 4, end: 5))
+    #expect(getGraphemeCellRange(line: line, column: 5) == nil)
 }

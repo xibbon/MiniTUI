@@ -80,11 +80,37 @@ public func parseOsc11BackgroundColor(_ data: String) -> RgbColor? {
 
 /// Parse a terminal color-scheme report (`CSI ? 997 ; 1 n` / `CSI ? 997 ; 2 n`).
 public func parseTerminalColorSchemeReport(_ data: String) -> TerminalColorScheme? {
-    switch data {
-    case "\u{001B}[?997;1n": return .dark
-    case "\u{001B}[?997;2n": return .light
-    default: return nil
+    guard let report = parseTerminalColorSchemeReportPrefix(data), report.length == data.count else {
+        return nil
     }
+    return report.scheme
+}
+
+/// Parse one or more color-scheme reports at the start of `data`.
+/// The last report in the batch is the effective value.
+func parseTerminalColorSchemeReportPrefix(_ data: String) -> (scheme: TerminalColorScheme, length: Int)? {
+    let darkReport = "\u{001B}[?997;1n"
+    let lightReport = "\u{001B}[?997;2n"
+    var remainder = data[...]
+    var scheme: TerminalColorScheme?
+    var consumedLength = 0
+
+    while !remainder.isEmpty {
+        if remainder.hasPrefix(darkReport) {
+            scheme = .dark
+            remainder.removeFirst(darkReport.count)
+            consumedLength += darkReport.count
+        } else if remainder.hasPrefix(lightReport) {
+            scheme = .light
+            remainder.removeFirst(lightReport.count)
+            consumedLength += lightReport.count
+        } else {
+            break
+        }
+    }
+
+    guard let scheme else { return nil }
+    return (scheme, consumedLength)
 }
 
 private func parseOscHexChannel(_ channel: String) -> Int? {

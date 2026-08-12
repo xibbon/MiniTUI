@@ -26,6 +26,13 @@ private final class ColorSchemeTestTerminal: Terminal {
     func sendInput(_ data: String) { inputHandler?(data) }
 }
 
+private final class ColorSchemeInputComponent: Component {
+    var inputs: [String] = []
+
+    func render(width: Int) -> [String] { [] }
+    func handleInput(_ data: String) { inputs.append(data) }
+}
+
 @Suite("Terminal color parsing")
 struct TerminalColorsTests {
     @Test("parses OSC 11 RGB responses")
@@ -46,8 +53,41 @@ struct TerminalColorsTests {
     func parsesTerminalColorSchemeReports() {
         #expect(parseTerminalColorSchemeReport("\u{001B}[?997;1n") == .dark)
         #expect(parseTerminalColorSchemeReport("\u{001B}[?997;2n") == .light)
+        #expect(parseTerminalColorSchemeReport("\u{001B}[?997;1n\u{001B}[?997;2n") == .light)
+        #expect(parseTerminalColorSchemeReport("\u{001B}[?997;2n\u{001B}[?997;1n") == .dark)
         #expect(parseTerminalColorSchemeReport("\u{001B}[?997;3n") == nil)
         #expect(parseTerminalColorSchemeReport("\u{001B}[?996n") == nil)
+        #expect(parseTerminalColorSchemeReport("\u{001B}[?997;2na") == nil)
+    }
+
+    @MainActor
+    @Test("consumes batched reports and forwards trailing input")
+    func consumesReportPrefixes() async {
+        let terminal = ColorSchemeTestTerminal()
+        let tui = TUI(terminal: terminal)
+        let component = ColorSchemeInputComponent()
+        var reports: [TerminalColorScheme] = []
+        _ = tui.onTerminalColorSchemeChange { reports.append($0) }
+        tui.addChild(component)
+        tui.setFocus(component)
+        tui.start()
+
+        terminal.sendInput("\u{001B}[?997;1n\u{001B}[?997;2n")
+        await Task.yield()
+        #expect(reports == [.light])
+        #expect(component.inputs.isEmpty)
+
+        terminal.sendInput("\u{001B}[?997;2na")
+        await Task.yield()
+        #expect(reports == [.light, .light])
+        #expect(component.inputs == ["a"])
+        tui.stop()
+    }
+
+    @Test("uses the upstream OSC 9;4 progress sequences")
+    func progressSequences() {
+        #expect(terminalProgressActiveSequence == "\u{001B}]9;4;3\u{0007}")
+        #expect(terminalProgressClearSequence == "\u{001B}]9;4;0\u{0007}")
     }
 
     @MainActor

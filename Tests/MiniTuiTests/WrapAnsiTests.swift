@@ -1,6 +1,22 @@
 import Testing
 import MiniTui
 
+@Test("handles LF CRLF and CR line endings")
+func handlesAllLineEndings() {
+    #expect(wrapTextWithAnsi("first\nsecond\r\nthird\rfourth", width: 80) == [
+        "first", "second", "third", "fourth",
+    ])
+}
+
+@Test("preserves ANSI state across CRLF and CR line endings")
+func preservesAnsiAcrossAllLineEndings() {
+    let red = "\u{001B}[31m"
+    let reset = "\u{001B}[0m"
+    #expect(wrapTextWithAnsi("\(red)first\r\nsecond\rthird\(reset)", width: 80) == [
+        "\(red)first", "\(red)second", "\(red)third\(reset)",
+    ])
+}
+
 @MainActor
 @Test("underline styling does not apply before styled text")
 func underlineDoesNotLead() {

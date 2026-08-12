@@ -478,7 +478,8 @@ public final class TUI: Container {
     private func handleTerminalInput(_ data: String) {
         var input = data
 
-        if consumeTerminalColorSchemeReport(input) {
+        input = consumeTerminalColorSchemeReportPrefix(input)
+        if input.isEmpty {
             return
         }
 
@@ -577,13 +578,13 @@ public final class TUI: Container {
         }
     }
 
-    private func consumeTerminalColorSchemeReport(_ data: String) -> Bool {
-        guard let scheme = parseTerminalColorSchemeReport(data) else { return false }
+    private func consumeTerminalColorSchemeReportPrefix(_ data: String) -> String {
+        guard let report = parseTerminalColorSchemeReportPrefix(data) else { return data }
         let listeners = Array(terminalColorSchemeListeners.values)
         for listener in listeners {
-            listener(scheme)
+            listener(report.scheme)
         }
-        return true
+        return data.substring(from: report.length, length: data.count - report.length)
     }
 
     private func parseCellSizeResponse() -> String {
@@ -625,7 +626,7 @@ public final class TUI: Container {
         return line.contains(TUI.kittyImagePrefix) || line.contains(TUI.itermImagePrefix)
     }
 
-    private static let segmentReset = "\u{001B}[0m\u{001B}]8;;\u{0007}"
+    private static let segmentReset = "\u{001B}[0m" + osc8HyperlinkCloseBell
 
     private func parseSizeValue(_ value: SizeValue?, reference: Int) -> Int? {
         guard let value else { return nil }

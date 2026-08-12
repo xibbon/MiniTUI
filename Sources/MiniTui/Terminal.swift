@@ -11,6 +11,9 @@ import Darwin
 import WinSDK
 #endif
 
+let terminalProgressActiveSequence = "\u{001B}]9;4;3\u{0007}"
+let terminalProgressClearSequence = "\u{001B}]9;4;0\u{0007}"
+
 /// Minimal terminal interface used by the TUI renderer.
 public protocol Terminal: AnyObject {
     /// Start the terminal and provide input/resize handlers.
@@ -383,15 +386,11 @@ public final class ProcessTerminal: Terminal {
     }
 
     /// v0.69.0: emit OSC 9;4 to toggle terminal progress indicator.
-    /// State 1 = "indeterminate" (active), state 0 = "remove" (inactive).
+    /// State 3 = "indeterminate" (active), state 0 = "remove" (inactive).
     /// Supported by iTerm2, WezTerm, Windows Terminal, Kitty (and Ghostty after v0.70.0
     /// keep-alive workaround). Other terminals ignore.
     public func setProgress(_ active: Bool) {
-        if active {
-            write("\u{001B}]9;4;1\u{001B}\\")
-        } else {
-            write("\u{001B}]9;4;0\u{001B}\\")
-        }
+        write(active ? terminalProgressActiveSequence : terminalProgressClearSequence)
     }
 
     private func terminalSize() -> (columns: Int, rows: Int) {

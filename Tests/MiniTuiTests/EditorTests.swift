@@ -1068,6 +1068,19 @@ func deletingPasteMarkerCompactsPasteState() {
 }
 
 @MainActor
+@Test("undo after paste marker deletion restores paste state")
+func undoPasteMarkerDeletionRestoresPasteState() {
+    let editor = Editor(theme: defaultEditorTheme)
+    let pasted = (1...11).map { "line \($0)" }.joined(separator: "\n")
+
+    editor.handleInput("\u{001B}[200~\(pasted)\u{001B}[201~")
+    editor.handleInput("\u{007F}")
+    editor.handleInput("\u{001F}")
+
+    #expect(editor.getExpandedText() == pasted)
+}
+
+@MainActor
 @Test("setText clears paste-marker accounting")
 func setTextClearsPasteMarkerState() {
     let editor = Editor(theme: defaultEditorTheme)
