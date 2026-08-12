@@ -877,7 +877,7 @@ public func matchesKey(_ data: String, _ keyId: KeyId) -> Bool {
             }
 
             if alt && !ctrl && !shift {
-                if !kittyActive && isLetter && data == "\u{001B}\(key)" { return true }
+                if !kittyActive && (isLetter || isDigit || isSymbol) && data == "\u{001B}\(key)" { return true }
                 return matchesKittySequence(data, expectedCodepoint: codepoint, expectedModifier: Modifiers.alt)
                     || matchesModifyOtherKeys(data, expectedKeycode: codepoint, expectedModifier: Modifiers.alt)
             }
@@ -1091,8 +1091,9 @@ public func parseKey(_ data: String) -> KeyId? {
             if code >= 1 && code <= 26 {
                 return "ctrl+alt+" + String(UnicodeScalar(code + 96)!)
             }
-            if code >= 97 && code <= 122 {
-                return "alt+" + String(UnicodeScalar(code)!)
+            let ch = String(UnicodeScalar(code)!)
+            if (code >= 97 && code <= 122) || (code >= 48 && code <= 57) || symbolKeys.contains(ch) {
+                return "alt+" + ch
             }
         }
     }

@@ -1,6 +1,23 @@
 import Testing
 import MiniTui
 
+@Test("normalizeTerminalOutput expands visible tabs")
+func normalizeTerminalOutputExpandsVisibleTabs() {
+    #expect(normalizeTerminalOutput("a\tb") == "a   b")
+}
+
+@Test("normalizeTerminalOutput preserves tabs inside ANSI sequences")
+func normalizeTerminalOutputPreservesAnsiTabs() {
+    let text = "\u{001B}[3\t1mred\u{001B}[0m\ttext"
+    #expect(normalizeTerminalOutput(text) == "\u{001B}[3\t1mred\u{001B}[0m   text")
+}
+
+@Test("normalizeTerminalOutput leaves strings without tabs unchanged")
+func normalizeTerminalOutputLeavesTablessStringsUnchanged() {
+    let text = "\u{001B}[31mred\u{001B}[0m"
+    #expect(normalizeTerminalOutput(text) == text)
+}
+
 @Test("truncateToWidth keeps large unicode output within width")
 func truncateLargeUnicodeWithinWidth() {
     let text = String(repeating: "🙂界", count: 100_000)

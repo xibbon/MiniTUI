@@ -8,6 +8,28 @@ private let ansiApcRegex = try! NSRegularExpression(pattern: "\u{001B}_[^\u{0007
 
 private let visibleWidthCache = VisibleWidthCache(maxSize: 512)
 
+/// Expand visible tabs to 3 spaces (the fixed width used by layout) so terminal tab stops
+/// cannot wrap a logical line. Tabs inside ANSI escape sequences are left untouched.
+public func normalizeTerminalOutput(_ str: String) -> String {
+    guard str.contains("\t") else { return str }
+
+    var result = ""
+    var index = 0
+    let length = str.count
+    while index < length {
+        if let ansi = extractAnsiCode(str, at: index) {
+            result += ansi.code
+            index += ansi.length
+            continue
+        }
+
+        let character = str[str.index(at: index)]
+        result += character == "\t" ? "   " : String(character)
+        index += 1
+    }
+    return result
+}
+
 /// SAFETY: cache dictionaries and eviction order are accessed only while
 /// holding `lock`.
 private final class VisibleWidthCache: @unchecked Sendable {

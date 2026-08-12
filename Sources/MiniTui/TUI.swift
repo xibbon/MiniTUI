@@ -907,8 +907,9 @@ public final class TUI: Container {
             cleanedLines = renderedLines
             cursorPosition = nil
         }
+        let normalizedLines = cleanedLines.map(normalizeTerminalOutput)
         let resetLines = applyLineResets(
-            cleanedLines,
+            normalizedLines,
             previousSource: previousResetSource,
             previousLines: previousLines
         )
@@ -957,7 +958,7 @@ public final class TUI: Container {
                 maxLinesRendered = max(maxLinesRendered, newLines.count)
             }
             previousLines = newLines
-            previousResetSource = cleanedLines
+            previousResetSource = normalizedLines
             previousWidth = width
             previousHeight = height
             positionCursorIfNeeded(cursorPosition, width: width)
@@ -1004,7 +1005,7 @@ public final class TUI: Container {
             if useSystemCursor, cursorPosition != lastSystemCursor {
                 positionCursorIfNeeded(cursorPosition, width: width)
             }
-            previousResetSource = cleanedLines
+            previousResetSource = normalizedLines
             previousHeight = height
             maxLinesRendered = max(maxLinesRendered, newLines.count)
             return
@@ -1031,7 +1032,7 @@ public final class TUI: Container {
                 cursorRow = targetRow
             }
             previousLines = newLines
-            previousResetSource = cleanedLines
+            previousResetSource = normalizedLines
             previousWidth = width
             previousHeight = height
             maxLinesRendered = max(maxLinesRendered, newLines.count)
@@ -1135,7 +1136,7 @@ public final class TUI: Container {
         terminal.write(buffer)
         cursorRow = finalCursorRow
         previousLines = newLines
-        previousResetSource = cleanedLines
+        previousResetSource = normalizedLines
         previousWidth = width
         previousHeight = height
         maxLinesRendered = max(maxLinesRendered, newLines.count)
