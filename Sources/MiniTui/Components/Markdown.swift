@@ -506,7 +506,7 @@ public final class Markdown: Component {
         }
 
         if let table = block as? Table {
-            return renderTable(table: table, availableWidth: width)
+            return renderTable(table: table, availableWidth: width, context: context)
         }
 
         if let blockquote = block as? BlockQuote {
@@ -747,11 +747,15 @@ public final class Markdown: Component {
         return lines
     }
 
-    private func wrapCellText(_ text: String, maxWidth: Int) -> [String] {
-        return wrapTextWithAnsi(text, width: max(1, maxWidth))
+    private func wrapCellText(_ text: String, maxWidth: Int, stylePrefix: String) -> [String] {
+        let lines = wrapTextWithAnsi(text, width: max(1, maxWidth))
+        return lines.enumerated().map { index, line in
+            line + (index < lines.count - 1 ? "\u{001B}[22;23;24;25;27;28;29;39m" : "") + stylePrefix
+        }
     }
 
-    private func renderTable(table: Table, availableWidth: Int) -> [String] {
+    private func renderTable(table: Table, availableWidth: Int, context: InlineStyleContext?) -> [String] {
+        let context = context ?? defaultInlineStyleContext()
         let headerCells = Array(table.head.cells)
         let rows = Array(table.body.rows)
         let numCols = max(headerCells.count, table.maxColumnCount)
@@ -769,14 +773,14 @@ public final class Markdown: Component {
 
         var naturalWidths = Array(repeating: 0, count: numCols)
         for (index, cell) in headerCells.enumerated() {
-            let text = renderInlineChildren(cell)
+            let text = renderInlineChildren(cell, context: context)
             if index < naturalWidths.count {
                 naturalWidths[index] = max(naturalWidths[index], visibleWidth(text))
             }
         }
         for row in rows {
             for (index, cell) in row.cells.enumerated() {
-                let text = renderInlineChildren(cell)
+                let text = renderInlineChildren(cell, context: context)
                 if index < naturalWidths.count {
                     naturalWidths[index] = max(naturalWidths[index], visibleWidth(text))
                 }
@@ -817,8 +821,8 @@ public final class Markdown: Component {
         lines.append("┌─" + topBorderCells.joined(separator: "─┬─") + "─┐")
 
         let headerCellLines = headerCells.enumerated().map { index, cell -> [String] in
-            let text = renderInlineChildren(cell)
-            return wrapCellText(text, maxWidth: columnWidths[index])
+            let text = renderInlineChildren(cell, context: context)
+            return wrapCellText(text, maxWidth: columnWidths[index], stylePrefix: context.stylePrefix)
         }
         let headerLineCount = headerCellLines.map { $0.count }.max() ?? 0
 
@@ -837,8 +841,8 @@ public final class Markdown: Component {
         for row in rows {
             let rowCells = Array(row.cells)
             let rowCellLines: [[String]] = columnWidths.indices.map { index in
-                let text = index < rowCells.count ? renderInlineChildren(rowCells[index]) : ""
-                return wrapCellText(text, maxWidth: columnWidths[index])
+                let text = index < rowCells.count ? renderInlineChildren(rowCells[index], context: context) : ""
+                return wrapCellText(text, maxWidth: columnWidths[index], stylePrefix: context.stylePrefix)
             }
             let rowLineCount = rowCellLines.map { $0.count }.max() ?? 0
 

@@ -1,7 +1,7 @@
 import Foundation
 
 /// Text component with optional padding and background styling.
-public class Text: Component {
+open class Text: Component {
     private var text: String
     private let paddingX: Int
     private let paddingY: Int
@@ -32,7 +32,7 @@ public class Text: Component {
     }
 
     /// Clear cached render state.
-    public func invalidate() {
+    open func invalidate() {
         cachedText = nil
         cachedWidth = nil
         cachedLines = nil
@@ -42,7 +42,7 @@ public class Text: Component {
     public func handleInput(_ data: String) {}
 
     /// Render the text with padding and background styling.
-    public func render(width: Int) -> [String] {
+    open func render(width: Int) -> [String] {
         if let cachedLines, cachedText == text, cachedWidth == width {
             return cachedLines
         }
@@ -56,6 +56,7 @@ public class Text: Component {
         }
 
         let normalizedText = text.replacingOccurrences(of: "\t", with: "   ")
+        let paddingX = min(self.paddingX, max(0, (width - 1) / 2))
         let contentWidth = max(1, width - paddingX * 2)
         let wrappedLines = wrapTextWithAnsi(normalizedText, width: contentWidth)
 

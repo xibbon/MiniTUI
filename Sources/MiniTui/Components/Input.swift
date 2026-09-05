@@ -1,12 +1,24 @@
 import Foundation
 
+public struct InputOptions {
+    public var prompt: String
+    public var placeholder: String
+    public var placeholderStyle: (String) -> String
+    public init(prompt: String = "> ", placeholder: String = "", placeholderStyle: @escaping (String) -> String = { $0 }) {
+        self.prompt = prompt; self.placeholder = placeholder; self.placeholderStyle = placeholderStyle
+    }
+}
+
 /// Single-line text input with cursor and editing shortcuts.
-public final class Input: SystemCursorAware, KillBufferAware {
+public final class Input: SystemCursorAware, KillBufferAware, Focusable {
     private enum LastAction {
         case kill
         case yank
     }
 
+    private let options: InputOptions
+    private var renderedStartColumn = 0
+    public var focused = false
     private var value: String = ""
     private var cursor: Int = 0
     private var lastAction: LastAction?
@@ -23,7 +35,7 @@ public final class Input: SystemCursorAware, KillBufferAware {
     private var isInPaste = false
 
     /// Create an empty input.
-    public init() {}
+    public init(options: InputOptions = InputOptions()) { self.options = options }
 
     /// Return the current input value.
     public func getValue() -> String {
@@ -194,14 +206,37 @@ public final class Input: SystemCursorAware, KillBufferAware {
         }
     }
 
+    public func handleMouse(_ event: TuiMouseEvent) -> TuiMouseEventResult? {
+        guard event.type == .press, event.button == .left, event.y == 0 else { return nil }
+        let targetColumn = renderedStartColumn + max(0, event.x - 2)
+        var column = 0
+        cursor = value.count
+        for (index, grapheme) in value.enumerated() {
+            let next = column + visibleWidth(String(grapheme))
+            if targetColumn < next { cursor = index; break }
+            column = next
+        }
+        setLastAction(nil)
+        return TuiMouseEventResult(handled: true, focus: true)
+    }
+
     /// Render the input line with a prompt and cursor.
     public func render(width: Int) -> [String] {
-        let prompt = "> "
-        let availableWidth = width - prompt.count
+        let prompt = options.prompt
+        let availableWidth = width - visibleWidth(prompt)
         if availableWidth <= 0 {
-            return [prompt]
+            return [truncateToWidth(prompt, maxWidth: width, ellipsis: "")]
         }
 
+        if value.isEmpty, !options.placeholder.isEmpty {
+            let placeholder = truncateToWidth(options.placeholder, maxWidth: availableWidth, ellipsis: "")
+            let first = placeholder.first.map(String.init) ?? " "
+            let rest = String(placeholder.dropFirst())
+            let marker = focused || usesSystemCursor ? systemCursorMarker : ""
+            let text = marker + "\u{001B}[7m" + options.placeholderStyle(first) + "\u{001B}[27m" + options.placeholderStyle(rest)
+            return [prompt + text + String(repeating: " ", count: max(0, availableWidth - visibleWidth(text)))]
+        }
+        renderedStartColumn = 0
         var visibleText = ""
         var cursorDisplay = cursor
 
@@ -220,10 +255,12 @@ public final class Input: SystemCursorAware, KillBufferAware {
                 cursorDisplay = cursor
             } else if cursorColWidth > totalWidth - halfWidth {
                 let startCol = max(0, totalWidth - scrollWidth)
+                renderedStartColumn = startCol
                 visibleText = sliceByColumn(value, startCol: startCol, length: scrollWidth, strict: true)
                 cursorDisplay = visibleText.count - (value.count - cursor)
             } else {
                 let startCol = max(0, cursorColWidth - halfWidth)
+                renderedStartColumn = startCol
                 visibleText = sliceByColumn(value, startCol: startCol, length: scrollWidth, strict: true)
                 let slicedBefore = sliceByColumn(value, startCol: startCol, length: cursorColWidth - startCol, strict: true)
                 cursorDisplay = slicedBefore.count
@@ -240,7 +277,7 @@ public final class Input: SystemCursorAware, KillBufferAware {
             let atCursor = afterCursor.isEmpty ? " " : afterCursor.prefixCharacters(1)
             let remaining = afterCursor.isEmpty ? "" : afterCursor.substring(from: 1, length: max(0, afterCursor.count - 1))
             let cursorChar = "\u{001B}[7m\(atCursor)\u{001B}[27m"
-            textWithCursor = beforeCursor + cursorChar + remaining
+            textWithCursor = beforeCursor + (focused ? systemCursorMarker : "") + cursorChar + remaining
         }
 
         let visualLength = visibleWidth(textWithCursor)

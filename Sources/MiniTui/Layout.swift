@@ -403,11 +403,12 @@ public func isOSC133PromptStart(_ line: String) -> Bool {
     return suffix == "\u{0007}" || suffix == "\u{001B}\\"
 }
 
-private func styleScrollbarCell(
+private func replaceScrollbarCell(
     line: String,
     column: Int,
     totalWidth: Int,
-    style: (String) -> String
+    replacement: String,
+    preserveTargetBackground: Bool
 ) -> String {
     if isImageLine(line) { return line }
 
@@ -424,27 +425,30 @@ private func styleScrollbarCell(
         targetPrefix += ansi.code
         targetIndex += ansi.length
     }
-    let textIndex = target.index(target.startIndex, offsetBy: targetIndex)
-    let targetText = textIndex == target.endIndex ? String(repeating: " ", count: end - start) : String(target[textIndex...])
     let beforePadding = String(repeating: " ", count: max(0, start - visibleWidth(before)))
-    return before + beforePadding + targetPrefix + style(targetText) + after
+    let cellPaddingBefore = String(repeating: " ", count: max(0, column - start))
+    let cellPaddingAfter = String(repeating: " ", count: max(0, end - column - 1))
+    let targetStyle = layoutSegmentReset + (preserveTargetBackground ? getActiveBackgroundAnsi(targetPrefix) : "")
+    return before + beforePadding + targetStyle + cellPaddingBefore + replacement + cellPaddingAfter + after
 }
 
-/// Return scrollbar geometry for a laid-out scroll view when its scrollbar is visible.
+/// Return scrollbar geometry, optionally including a hidden automatic track.
 @MainActor
-public func getScrollbarGeometry(_ box: LayoutBox) -> ScrollbarGeometry? {
+public func getScrollbarGeometry(_ box: LayoutBox, includeHiddenAuto: Bool = false) -> ScrollbarGeometry? {
     guard let scrollView = box.scrollView,
-          scrollView.isScrollbarVisible,
           box.rect.width > 0,
           box.rect.height > 0 else {
         return nil
     }
 
     let contentHeight = box.children.first?.rect.height ?? box.scrollContentLines?.count ?? 0
-    guard contentHeight > 0 else { return nil }
     let trackHeight = box.rect.height
+    let canRevealHiddenAuto = includeHiddenAuto && scrollView.scrollbar == .auto && contentHeight > trackHeight
+    guard scrollView.isScrollbarVisible || canRevealHiddenAuto else { return nil }
     let minThumbHeight = min(2, trackHeight)
-    let proportionalHeight = Int((Double(trackHeight * trackHeight) / Double(contentHeight)).rounded())
+    let proportionalHeight = contentHeight > 0
+        ? Int((Double(trackHeight * trackHeight) / Double(contentHeight)).rounded())
+        : trackHeight
     let thumbHeight = max(minThumbHeight, min(trackHeight, proportionalHeight))
     let maxScrollTop = max(0, contentHeight - trackHeight)
     let maxThumbTop = trackHeight - thumbHeight
@@ -467,16 +471,21 @@ public func getScrollbarGeometry(_ box: LayoutBox) -> ScrollbarGeometry? {
 @MainActor
 private func paintScrollbar(_ box: LayoutBox, screen: inout [String], totalWidth: Int) {
     guard let geometry = getScrollbarGeometry(box), let scrollView = box.scrollView else { return }
-    for offset in 0..<geometry.thumbHeight {
-        let row = geometry.thumbTop + offset
+    for offset in 0..<geometry.trackHeight {
+        let row = geometry.trackTop + offset
         if row < box.clip.y || row >= box.clip.y + box.clip.height || row < 0 || row >= screen.count {
             continue
         }
-        screen[row] = styleScrollbarCell(
+        let isThumb = row >= geometry.thumbTop && row < geometry.thumbTop + geometry.thumbHeight
+        let replacement = isThumb
+            ? scrollView.scrollbarThumbStyle(scrollView.isScrollbarActive ? "█" : "┃")
+            : scrollView.scrollbarTrackStyle("│")
+        screen[row] = replaceScrollbarCell(
             line: screen[row],
             column: geometry.column,
             totalWidth: totalWidth,
-            style: scrollView.scrollbarStyle
+            replacement: replacement,
+            preserveTargetBackground: scrollView.scrollbar != .always
         )
     }
 }
@@ -499,7 +508,8 @@ private func paintBox(_ box: LayoutBox, screen: inout [String], totalWidth: Int)
                         line = cropKittyImageLine(line, hiddenRows: 0, visibleRows: visibleRows)
                     }
                 }
-                if isImageLine(line), box.rect.x == 0, box.rect.width >= totalWidth {
+                if box.rect.x == 0, box.rect.width >= totalWidth,
+                   isImageLine(line) || screen[row].isEmpty {
                     screen[row] = line
                 } else {
                     screen[row] = compositeLayoutLine(
@@ -581,6 +591,23 @@ public func renderLayoutFrame(
 
 private func containsPoint(_ rect: LayoutRect, x: Int, y: Int) -> Bool {
     x >= rect.x && x < rect.x + rect.width && y >= rect.y && y < rect.y + rect.height
+}
+
+/// Return the visual hit path by descending layer, then descending depth.
+@MainActor
+public func getLayoutBoxesAt(frame: LayoutFrame, x: Int, y: Int) -> [LayoutBox] {
+    var result: [(box: LayoutBox, depth: Int)] = []
+    func visit(_ box: LayoutBox, depth: Int) {
+        guard containsPoint(box.clip, x: x, y: y) else { return }
+        result.append((box, depth))
+        for child in box.children { visit(child, depth: depth + 1) }
+    }
+    visit(frame.root, depth: 0)
+    result.sort {
+        if $0.box.layer != $1.box.layer { return $0.box.layer > $1.box.layer }
+        return $0.depth > $1.depth
+    }
+    return result.map(\.box)
 }
 
 /// Find the layout box for a scroll view by identity.

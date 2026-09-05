@@ -8,6 +8,7 @@ open class Box: Component {
     private let paddingY: Int
     private var bgFn: ((String) -> String)?
 
+    private var mouseLayout: (width: Int, children: [(component: any Component, height: Int)])?
     private var cachedWidth: Int?
     private var cachedChildLines: String?
     private var cachedBgSample: String?
@@ -53,6 +54,26 @@ open class Box: Component {
         }
     }
 
+    public func handleMouse(_ event: TuiMouseEvent) -> TuiMouseEventResult? {
+        let contentWidth = max(1, event.width - paddingX * 2)
+        let contentY = event.y - paddingY
+        let contentX = event.x - paddingX
+        guard contentY >= 0, contentX >= 0, contentX < contentWidth else { return nil }
+        let layout = mouseLayout?.width == contentWidth ? mouseLayout!.children
+            : children.map { (component: $0, height: $0.render(width: contentWidth).count) }
+        var childY = 0
+        for (child, height) in layout {
+            if contentY >= childY && contentY < childY + height {
+                var local = event
+                local.x = contentX; local.y = contentY - childY
+                local.width = contentWidth; local.height = height
+                return dispatchMouseEvent(child, local)
+            }
+            childY += height
+        }
+        return nil
+    }
+
     /// Render children with padding and optional background.
     public func render(width: Int) -> [String] {
         if children.isEmpty {
@@ -63,8 +84,11 @@ open class Box: Component {
         let leftPad = String(repeating: " ", count: paddingX)
 
         var childLines: [String] = []
+        var mouseChildren: [(component: any Component, height: Int)] = []
+        defer { mouseLayout = (contentWidth, mouseChildren) }
         for child in children {
             let lines = child.render(width: contentWidth)
+            mouseChildren.append((child, lines.count))
             for line in lines {
                 childLines.append(leftPad + line)
             }

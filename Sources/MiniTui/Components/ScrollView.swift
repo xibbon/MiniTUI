@@ -19,7 +19,8 @@ public struct ScrollViewOptions {
     public var primary: Bool
     public var overscroll: ScrollOverscroll
     public var scrollbar: ScrollViewScrollbar
-    public var scrollbarStyle: (String) -> String
+    public var scrollbarTrackStyle: (String) -> String
+    public var scrollbarThumbStyle: (String) -> String
     public var scrollbarHideDelayMilliseconds: Int
 
     public init(
@@ -27,25 +28,37 @@ public struct ScrollViewOptions {
         primary: Bool = false,
         overscroll: ScrollOverscroll = .chain,
         scrollbar: ScrollViewScrollbar = .hidden,
-        scrollbarStyle: @escaping (String) -> String = { "\u{001B}[100m" + $0 + "\u{001B}[49m" },
+        scrollbarTrackStyle: @escaping (String) -> String = { "\u{001B}[90m" + $0 + "\u{001B}[39m" },
+        scrollbarThumbStyle: @escaping (String) -> String = { "\u{001B}[37m" + $0 + "\u{001B}[39m" },
         scrollbarHideDelayMilliseconds: Int = 1_000
     ) {
         self.follow = follow
         self.primary = primary
         self.overscroll = overscroll
         self.scrollbar = scrollbar
-        self.scrollbarStyle = scrollbarStyle
+        self.scrollbarTrackStyle = scrollbarTrackStyle
+        self.scrollbarThumbStyle = scrollbarThumbStyle
         self.scrollbarHideDelayMilliseconds = scrollbarHideDelayMilliseconds
+    }
+}
+
+/// Options for an absolute scroll operation.
+public struct ScrollViewScrollToOptions {
+    public var disableFollow: Bool
+
+    public init(disableFollow: Bool = false) {
+        self.disableFollow = disableFollow
     }
 }
 
 /// A programmatically controlled vertical viewport over one child component.
 public final class ScrollView: Container, LayoutComponent, ScrollLayoutState {
     private let child: Component
-    private let followEnd: Bool
+    public let followEnd: Bool
     public let primary: Bool
     public let overscroll: ScrollOverscroll
-    public let scrollbarStyle: (String) -> String
+    public let scrollbarTrackStyle: (String) -> String
+    public let scrollbarThumbStyle: (String) -> String
     private let scrollbarHideDelayMilliseconds: Int
 
     private var currentScrollbar: ScrollViewScrollbar
@@ -53,6 +66,7 @@ public final class ScrollView: Container, LayoutComponent, ScrollLayoutState {
     private var contentHeight = 0
     private var currentViewportHeight = 0
     private var followingEnd: Bool
+    private var followSuppressedAtEnd = false
     private var requestRenderCallback: (() -> Void)?
     private var transientScrollbarVisible = false
     private var scrollbarActive = false
@@ -69,7 +83,8 @@ public final class ScrollView: Container, LayoutComponent, ScrollLayoutState {
         primary = options.primary
         overscroll = options.overscroll
         currentScrollbar = options.scrollbar
-        scrollbarStyle = options.scrollbarStyle
+        scrollbarTrackStyle = options.scrollbarTrackStyle
+        scrollbarThumbStyle = options.scrollbarThumbStyle
         scrollbarHideDelayMilliseconds = max(0, options.scrollbarHideDelayMilliseconds)
         super.init()
         super.addChild(component)
@@ -79,6 +94,7 @@ public final class ScrollView: Container, LayoutComponent, ScrollLayoutState {
     public var isFollowingEnd: Bool { followingEnd }
     public var viewportHeight: Int { currentViewportHeight }
     public var scrollbar: ScrollViewScrollbar { currentScrollbar }
+    public var isScrollbarActive: Bool { scrollbarActive }
 
     public var isScrollbarVisible: Bool {
         if currentScrollbar == .always { return currentViewportHeight > 0 }
@@ -131,16 +147,22 @@ public final class ScrollView: Container, LayoutComponent, ScrollLayoutState {
         guard active != scrollbarActive else { return }
         scrollbarActive = active
         markScrollbarActivity()
+        requestRenderCallback?()
     }
 
     /// Set the absolute vertical scroll offset, clamped to the current content.
-    public func scrollTo(_ scrollTop: Int) {
+    public func scrollTo(_ scrollTop: Int, options: ScrollViewScrollToOptions = ScrollViewScrollToOptions()) {
         let maxScrollTop = max(0, contentHeight - currentViewportHeight)
         let next = max(0, min(maxScrollTop, scrollTop))
-        guard next != currentScrollTop else { return }
+        let nextSuppressed = options.disableFollow && next == maxScrollTop
+        let nextFollowing = !nextSuppressed && followEnd && next == maxScrollTop
+        guard next != currentScrollTop || nextFollowing != followingEnd
+                || nextSuppressed != followSuppressedAtEnd else { return }
+        let moved = next != currentScrollTop
         currentScrollTop = next
-        followingEnd = followEnd && next == maxScrollTop
-        markScrollbarActivity()
+        followingEnd = nextFollowing
+        followSuppressedAtEnd = nextSuppressed
+        if moved { markScrollbarActivity() }
         requestRenderCallback?()
     }
 
@@ -152,12 +174,12 @@ public final class ScrollView: Container, LayoutComponent, ScrollLayoutState {
         let start = followingEnd ? maxScrollTop : currentScrollTop
         let next = max(0, min(maxScrollTop, start + lines))
         let moved = next - start
+        let wasFollowingEnd = followingEnd
         currentScrollTop = next
         followingEnd = followEnd && next == maxScrollTop
-        if moved != 0 {
-            markScrollbarActivity()
-            requestRenderCallback?()
-        }
+        followSuppressedAtEnd = false
+        if moved != 0 { markScrollbarActivity() }
+        if moved != 0 || followingEnd != wasFollowingEnd { requestRenderCallback?() }
         return lines - moved
     }
 
@@ -166,6 +188,7 @@ public final class ScrollView: Container, LayoutComponent, ScrollLayoutState {
         let changed = currentScrollTop != 0 || followingEnd != nextFollowingEnd
         currentScrollTop = 0
         followingEnd = nextFollowingEnd
+        followSuppressedAtEnd = false
         if changed {
             markScrollbarActivity()
             requestRenderCallback?()
@@ -177,6 +200,7 @@ public final class ScrollView: Container, LayoutComponent, ScrollLayoutState {
         let changed = currentScrollTop != next || followingEnd != followEnd
         currentScrollTop = next
         followingEnd = followEnd
+        followSuppressedAtEnd = false
         if changed {
             markScrollbarActivity()
             requestRenderCallback?()
@@ -196,7 +220,8 @@ public final class ScrollView: Container, LayoutComponent, ScrollLayoutState {
         } else {
             currentScrollTop = max(0, min(currentScrollTop, maxScrollTop))
         }
-        if followEnd, currentScrollTop == maxScrollTop {
+        if currentScrollTop < maxScrollTop { followSuppressedAtEnd = false }
+        if followEnd, currentScrollTop == maxScrollTop, !followSuppressedAtEnd {
             followingEnd = true
         }
         if nextContentHeight <= nextViewportHeight {

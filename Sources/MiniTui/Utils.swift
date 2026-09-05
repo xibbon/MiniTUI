@@ -891,6 +891,13 @@ public func extractAnsiCode(_ text: String, at index: Int) -> (code: String, len
     return nil
 }
 
+/// Return the background color active at the end of an ANSI string.
+public func getActiveBackgroundAnsi(_ text: String) -> String {
+    let tracker = AnsiCodeTracker()
+    updateTrackerFromText(text, tracker: tracker)
+    return tracker.activeBackgroundCode
+}
+
 private func updateTrackerFromText(_ text: String, tracker: AnsiCodeTracker) {
     var index = 0
     let length = text.count
@@ -959,6 +966,7 @@ private final class AnsiCodeTracker {
     private var strikethrough = false
     private var fgColor: String?
     private var bgColor: String?
+    var activeBackgroundCode: String { bgColor.map { "\u{001B}[\($0)m" } ?? "" }
 
     func process(_ ansiCode: String) {
         guard ansiCode.hasSuffix("m"), ansiCode.hasPrefix("\u{001B}[") else {

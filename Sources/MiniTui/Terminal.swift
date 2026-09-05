@@ -120,7 +120,7 @@ public final class ProcessTerminal: Terminal {
         self.resizeSource = resizeSource
 
         #if !os(Windows)
-        kill(getpid(), SIGWINCH)
+        refreshTerminalDimensions()
         #endif
 
         // On Windows, raw mode can reset console flags. Re-enable VT input so
@@ -200,7 +200,7 @@ public final class ProcessTerminal: Terminal {
     }
 
     private func setupStdinBuffer() {
-        let buffer = StdinBuffer(options: StdinBufferOptions(timeout: 0.01))
+        let buffer = StdinBuffer(options: StdinBufferOptions(escapeTimeout: resolveEscapeTimeoutMs() / 1000))
         buffer.onData = { [weak self] sequence in
             self?.inputHandler?(sequence)
         }
@@ -404,4 +404,23 @@ public final class ProcessTerminal: Terminal {
         }
         return (columns: 80, rows: 24)
     }
+}
+
+/// Resolve the lone-Escape delay in milliseconds.
+public func resolveEscapeTimeoutMs(env: [String: String] = ProcessInfo.processInfo.environment) -> Double {
+    if let value = env["PI_TUI_ESC_TIMEOUT"], let number = Double(value.trimmingCharacters(in: .whitespacesAndNewlines)), number.isFinite, number > 0 { return number }
+    if !(env["SSH_CONNECTION"] ?? "").isEmpty || !(env["SSH_TTY"] ?? "").isEmpty { return 100 }
+    return 10
+}
+
+/// Refresh dimensions on POSIX. Signal delivery is best effort, as upstream specifies.
+public func refreshTerminalDimensions() {
+    #if !os(Windows)
+    refreshTerminalDimensions(pid: getpid(), isWindows: false) { pid, signal in kill(pid, signal) }
+    #endif
+}
+
+func refreshTerminalDimensions(pid: Int32, isWindows: Bool, killFunction: (Int32, Int32) -> Int32) {
+    guard !isWindows, pid > 0 else { return }
+    _ = killFunction(pid, SIGWINCH)
 }

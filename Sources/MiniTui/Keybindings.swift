@@ -72,6 +72,12 @@ public enum TUIKeybinding {
     public static let altScreenHalfPageDown = "tui.altScreen.halfPageDown"
     public static let altScreenPreviousPrompt = "tui.altScreen.previousPrompt"
     public static let altScreenNextPrompt = "tui.altScreen.nextPrompt"
+    public static let altScreenLineUp = "tui.altScreen.lineUp"
+    public static let altScreenLineDown = "tui.altScreen.lineDown"
+    public static let altScreenSearch = "tui.altScreen.search"
+    public static let altScreenSearchNext = "tui.altScreen.searchNext"
+    public static let altScreenSearchPrevious = "tui.altScreen.searchPrevious"
+    public static let altScreenSearchClose = "tui.altScreen.searchClose"
     public static let altScreenTop = "tui.altScreen.top"
     public static let altScreenBottom = "tui.altScreen.bottom"
 }
@@ -115,8 +121,14 @@ public let TUI_KEYBINDINGS: [String: KeybindingDefinition] = [
     TUIKeybinding.altScreenPageDown: KeybindingDefinition(defaultKey: Key.pageDown, description: "Scroll viewport down one page"),
     TUIKeybinding.altScreenHalfPageUp: KeybindingDefinition(defaultKeys: [], description: "Scroll viewport up half a page"),
     TUIKeybinding.altScreenHalfPageDown: KeybindingDefinition(defaultKeys: [], description: "Scroll viewport down half a page"),
-    TUIKeybinding.altScreenPreviousPrompt: KeybindingDefinition(defaultKey: Key.ctrlShift(Key.up), description: "Jump to previous semantic prompt"),
-    TUIKeybinding.altScreenNextPrompt: KeybindingDefinition(defaultKey: Key.ctrlShift(Key.down), description: "Jump to next semantic prompt"),
+    TUIKeybinding.altScreenPreviousPrompt: KeybindingDefinition(defaultKeys: [Key.ctrlShift(Key.up), Key.ctrl(Key.up)], description: "Jump to previous semantic prompt"),
+    TUIKeybinding.altScreenNextPrompt: KeybindingDefinition(defaultKeys: [Key.ctrlShift(Key.down), Key.ctrl(Key.down)], description: "Jump to next semantic prompt"),
+    TUIKeybinding.altScreenLineUp: KeybindingDefinition(defaultKeys: [], description: "Scroll viewport up one line"),
+    TUIKeybinding.altScreenLineDown: KeybindingDefinition(defaultKeys: [], description: "Scroll viewport down one line"),
+    TUIKeybinding.altScreenSearch: KeybindingDefinition(defaultKey: Key.ctrlShift("f"), description: "Search the primary scroll view"),
+    TUIKeybinding.altScreenSearchNext: KeybindingDefinition(defaultKeys: [Key.enter, Key.ctrl("g")], description: "Select the next search match"),
+    TUIKeybinding.altScreenSearchPrevious: KeybindingDefinition(defaultKeys: [Key.shift(Key.enter), Key.ctrlShift("g")], description: "Select the previous search match"),
+    TUIKeybinding.altScreenSearchClose: KeybindingDefinition(defaultKey: Key.escape, description: "Close transcript search"),
     TUIKeybinding.altScreenTop: KeybindingDefinition(defaultKey: Key.home, description: "Scroll viewport to top"),
     TUIKeybinding.altScreenBottom: KeybindingDefinition(defaultKey: Key.end, description: "Scroll viewport to bottom"),
 ]

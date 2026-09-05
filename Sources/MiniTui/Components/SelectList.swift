@@ -80,6 +80,7 @@ public final class SelectList: SystemCursorAware {
     private var items: [SelectItem]
     private var filteredItems: [SelectItem]
     private var selectedIndex: Int = 0
+    private var mousePressedIndex: Int?
     private let maxVisible: Int
     private let theme: SelectListTheme
     public var usesSystemCursor = false
@@ -150,8 +151,7 @@ public final class SelectList: SystemCursorAware {
             return lines
         }
 
-        let startIndex = max(0, min(selectedIndex - maxVisible / 2, filteredItems.count - maxVisible))
-        let endIndex = min(startIndex + maxVisible, filteredItems.count)
+        let (startIndex, endIndex) = getVisibleRange()
 
         let columnWidth = getPrimaryColumnWidth(availableWidth: width)
 
@@ -232,6 +232,42 @@ public final class SelectList: SystemCursorAware {
         }
 
         return lines
+    }
+
+    private func getVisibleRange() -> (Int, Int) {
+        let start = max(0, min(selectedIndex - maxVisible / 2, filteredItems.count - maxVisible))
+        return (start, min(start + maxVisible, filteredItems.count))
+    }
+
+    public func handleMouse(_ event: TuiMouseEvent) -> TuiMouseEventResult? {
+        guard !filteredItems.isEmpty else { return nil }
+        if event.type == .wheel, let delta = event.wheelDelta, delta != 0 {
+            let previous = selectedIndex
+            selectedIndex = max(0, min(filteredItems.count - 1, selectedIndex + (delta < 0 ? -1 : 1)))
+            if selectedIndex != previous { notifySelectionChange() }
+            return TuiMouseEventResult(handled: true, render: selectedIndex != previous)
+        }
+        guard event.type == .move || event.button == .left else { return nil }
+        let (start, end) = getVisibleRange()
+        let index = start + event.y
+        guard index >= start, index < end else { return nil }
+        if event.type == .move || event.type == .press {
+            if event.type == .press { mousePressedIndex = index }
+            let changed = selectedIndex != index
+            if changed { selectedIndex = index; notifySelectionChange() }
+            return TuiMouseEventResult(handled: true, focus: event.type == .press,
+                                      render: event.type == .move ? changed : nil)
+        }
+        if event.type == .click {
+            let clicked = mousePressedIndex ?? index
+            mousePressedIndex = nil
+            let changed = selectedIndex != clicked
+            selectedIndex = clicked
+            if changed { notifySelectionChange() }
+            if let selected = getSelectedItem() { onSelect?(selected) }
+            return TuiMouseEventResult(handled: true)
+        }
+        return nil
     }
 
     /// Handle navigation and selection input.

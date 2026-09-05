@@ -132,17 +132,17 @@ struct LayoutTests {
         #expect(child.renderedWidths == [8])
     }
 
-    @Test("rendered frames have fixed height and bounded line widths")
+    @Test("rendered frames have fixed height and preserve full-width source lines")
     func frameBounds() {
         let child = LayoutTestComponent(["this child ignores its width", "second", "third"])
         let frame = renderLayoutFrame(root: child, width: 5, height: 2) {}
         #expect(frame.lines.count == 2)
-        #expect(frame.lines.allSatisfy { visibleWidth($0) <= 5 })
+        #expect(frame.lines == Array(child.output.prefix(2)))
 
         let clamped = renderLayoutFrame(root: child, width: 0, height: 0) {}
         #expect(clamped.width == 1)
         #expect(clamped.height == 1)
         #expect(clamped.lines.count == 1)
-        #expect(clamped.lines.allSatisfy { visibleWidth($0) <= 1 })
+        #expect(clamped.lines == Array(child.output.prefix(1)))
     }
 }

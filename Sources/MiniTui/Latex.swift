@@ -23,6 +23,8 @@ private let latexSymbols: [String: String] = [
     "star": "⋆", "circ": "∘", "bullet": "•", "oplus": "⊕", "ominus": "⊖",
     "otimes": "⊗", "oslash": "⊘", "odot": "⊙", "bigcirc": "○", "dagger": "†",
     "ddagger": "‡", "amalg": "⨿", "uplus": "⊎", "sqcap": "⊓", "sqcup": "⊔",
+    "bowtie": "⋈", "Join": "⋈", "ltimes": "⋉", "rtimes": "⋊",
+    "leftouterjoin": "⟕", "rightouterjoin": "⟖", "fullouterjoin": "⟗",
     "triangleleft": "◁", "triangleright": "▷", "wr": "≀", "cap": "∩", "cup": "∪",
     "bigcap": "⋂", "bigcup": "⋃", "bigwedge": "⋀", "bigvee": "⋁",
     "bigsqcup": "⨆", "biguplus": "⨄", "bigoplus": "⨁", "bigotimes": "⨂",
@@ -77,6 +79,7 @@ private let displayLimitSymbols: Set<String> = [
 ]
 
 private let relationCommands: Set<String> = [
+    "bowtie", "Join", "ltimes", "rtimes", "leftouterjoin", "rightouterjoin", "fullouterjoin",
     "Leftarrow", "Leftrightarrow", "Longleftarrow", "Longleftrightarrow", "Longrightarrow",
     "Rightarrow", "Vdash", "Vvdash", "approx", "asymp", "cong", "dashv", "doteq",
     "downarrow", "equiv", "ge", "geq", "geqslant", "gets", "gg", "hookleftarrow",
@@ -560,6 +563,11 @@ private final class LatexParser {
             return ""
         }
         let first = source[position]
+        if first == "\n" || first == "\r" || first == "\r\n" {
+            position += 1
+            if first == "\r", position < source.count, source[position] == "\n" { position += 1 }
+            return " "
+        }
         let command: String
         if first.isASCII && first.isLetter {
             let start = position
@@ -746,7 +754,7 @@ private final class LatexParser {
     }
 
     private func parseRequiredArgumentValue() -> String {
-        while position < source.count, source[position] == " " || source[position] == "\t" { position += 1 }
+        while position < source.count, source[position].isWhitespace { position += 1 }
         guard position < source.count else {
             supported = false
             return ""

@@ -46,19 +46,37 @@ public struct AltScreenRendererOptions {
     public var mouseMotion: AltScreenMouseMotion
     public var openURL: ((String) -> Void)?
     public var onRightClickPaste: (() -> Void)?
+    public var searchMatchStyle: (String) -> String
+    public var searchCurrentMatchStyle: (String) -> String
+    public var searchNavigationButtonStyle: (String, Bool) -> String
+    public var scrollToEndIndicator: (() -> String)?
+    public var copyOnSelect: Bool
+    public var copySelection: (@MainActor (String) async -> Bool)?
 
     public init(
         wheelScrollLines: Int = 1,
         mouse: Bool = true,
         mouseMotion: AltScreenMouseMotion = .auto,
         openURL: ((String) -> Void)? = nil,
-        onRightClickPaste: (() -> Void)? = nil
+        onRightClickPaste: (() -> Void)? = nil,
+        searchMatchStyle: @escaping (String) -> String = { "\u{001B}[4m" + $0 + "\u{001B}[24m" },
+        searchCurrentMatchStyle: @escaping (String) -> String = { "\u{001B}[1;7m" + $0 + "\u{001B}[22;27m" },
+        searchNavigationButtonStyle: @escaping (String, Bool) -> String = { text, _ in text },
+        scrollToEndIndicator: (() -> String)? = nil,
+        copyOnSelect: Bool = true,
+        copySelection: (@MainActor (String) async -> Bool)? = nil
     ) {
         self.wheelScrollLines = max(1, wheelScrollLines)
         self.mouse = mouse
         self.mouseMotion = mouseMotion
         self.openURL = openURL
         self.onRightClickPaste = onRightClickPaste
+        self.searchMatchStyle = searchMatchStyle
+        self.searchCurrentMatchStyle = searchCurrentMatchStyle
+        self.searchNavigationButtonStyle = searchNavigationButtonStyle
+        self.scrollToEndIndicator = scrollToEndIndicator
+        self.copyOnSelect = copyOnSelect
+        self.copySelection = copySelection
     }
 }
 
@@ -144,12 +162,23 @@ public func parseSgrMouseEvent(_ data: String) -> SgrMouseEvent? {
     return SgrMouseEvent(rawButton: rawButton, x: column - 1, y: row - 1, release: final == "m")
 }
 
+func shouldHandleAltScreenRightClickPaste(
+    _ event: SgrMouseEvent, isWindows: Bool, environment: [String: String]
+) -> Bool {
+    isWindows && environment["TERM_PROGRAM"]?.lowercased() != "vscode"
+        && !event.release && event.rawButton == 2
+}
+
 @MainActor
 private final class WeakRootComponent: Component {
     weak var root: Component?
 
     func render(width: Int) -> [String] {
         root?.render(width: width) ?? []
+    }
+
+    func handleMouse(_ event: TuiMouseEvent) -> TuiMouseEventResult? {
+        root?.handleMouse(event)
     }
 
     func invalidate() {
@@ -200,13 +229,30 @@ private struct CachedKittyImage {
     var estimatedDecodedBytes: Int
 }
 
+@MainActor
+private final class ActiveSearch {
+    let component: AltScreenSearchComponent
+    let index = AltScreenSearchIndex()
+    var overlay: OverlayHandle?
+    var query = ""
+    var matches: [AltScreenSearchMatch] = []
+    var selectedIndex = -1
+    var selectedKey: String?
+    var anchorRow: Int
+    var selectionMode = "query"
+    init(component: AltScreenSearchComponent, anchorRow: Int) {
+        self.component = component
+        self.anchorRow = anchorRow
+    }
+}
+
 /// Fixed-viewport renderer for the terminal alternate screen.
 @MainActor
 public final class AltScreenRenderer: TuiRenderer, TuiLayoutRenderer, TuiInputRenderer, TuiHostedRenderer {
     public let mode = TuiMode.altScreen
 
     private let terminal: Terminal
-    private let options: AltScreenRendererOptions
+    private var options: AltScreenRendererOptions
     private let weakRoot = WeakRootComponent()
     private lazy var implicitScrollView = ScrollView(
         weakRoot,
@@ -241,6 +287,14 @@ public final class AltScreenRenderer: TuiRenderer, TuiLayoutRenderer, TuiInputRe
     private var scrollbarDrag: ScrollbarDrag?
     private var scrollbarHover: ScrollView?
     private var pressedURL: String?
+    private var host: TUI? { weakRoot.root as? TUI }
+    private var activeSearch: ActiveSearch?
+    private var scrollToEndIndicatorRect: (row: Int, column: Int, width: Int)?
+    private var mouseCapture: TuiMouseDispatchTarget?
+    private var mousePressTarget: TuiMouseDispatchTarget?
+    private var mousePressPoint: (x: Int, y: Int)?
+    private var mousePressMoved = false
+    private var lastComponentClick: (timestamp: Double, count: Int, component: any Component, x: Int, y: Int)?
 
     public init(terminal: Terminal, options: AltScreenRendererOptions = AltScreenRendererOptions()) {
         self.terminal = terminal
@@ -268,6 +322,14 @@ public final class AltScreenRenderer: TuiRenderer, TuiLayoutRenderer, TuiInputRe
     public var viewportTop: Int { primaryScrollView.scrollTop }
     public var isFollowingOutput: Bool { primaryScrollView.isFollowingEnd }
 
+    public func getCopyOnSelect() -> Bool { options.copyOnSelect }
+    public func setCopyOnSelect(_ enabled: Bool) { options.copyOnSelect = enabled }
+    public func hasActiveSelection() -> Bool { selectedText() != nil }
+    public func copyActiveSelectionToClipboard() async -> Bool {
+        guard let text = selectedText() else { return false }
+        return await copyTextToClipboard(text)
+    }
+
     public func setScrollbar(_ mode: ScrollViewScrollbar) {
         primaryScrollView.setScrollbar(mode)
     }
@@ -283,12 +345,20 @@ public final class AltScreenRenderer: TuiRenderer, TuiLayoutRenderer, TuiInputRe
         requestRender: @escaping () -> Void
     ) -> LayoutFrame {
         if weakRoot.root == nil { weakRoot.root = root }
-        return renderLayoutFrame(
+        var layout = renderLayoutFrame(
             root: explicitLayoutRoot ?? implicitScrollView,
             width: width,
             height: height,
             requestRender: requestRender
         )
+        if refreshSearch(layout) {
+            layout = renderLayoutFrame(root: explicitLayoutRoot ?? implicitScrollView,
+                width: width, height: height, requestRender: requestRender)
+        }
+        layout.lines = layout.lines.map(stripLeadingOSC133Zones)
+        layout.lines = applySearchHighlights(layout.lines, layout: layout)
+        layout.lines = compositeScrollToEndIndicator(layout.lines, layout: layout, width: width)
+        return layout
     }
 
     public func start() {
@@ -326,6 +396,9 @@ public final class AltScreenRenderer: TuiRenderer, TuiLayoutRenderer, TuiInputRe
     }
 
     public func stop(preserveScreen: Bool = false) {
+        closeSearch()
+        clearComponentMouseGesture()
+        lastComponentClick = nil
         stopSelectionAutoScroll()
         selectionPressActive = false
         stopScrollbarHover()
@@ -474,34 +547,65 @@ public final class AltScreenRenderer: TuiRenderer, TuiLayoutRenderer, TuiInputRe
     public func handleInput(_ data: String) -> Bool {
         if data == focusOut {
             let hadActiveSelection = selectionPressActive
+            let hadNonEmptyActiveSelection = hadActiveSelection && selectionBounds() != nil
             selectionPressActive = false
             stopSelectionAutoScroll()
             stopScrollbarHover()
             stopScrollbarDrag()
             pressedURL = nil
             selectionDragged = false
+            clearComponentMouseGesture()
+            lastComponentClick = nil
+            if activeSearch?.component.setHoveredNavigationDirection(nil) == true { requestRender() }
             if hadActiveSelection { clearSelection() }
             lastClick = nil
-            requestRender()
+            if hadNonEmptyActiveSelection { requestRender() }
             return true
         }
         if data == focusIn { return true }
 
         if let wheel = parseWheelEvent(data) {
+            let event = createMouseEvent(.wheel, rawButton: wheel.button, x: wheel.x, y: wheel.y,
+                wheelDelta: wheel.direction * options.wheelScrollLines)
+            let overlay = dispatchMouseToOverlay(event)
+            if let result = overlay.result ?? (overlay.hit ? nil : dispatchMouseToLayout(event)) {
+                if applyMouseDispatchResult(event, result) { requestRender() }
+                return true
+            }
+            if shouldDeferViewportInputToOverlay { return false }
             routeWheel(direction: wheel.direction, x: wheel.x, y: wheel.y)
             return true
         }
         if let event = parseSgrMouseEvent(data) {
-            if handleRightClickPaste(event) { return true }
-            let handled = handleScrollbarMouseEvent(event)
-            if scrollbarDrag == nil { updateScrollbarHover(x: event.x, y: event.y) }
-            if !handled { handleSelectionMouseEvent(event) }
+            handleMouseEvent(event)
             return true
         }
         if isMouseSequence(data) { return true }
 
         let keybindings = getKeybindings()
         let release = isKeyRelease(data)
+        if keybindings.matches(data, TUIKeybinding.altScreenSearch) {
+            if !release { toggleSearch() }
+            return true
+        }
+        if activeSearch?.component.focused == true {
+            if keybindings.matches(data, TUIKeybinding.altScreenSearchNext) {
+                if !release { navigateSearch(1) }; return true
+            }
+            if keybindings.matches(data, TUIKeybinding.altScreenSearchPrevious) {
+                if !release { navigateSearch(-1) }; return true
+            }
+            if keybindings.matches(data, TUIKeybinding.altScreenSearchClose) {
+                if !release { closeSearch() }; return true
+            }
+        }
+        if shouldDeferViewportInputToOverlay { return false }
+        if keybindings.matches(data, TUIKeybinding.altScreenLineUp) {
+            if !release { scrollBy(-1) }; return true
+        }
+        if keybindings.matches(data, TUIKeybinding.altScreenLineDown) {
+            if !release { scrollBy(1) }; return true
+        }
         if keybindings.matches(data, TUIKeybinding.altScreenPageUp) {
             if !release { scrollBy(-max(1, primaryScrollView.viewportHeight - pageScrollOverlap)) }
             return true
@@ -537,6 +641,312 @@ public final class AltScreenRenderer: TuiRenderer, TuiLayoutRenderer, TuiInputRe
         return false
     }
 
+    private var shouldDeferViewportInputToOverlay: Bool {
+        host?.isOverlayFocused() == true && activeSearch?.component.focused != true
+    }
+
+    private func clearComponentMouseGesture() {
+        mouseCapture = nil
+        mousePressTarget = nil
+        mousePressPoint = nil
+        mousePressMoved = false
+    }
+
+    private func clearTextSelection() {
+        stopSelectionAutoScroll()
+        selectionPressActive = false
+        clearSelection()
+        pressedURL = nil
+        selectionDragged = false
+    }
+
+    private func createMouseEvent(_ type: TuiMouseEventType, rawButton: Int, x: Int, y: Int,
+                                  wheelDelta: Int? = nil, clickCount: Int? = nil) -> TuiMouseEvent {
+        let buttons: [TuiMouseButton] = [.left, .middle, .right, .none]
+        return TuiMouseEvent(type: type, button: type == .wheel ? .none : buttons[rawButton & 3],
+            x: x, y: y, screenX: x, screenY: y, width: max(1, terminal.columns), height: max(1, terminal.rows),
+            shift: rawButton & 4 != 0, alt: rawButton & 8 != 0, ctrl: rawButton & 16 != 0,
+            wheelDelta: wheelDelta, clickCount: clickCount)
+    }
+
+    private func dispatchMouseToOverlay(_ event: TuiMouseEvent) -> (hit: Bool, result: TuiMouseDispatchResult?) {
+        host?.dispatchMouseToOverlay(event) ?? (false, nil)
+    }
+
+    private func dispatchMouseToLayout(_ event: TuiMouseEvent) -> TuiMouseDispatchResult? {
+        guard let currentLayout else { return nil }
+        var visited: Set<ObjectIdentifier> = []
+        for box in getLayoutBoxesAt(frame: currentLayout, x: event.screenX, y: event.screenY) {
+            guard visited.insert(ObjectIdentifier(box.component)).inserted else { continue }
+            var local = event
+            local.x = event.screenX - box.rect.x
+            local.y = event.screenY - box.rect.y
+            local.width = box.rect.width
+            local.height = box.rect.height
+            let previous = LayoutMouseDispatchContext.component
+            LayoutMouseDispatchContext.component = box.component
+            let result = dispatchMouseEvent(box.component, local)
+            LayoutMouseDispatchContext.component = previous
+            if let result { return result }
+        }
+        return nil
+    }
+
+    private func applyMouseDispatchResult(_ event: TuiMouseEvent, _ result: TuiMouseDispatchResult) -> Bool {
+        let target = host?.resolveMouseFocusTarget(result.focusTarget ?? result.target.component)
+            ?? result.focusTarget ?? result.target.component
+        let focusChanged = result.focus == true && host?.getFocusedComponent() !== target
+        if result.focus == true { host?.setFocus(target) }
+        if result.capture == true { mouseCapture = result.target }
+        return result.render ?? (focusChanged || result.shouldRender(for: event.type))
+    }
+
+    private func componentClickCount(_ target: TuiMouseDispatchTarget, x: Int, y: Int) -> Int {
+        let now = Date.timeIntervalSinceReferenceDate * 1_000
+        let count: Int
+        if let previous = lastComponentClick,
+           now - previous.timestamp <= doubleClickIntervalMilliseconds,
+           previous.component === target.component, previous.x == x, previous.y == y {
+            count = previous.count % 3 + 1
+        } else { count = 1 }
+        lastComponentClick = (now, count, target.component, x, y)
+        return count
+    }
+
+    private func handleMouseEvent(_ raw: SgrMouseEvent) {
+        let type: TuiMouseEventType = raw.release ? .release : raw.motion ? (raw.rawButton & 3 == 3 ? .move : .drag) : .press
+        let event = createMouseEvent(type, rawButton: raw.rawButton, x: raw.x, y: raw.y)
+        if let target = mouseCapture ?? mousePressTarget {
+            if let point = mousePressPoint, raw.x != point.x || raw.y != point.y {
+                mousePressMoved = true
+                lastComponentClick = nil
+            }
+            var render = false
+            if let result = dispatchMouseEvent(target.component, retargetMouseEvent(event, target)) {
+                render = applyMouseDispatchResult(event, result)
+            }
+            if raw.release {
+                if !mousePressMoved, mousePressPoint?.x == raw.x, mousePressPoint?.y == raw.y {
+                    let click = createMouseEvent(.click, rawButton: raw.rawButton, x: raw.x, y: raw.y,
+                        clickCount: componentClickCount(target, x: raw.x, y: raw.y))
+                    if let result = dispatchMouseEvent(target.component, retargetMouseEvent(click, target)) {
+                        render = applyMouseDispatchResult(click, result) || render
+                    }
+                }
+                clearComponentMouseGesture()
+            }
+            if render { requestRender() }
+            return
+        }
+        if handleSearchMouseEvent(raw) { return }
+        let overlay = dispatchMouseToOverlay(event)
+        if !overlay.hit {
+            if let rect = scrollToEndIndicatorRect, !raw.release, !raw.motion, raw.button == .primary,
+               raw.y == rect.row, raw.x >= rect.column, raw.x < rect.column + rect.width {
+                scrollToBottom()
+                return
+            }
+            let handled = handleScrollbarMouseEvent(raw)
+            if scrollbarDrag == nil { updateScrollbarHover(x: raw.x, y: raw.y) }
+            if handled { return }
+        } else { stopScrollbarHover() }
+        if let result = overlay.result ?? (overlay.hit ? nil : dispatchMouseToLayout(event)) {
+            let render = applyMouseDispatchResult(event, result)
+            if type == .press {
+                clearTextSelection()
+                mousePressTarget = result.target
+                mousePressPoint = (raw.x, raw.y)
+                mousePressMoved = false
+            }
+            if render { requestRender() }
+            return
+        }
+        if handleRightClickPaste(raw) { return }
+        handleSelectionMouseEvent(raw)
+    }
+
+    private func toggleSearch() {
+        if activeSearch != nil { closeSearch(); return }
+        let component = AltScreenSearchComponent(onQueryChange: { [weak self] in self?.updateSearchQuery($0) },
+            navigationButtonStyle: options.searchNavigationButtonStyle)
+        let search = ActiveSearch(component: component, anchorRow: primaryScrollView.scrollTop)
+        activeSearch = search
+        search.overlay = host?.showOverlay(component, options: OverlayOptions(width: .percent(40), minWidth: 32,
+            anchor: .topRight, margin: OverlayMargin(all: 1)))
+    }
+
+    private func closeSearch() {
+        guard let search = activeSearch else { return }
+        activeSearch = nil
+        search.overlay?.hide()
+        requestRender()
+    }
+
+    private func updateSearchQuery(_ query: String) {
+        guard let search = activeSearch, query != search.query else { return }
+        search.anchorRow = search.matches.indices.contains(search.selectedIndex)
+            ? search.matches[search.selectedIndex].segments.first?.row ?? primaryScrollView.scrollTop
+            : primaryScrollView.scrollTop
+        search.query = query
+        search.selectionMode = "query"
+        search.component.setResult(index: -1, count: 0)
+        requestRender()
+    }
+
+    private func navigateSearch(_ direction: Int) {
+        guard let search = activeSearch, !search.query.isEmpty else { return }
+        search.selectionMode = direction < 0 ? "previous" : "next"
+        requestRender()
+    }
+
+    private func handleSearchMouseEvent(_ event: SgrMouseEvent) -> Bool {
+        guard let search = activeSearch else { return false }
+        var direction: Int?
+        if let bounds = search.overlay?.getBounds(), event.x >= bounds.col,
+           event.x < bounds.col + bounds.width, event.y >= bounds.row, event.y < bounds.row + bounds.height {
+            direction = search.component.getNavigationDirectionAt(row: event.y - bounds.row, column: event.x - bounds.col)
+        }
+        if search.component.setHoveredNavigationDirection(direction) { requestRender() }
+        guard let direction, !event.release, !event.motion, event.button == .primary else { return false }
+        navigateSearch(direction)
+        return true
+    }
+
+    private func refreshSearch(_ layout: LayoutFrame) -> Bool {
+        guard let search = activeSearch else { return false }
+        let scrollView = layout.primaryScrollView ?? implicitScrollView
+        let box = getScrollViewBox(frame: layout, scrollView: scrollView)
+        guard let lines = box?.scrollContentLines, !search.query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            search.matches = []; search.selectedIndex = -1; search.selectedKey = nil; search.selectionMode = "retain"
+            search.component.setResult(index: -1, count: 0)
+            return false
+        }
+        let reveal = search.selectionMode != "retain"
+        let result = search.index.search(lines: lines, query: search.query)
+        let matches = result.matches
+        search.matches = matches
+        if !result.changed && search.selectionMode == "retain" { return false }
+        let exactIndex = result.changed
+            ? matches.firstIndex(where: { getAltScreenSearchMatchKey($0) == search.selectedKey }) ?? -1
+            : search.selectedIndex
+        var selected = -1
+        if !matches.isEmpty {
+            switch search.selectionMode {
+            case "query":
+                var low = 0, high = matches.count
+                while low < high {
+                    let middle = low + (high - low) / 2
+                    if (matches[middle].segments.first?.row ?? 0) < search.anchorRow { low = middle + 1 }
+                    else { high = middle }
+                }
+                selected = low < matches.count ? low : 0
+            case "next", "previous":
+                let base = exactIndex >= 0 ? exactIndex : min(search.selectedIndex, matches.count - 1)
+                selected = search.selectionMode == "next"
+                    ? (base < 0 ? 0 : (base + 1) % matches.count)
+                    : (base < 0 ? matches.count - 1 : (base - 1 + matches.count) % matches.count)
+            default: selected = exactIndex >= 0 ? exactIndex : min(max(0, search.selectedIndex), matches.count - 1)
+            }
+        }
+        search.selectedIndex = selected
+        search.selectedKey = selected >= 0 ? getAltScreenSearchMatchKey(matches[selected]) : nil
+        search.selectionMode = "retain"
+        search.component.setResult(index: selected, count: matches.count)
+        guard reveal, selected >= 0, box != nil, scrollView.viewportHeight > 0,
+              let first = matches[selected].segments.first, let last = matches[selected].segments.last else { return false }
+        let before = scrollView.scrollTop
+        let target = first.row < before || last.row > before + scrollView.viewportHeight - 1
+            ? first.row - scrollView.viewportHeight / 3 : before
+        scrollView.scrollTo(target, options: ScrollViewScrollToOptions(disableFollow: true))
+        return scrollView.scrollTop != before
+    }
+
+    private func applySearchTextHighlight(_ text: String, current: Bool) -> String {
+        let style = current ? options.searchCurrentMatchStyle : options.searchMatchStyle
+        var result = "", plain = ""
+        var index = 0
+        while index < text.count {
+            if let ansi = extractAnsiCode(text, at: index) {
+                if !plain.isEmpty { result += style(plain); plain = "" }
+                result += ansi.code
+                index += ansi.length
+            } else {
+                plain.append(text[text.index(text.startIndex, offsetBy: index)])
+                index += 1
+            }
+        }
+        if !plain.isEmpty { result += style(plain) }
+        return result
+    }
+
+    private func applySearchHighlights(_ screen: [String], layout: LayoutFrame) -> [String] {
+        guard let search = activeSearch, search.selectedIndex >= 0, !search.matches.isEmpty else { return screen }
+        let scrollView = layout.primaryScrollView ?? implicitScrollView
+        guard let box = getScrollViewBox(frame: layout, scrollView: scrollView) else { return screen }
+        let minRow = max(0, box.rect.y, box.clip.y)
+        let maxRow = min(screen.count, box.rect.y + box.rect.height, box.clip.y + box.clip.height)
+        let minColumn = max(0, box.rect.x, box.clip.x)
+        let maxColumn = min(terminal.columns, box.rect.x + box.rect.width, box.clip.x + box.clip.width,
+            getScrollbarGeometry(box)?.column ?? Int.max)
+        let minContentRow = scrollView.scrollTop + minRow - box.rect.y
+        let maxContentRow = scrollView.scrollTop + maxRow - box.rect.y - 1
+        var low = 0, high = search.matches.count
+        while low < high {
+            let middle = low + (high - low) / 2
+            if (search.matches[middle].segments.last?.row ?? -1) < minContentRow { low = middle + 1 }
+            else { high = middle }
+        }
+        var ranges: [Int: [(start: Int, end: Int, current: Bool)]] = [:]
+        for index in low..<search.matches.count {
+            let match = search.matches[index]
+            if (match.segments.first?.row ?? 0) > maxContentRow { break }
+            for segment in match.segments {
+                let row = box.rect.y + segment.row - scrollView.scrollTop
+                guard row >= minRow && row < maxRow else { continue }
+                let start = max(minColumn, box.rect.x + segment.startCol)
+                let end = min(maxColumn, box.rect.x + segment.endCol)
+                if end > start { ranges[row, default: []].append((start, end, index == search.selectedIndex)) }
+            }
+        }
+        var result = screen
+        for (row, rowRanges) in ranges {
+            var line = result[row]
+            if isImageLine(line) { continue }
+            let width = visibleWidth(line)
+            for range in rowRanges.sorted(by: { $0.start > $1.start }) {
+                let start = min(range.start, width), end = min(range.end, width)
+                if end <= start { continue }
+                let before = sliceByColumn(line, startCol: 0, length: start, strict: true)
+                let highlighted = sliceByColumn(line, startCol: start, length: end - start, strict: true)
+                let after = sliceByColumn(line, startCol: end, length: max(0, width - end), strict: true)
+                line = before + applySearchTextHighlight(highlighted, current: range.current) + after
+            }
+            result[row] = line
+        }
+        return result
+    }
+
+    private func compositeScrollToEndIndicator(_ screen: [String], layout: LayoutFrame, width: Int) -> [String] {
+        scrollToEndIndicatorRect = nil
+        let scrollView = layout.primaryScrollView ?? implicitScrollView
+        guard let indicator = options.scrollToEndIndicator, scrollView.followEnd, !scrollView.isFollowingEnd,
+              let box = getScrollViewBox(frame: layout, scrollView: scrollView),
+              box.clip.width > 0, box.clip.height > 0 else { return screen }
+        let clip = box.clip
+        let row = clip.y + clip.height - 1
+        guard screen.indices.contains(row), !isImageLine(screen[row]) else { return screen }
+        let available = max(0, (getScrollbarGeometry(box)?.column ?? clip.x + clip.width) - clip.x)
+        let text = truncateToWidth(indicator(), maxWidth: available, ellipsis: "")
+        let textWidth = visibleWidth(text)
+        guard textWidth > 0 else { return screen }
+        let column = clip.x + (available - textWidth) / 2
+        var result = screen
+        result[row] = compositeLayoutLine(baseLine: result[row], overlayLine: text, startColumn: column,
+            overlayWidth: textWidth, totalWidth: width)
+        scrollToEndIndicatorRect = (row, column, textWidth)
+        return result
+    }
+
     private var primaryScrollView: ScrollView {
         currentLayout?.primaryScrollView ?? implicitScrollView
     }
@@ -546,6 +956,8 @@ public final class AltScreenRenderer: TuiRenderer, TuiLayoutRenderer, TuiInputRe
     }
 
     private func resetInteractionState() {
+        clearComponentMouseGesture()
+        lastComponentClick = nil
         selectionAnchor = nil
         selectionFocus = nil
         selectionGranularity = .character
@@ -594,11 +1006,11 @@ public final class AltScreenRenderer: TuiRenderer, TuiLayoutRenderer, TuiInputRe
         }
     }
 
-    private func parseWheelEvent(_ data: String) -> (direction: Int, x: Int, y: Int)? {
+    private func parseWheelEvent(_ data: String) -> (direction: Int, x: Int, y: Int, button: Int)? {
         if let event = parseSgrMouseEvent(data), event.wheel {
             switch event.button {
-            case .wheelUp: return (-1, event.x, event.y)
-            case .wheelDown: return (1, event.x, event.y)
+            case .wheelUp: return (-1, event.x, event.y, event.rawButton)
+            case .wheelDown: return (1, event.x, event.y, event.rawButton)
             default: return nil
             }
         }
@@ -614,7 +1026,7 @@ public final class AltScreenRenderer: TuiRenderer, TuiLayoutRenderer, TuiInputRe
             return (
                 direction == 0 ? -1 : 1,
                 Int(characters[4].value) - 33,
-                Int(characters[5].value) - 33
+                Int(characters[5].value) - 33, button
             )
         }
         return nil
@@ -641,13 +1053,8 @@ public final class AltScreenRenderer: TuiRenderer, TuiLayoutRenderer, TuiInputRe
     private func handleRightClickPaste(_ event: SgrMouseEvent) -> Bool {
         #if os(Windows)
         guard let onRightClickPaste = options.onRightClickPaste,
-              !event.release,
-              event.button == .secondary,
-              !event.modifiers.shift,
-              !event.modifiers.alt,
-              !event.modifiers.control else {
-            return false
-        }
+              shouldHandleAltScreenRightClickPaste(event, isWindows: true,
+                  environment: ProcessInfo.processInfo.environment) else { return false }
         onRightClickPaste()
         return true
         #else
@@ -655,14 +1062,14 @@ public final class AltScreenRenderer: TuiRenderer, TuiLayoutRenderer, TuiInputRe
         #endif
     }
 
-    private func scrollbarTargetAt(x: Int, y: Int) -> ScrollbarTarget? {
+    private func scrollbarTargetAt(x: Int, y: Int, includeHiddenAuto: Bool = false) -> ScrollbarTarget? {
         guard !hasOverlayCallback(), let currentLayout else { return nil }
         for scrollView in getScrollViewsAt(frame: currentLayout, x: x, y: y) {
             guard let box = getScrollViewBox(frame: currentLayout, scrollView: scrollView),
-                  let geometry = getScrollbarGeometry(box),
+                  let geometry = getScrollbarGeometry(box, includeHiddenAuto: includeHiddenAuto),
                   x == geometry.column,
-                  y >= geometry.thumbTop,
-                  y < geometry.thumbTop + geometry.thumbHeight else {
+                  y >= geometry.trackTop,
+                  y < geometry.trackTop + geometry.trackHeight else {
                 continue
             }
             return ScrollbarTarget(scrollView: scrollView, geometry: geometry)
@@ -678,7 +1085,7 @@ public final class AltScreenRenderer: TuiRenderer, TuiLayoutRenderer, TuiInputRe
     }
 
     private func updateScrollbarHover(x: Int, y: Int) {
-        setScrollbarHover(scrollbarTargetAt(x: x, y: y)?.scrollView)
+        setScrollbarHover(scrollbarTargetAt(x: x, y: y, includeHiddenAuto: true)?.scrollView)
     }
 
     private func stopScrollbarHover() {
@@ -718,10 +1125,14 @@ public final class AltScreenRenderer: TuiRenderer, TuiLayoutRenderer, TuiInputRe
         pressedURL = nil
         selectionDragged = false
         setScrollbarHover(target.scrollView)
-        scrollbarDrag = ScrollbarDrag(
-            scrollView: target.scrollView,
-            grabOffset: event.y - target.geometry.thumbTop
-        )
+        let onThumb = event.y >= target.geometry.thumbTop && event.y < target.geometry.thumbTop + target.geometry.thumbHeight
+        let grabOffset = onThumb ? event.y - target.geometry.thumbTop : target.geometry.thumbHeight / 2
+        if !onThumb {
+            let maxOffset = target.geometry.trackHeight - target.geometry.thumbHeight
+            let offset = max(0, min(maxOffset, event.y - target.geometry.trackTop - grabOffset))
+            target.scrollView.scrollTo(maxOffset == 0 ? 0 : Int((Double(offset) / Double(maxOffset) * Double(target.geometry.maxScrollTop)).rounded()))
+        }
+        scrollbarDrag = ScrollbarDrag(scrollView: target.scrollView, grabOffset: grabOffset)
         return true
     }
 
@@ -772,41 +1183,43 @@ public final class AltScreenRenderer: TuiRenderer, TuiLayoutRenderer, TuiInputRe
         return previousScreen.indices.contains(point.row) ? previousScreen[point.row] : ""
     }
 
-    private enum WordClass: Equatable {
-        case whitespace
-        case punctuation
-        case word
-    }
-
     private func wordSelection(_ point: SelectionPoint) -> SelectionRange? {
         let line = stripTerminalSequences(selectionSourceLine(point))
-        var segments: [(start: Int, end: Int, kind: WordClass)] = []
+        var parts: [(text: String, word: Bool)] = []
+        var cursor = line.startIndex
+        func appendGap(_ gap: Substring) {
+            for character in gap {
+                let text = String(character)
+                if character.isWhitespace, let last = parts.last, !last.word,
+                   last.text.allSatisfy({ $0.isWhitespace }) {
+                    parts[parts.count - 1].text += text
+                } else { parts.append((text, false)) }
+            }
+        }
+        line.enumerateSubstrings(in: line.startIndex..<line.endIndex, options: .byWords) { word, range, _, _ in
+            appendGap(line[cursor..<range.lowerBound])
+            if let word { parts.append((word, true)) }
+            cursor = range.upperBound
+        }
+        appendGap(line[cursor...])
         var column = 0
-        for character in line {
-            let width = visibleWidth(String(character))
-            let kind: WordClass
-            if isWhitespaceChar(character) {
-                kind = .whitespace
-            } else if isPunctuationChar(character) {
-                kind = .punctuation
-            } else {
-                kind = .word
-            }
-            if let last = segments.last, last.kind == kind {
-                segments[segments.count - 1].end += width
-            } else {
-                segments.append((column, column + width, kind))
-            }
-            column += width
+        let segments = parts.map { part -> (start: Int, end: Int, selectable: Bool, joiner: Bool) in
+            let start = column
+            column += visibleWidth(part.text)
+            let joiner = part.text == "/" || part.text == "-"
+            return (start, column, part.word || joiner, joiner)
         }
-        guard let segment = segments.first(where: { point.col >= $0.start && point.col < $0.end }) else {
-            return nil
+        guard let clicked = segments.firstIndex(where: { point.col >= $0.start && point.col < $0.end }) else { return nil }
+        func canJoin(_ left: Int, _ right: Int) -> Bool {
+            segments[left].selectable && segments[right].selectable && (segments[left].joiner || segments[right].joiner)
         }
-        var end = point
-        end.col = segment.end
+        var first = clicked, last = clicked
+        while first > 0 && canJoin(first - 1, first) { first -= 1 }
+        while last + 1 < segments.count && canJoin(last, last + 1) { last += 1 }
+        var start = point, end = point
+        start.col = segments[first].start
+        end.col = segments[last].end
         end.boundary = true
-        var start = point
-        start.col = segment.start
         return SelectionRange(start: start, end: end)
     }
 
@@ -943,7 +1356,7 @@ public final class AltScreenRenderer: TuiRenderer, TuiLayoutRenderer, TuiInputRe
     }
 
     private func handleSelectionMouseEvent(_ event: SgrMouseEvent) {
-        guard event.button == .primary else { return }
+        guard event.button == .primary || (event.release && event.rawButton & 3 == 3) else { return }
         let anchorScrollView = selectionAnchor?.scrollView
         let point = selectionPoint(for: event, scrollView: anchorScrollView)
         if event.release {
@@ -952,12 +1365,11 @@ public final class AltScreenRenderer: TuiRenderer, TuiLayoutRenderer, TuiInputRe
             stopSelectionAutoScroll()
             guard selectionAnchor != nil else { return }
             updateSelectionFocus(point)
-            let clickedURL = !selectionDragged
+            let isClick = !selectionDragged
                 && selectionAnchor?.scrollView === point.scrollView
                 && selectionAnchor?.row == point.row
                 && selectionAnchor?.col == point.col
-                ? pressedURL
-                : nil
+            let clickedURL = isClick ? pressedURL : nil
             pressedURL = nil
             if let clickedURL, let openURL = options.openURL {
                 clearSelection()
@@ -965,7 +1377,21 @@ public final class AltScreenRenderer: TuiRenderer, TuiLayoutRenderer, TuiInputRe
                 requestRender()
                 return
             }
-            copySelectionToClipboard()
+            if isClick {
+                let click = createMouseEvent(.click, rawButton: event.rawButton, x: event.x, y: event.y,
+                    clickCount: lastClick?.count ?? 1)
+                let overlay = dispatchMouseToOverlay(click)
+                if let result = overlay.result ?? (overlay.hit ? nil : dispatchMouseToLayout(click)) {
+                    let render = applyMouseDispatchResult(click, result)
+                    clearTextSelection()
+                    if render { requestRender() }
+                    return
+                }
+            }
+            if options.copyOnSelect, let text = selectedText() {
+                if options.copySelection == nil { copyViaOSC52(text) }
+                else { Task { await copyTextToClipboard(text) } }
+            }
             requestRender()
             return
         }
@@ -1082,9 +1508,9 @@ public final class AltScreenRenderer: TuiRenderer, TuiLayoutRenderer, TuiInputRe
     private func selectedText() -> String? {
         guard let selection = selectionBounds() else { return nil }
         let source: [String]
-        if let scrollView = selection.start.scrollView,
-           let currentLayout,
-           let lines = getScrollViewBox(frame: currentLayout, scrollView: scrollView)?.scrollContentLines {
+        if let scrollView = selection.start.scrollView {
+            guard let currentLayout,
+                  let lines = getScrollViewBox(frame: currentLayout, scrollView: scrollView)?.scrollContentLines else { return nil }
             source = lines
         } else {
             source = previousScreen
@@ -1099,17 +1525,28 @@ public final class AltScreenRenderer: TuiRenderer, TuiLayoutRenderer, TuiInputRe
                 length: max(0, columns.end - columns.start),
                 strict: true
             )
-            result.append(stripTerminalSequences(slice).trimmingCharacters(in: .whitespaces))
+            var plain = stripTerminalSequences(slice)
+            while plain.last?.isWhitespace == true { plain.removeLast() }
+            result.append(plain)
         }
         let text = result.joined(separator: "\n")
         return text.isEmpty ? nil : text
     }
 
-    private func copySelectionToClipboard() {
-        guard let text = selectedText() else { return }
-        let encoded = Data(text.utf8).base64EncodedString()
-        terminal.write("\u{001B}]52;c;" + encoded + "\u{0007}")
+    private func copyViaOSC52(_ text: String) {
+        terminal.write("\u{001B}]52;c;" + Data(text.utf8).base64EncodedString() + "\u{0007}")
         flash("Copied!")
+    }
+
+    @discardableResult
+    private func copyTextToClipboard(_ text: String) async -> Bool {
+        if let copy = options.copySelection {
+            let success = await copy(text)
+            flash(success ? "Copied!" : "Copy failed")
+            return success
+        }
+        copyViaOSC52(text)
+        return true
     }
 
     private func highlighted(_ text: String) -> String {

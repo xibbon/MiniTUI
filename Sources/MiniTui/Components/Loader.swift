@@ -15,13 +15,15 @@ public struct LoaderIndicatorOptions: Sendable {
 
 /// Animated spinner with a message that re-renders on a timer.
 @MainActor
-public class Loader: Text {
+open class Loader: Text {
     private static let defaultFrames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
     private static let defaultIntervalMs = 80
 
     private var frames: [String] = Loader.defaultFrames
     private var intervalMs: Int = Loader.defaultIntervalMs
     private var currentFrame = 0
+    private var renderIndicatorVerbatim = false
+    private var updatingDisplay = false
     private var timer: DispatchSourceTimer?
     private weak var ui: TUI?
 
@@ -73,10 +75,9 @@ public class Loader: Text {
     /// - `options.frames == nil` keeps existing frames; `[]` hides the indicator entirely;
     ///   single-element array becomes a static indicator (no timer).
     /// - `options.intervalMs == nil` keeps existing interval.
-    /// v0.68.0 also: custom frames render verbatim (no theme accent override) — extension
-    /// authors own coloring when they customize. Apply by passing identity color closures
-    /// via the standard initializer; this method only changes frames/interval.
+    /// Custom frames render verbatim. The spinner color function only applies to default frames.
     public func setIndicator(_ options: LoaderIndicatorOptions) {
+        renderIndicatorVerbatim = true
         if let newFrames = options.frames {
             frames = newFrames
             currentFrame = 0
@@ -104,15 +105,21 @@ public class Loader: Text {
         self.timer = timer
     }
 
+    open override func invalidate() {
+        super.invalidate()
+        if !updatingDisplay { updateDisplay() }
+    }
+
+    open func getRenderedIndicator() -> String {
+        let frame = frames.indices.contains(currentFrame) ? frames[currentFrame] : ""
+        return renderIndicatorVerbatim ? frame : spinnerColorFn(frame)
+    }
+
     private func updateDisplay() {
-        if frames.isEmpty {
-            // Hidden indicator: render only the message (callers own working-state UI).
-            setText(messageColorFn(message))
-            ui?.requestRender()
-            return
-        }
-        let frame = frames[currentFrame]
-        setText("\(spinnerColorFn(frame)) \(messageColorFn(message))")
+        updatingDisplay = true
+        defer { updatingDisplay = false }
+        let frame = getRenderedIndicator()
+        setText((frame.isEmpty ? "" : frame + " ") + messageColorFn(message))
         ui?.requestRender()
     }
 }

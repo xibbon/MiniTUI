@@ -1,10 +1,15 @@
 import Foundation
+#if canImport(os)
+import os
+#else
+import Synchronization
+#endif
 
 let osc8HyperlinkCloseBell = "\u{001B}]8;;\u{0007}"
 let osc8HyperlinkCloseStringTerminator = "\u{001B}]8;;\u{001B}\\"
 
 /// Terminal image protocols supported by the renderer.
-public enum ImageProtocol: String {
+public enum ImageProtocol: String, Sendable {
     case kitty
     case iterm2
 }
@@ -24,7 +29,7 @@ public func isImageLine(_ line: String) -> Bool {
 }
 
 /// Terminal capability flags used for rendering.
-public struct TerminalCapabilities {
+public struct TerminalCapabilities: Sendable {
     /// Supported image protocol, if any.
     public let images: ImageProtocol?
     /// Whether true color output is supported.
@@ -41,7 +46,7 @@ public struct TerminalCapabilities {
 }
 
 /// Pixel dimensions of a single terminal cell.
-public struct CellDimensions {
+public struct CellDimensions: Sendable {
     /// Cell width in pixels.
     public let widthPx: Int
     /// Cell height in pixels.
@@ -55,7 +60,7 @@ public struct CellDimensions {
 }
 
 /// Pixel dimensions of an image.
-public struct ImageDimensions {
+public struct ImageDimensions: Sendable {
     /// Image width in pixels.
     public let widthPx: Int
     /// Image height in pixels.
@@ -85,39 +90,39 @@ public struct ImageRenderOptions {
     }
 }
 
-/// SAFETY: the wrapped terminal capability/dimension value is read and replaced
-/// only while holding `lock`.
-private final class LockedValue<T>: @unchecked Sendable {
-    private let lock = NSLock()
-    private var value: T
+/// Immutable lock storage gives all shared values checked Sendable conformance.
+private final class LockedValue<T: Sendable>: Sendable {
+    #if canImport(os)
+    private let storage: OSAllocatedUnfairLock<T>
+    init(_ value: T) { storage = OSAllocatedUnfairLock(initialState: value) }
+    #else
+    private let storage: Mutex<T>
+    init(_ value: T) { storage = Mutex(value) }
+    #endif
+    func get() -> T { storage.withLock { $0 } }
+    func set(_ value: T) { storage.withLock { $0 = value } }
+    func update<R: Sendable>(_ body: @Sendable (inout T) -> R) -> R { storage.withLock(body) }
+}
 
-    init(_ value: T) {
-        self.value = value
-    }
-
-    func get() -> T {
-        lock.lock()
-        defer { lock.unlock() }
-        return value
-    }
-
-    func set(_ newValue: T) {
-        lock.lock()
-        value = newValue
-        lock.unlock()
-    }
-
-    func update<R>(_ body: (inout T) -> R) -> R {
-        lock.lock()
-        defer { lock.unlock() }
-        return body(&value)
+/// nil means auto-detect; .some(nil) explicitly disables images.
+public struct TerminalCapabilityOverrides: Sendable, Equatable {
+    public var images: ImageProtocol??
+    public var trueColor: Bool?
+    public var hyperlinks: Bool?
+    public init(images: ImageProtocol?? = nil, trueColor: Bool? = nil, hyperlinks: Bool? = nil) {
+        self.images = images; self.trueColor = trueColor; self.hyperlinks = hyperlinks
     }
 }
 
-private let cachedCapabilities = LockedValue<TerminalCapabilities?>(nil)
+struct CapabilityState: Sendable {
+    var cached: TerminalCapabilities?
+    var overrides = TerminalCapabilityOverrides()
+}
+
+private let capabilityState = LockedValue(CapabilityState())
 private let cellDimensions = LockedValue(CellDimensions(widthPx: 9, heightPx: 18))
 
-struct KittyImageMetadata {
+struct KittyImageMetadata: Sendable {
     let imageID: UInt32
     let columns: Int
     let rows: Int
@@ -126,7 +131,7 @@ struct KittyImageMetadata {
     let transmissionGeneration: Int
 }
 
-struct KittyImagePlacement {
+struct KittyImagePlacement: Sendable {
     let imageID: UInt32
     let transmissionGeneration: Int
     let transmissionBytes: Int
@@ -283,13 +288,28 @@ public func setCellDimensions(_ dims: CellDimensions) {
 /// tmux/screen (including nested sessions where the outer terminal would otherwise advertise
 /// OSC 8). This prevents markdown link URLs from disappearing on terminals that silently
 /// swallow OSC 8 sequences.
-public func detectCapabilities() -> TerminalCapabilities {
-    detectCapabilities(environment: ProcessInfo.processInfo.environment)
+public func detectCapabilities(_ tmuxForwardsHyperlink: () -> Bool = { false }) -> TerminalCapabilities {
+    detectCapabilities(environment: ProcessInfo.processInfo.environment, tmuxForwardsHyperlink: tmuxForwardsHyperlink)
 }
 
 /// Detect terminal capabilities from an explicit environment. This keeps capability checks
 /// deterministic for tests while the public entry point uses the process environment.
-func detectCapabilities(environment env: [String: String]) -> TerminalCapabilities {
+func detectCapabilities(environment env: [String: String], tmuxForwardsHyperlink: () -> Bool = { false }) -> TerminalCapabilities {
+    let hyperlinks: Bool? = env["PI_HYPERLINKS"] == "1" ? true : env["PI_HYPERLINKS"] == "0" ? false : nil
+    let detected = detectCapabilitiesFromEnvironment(env) { hyperlinks ?? tmuxForwardsHyperlink() }
+    let imageValue = env["PI_IMAGE_PROTOCOL"]?.lowercased()
+    let images: ImageProtocol?
+    switch imageValue {
+    case "kitty": images = .kitty
+    case "iterm2": images = .iterm2
+    case "none", "0": images = nil
+    default: images = detected.images
+    }
+    let trueColor = env["PI_TRUE_COLOR"] == "1" ? true : env["PI_TRUE_COLOR"] == "0" ? false : detected.trueColor
+    return TerminalCapabilities(images: images, trueColor: trueColor, hyperlinks: hyperlinks ?? detected.hyperlinks)
+}
+
+private func detectCapabilitiesFromEnvironment(_ env: [String: String], tmuxForwardsHyperlink: () -> Bool) -> TerminalCapabilities {
     let termProgram = env["TERM_PROGRAM"]?.lowercased() ?? ""
     let term = env["TERM"]?.lowercased() ?? ""
     let colorTerm = env["COLORTERM"]?.lowercased() ?? ""
@@ -299,33 +319,35 @@ func detectCapabilities(environment env: [String: String]) -> TerminalCapabiliti
     let isMultiplexed = term.hasPrefix("screen") || term.hasPrefix("tmux") ||
         env["TMUX"] != nil || env["STY"] != nil
 
+    let hyperlinks = !isMultiplexed || tmuxForwardsHyperlink()
+
     if env["KITTY_WINDOW_ID"] != nil || termProgram == "kitty" || term.contains("kitty") {
-        return TerminalCapabilities(images: .kitty, trueColor: true, hyperlinks: !isMultiplexed)
+        return TerminalCapabilities(images: .kitty, trueColor: true, hyperlinks: hyperlinks)
     }
 
     if termProgram == "ghostty" || term.contains("ghostty") || env["GHOSTTY_RESOURCES_DIR"] != nil {
-        return TerminalCapabilities(images: .kitty, trueColor: true, hyperlinks: !isMultiplexed)
+        return TerminalCapabilities(images: .kitty, trueColor: true, hyperlinks: hyperlinks)
     }
 
     if env["WEZTERM_PANE"] != nil || termProgram == "wezterm" || term.contains("wezterm") {
-        return TerminalCapabilities(images: .kitty, trueColor: true, hyperlinks: !isMultiplexed)
+        return TerminalCapabilities(images: .kitty, trueColor: true, hyperlinks: hyperlinks)
     }
 
     // Warp supports Kitty graphics and OSC 8 hyperlinks.
     if termProgram == "warpterminal" || env["WARP_SESSION_ID"] != nil || env["WARP_TERMINAL_SESSION_UUID"] != nil {
-        return TerminalCapabilities(images: .kitty, trueColor: true, hyperlinks: !isMultiplexed)
+        return TerminalCapabilities(images: .kitty, trueColor: true, hyperlinks: hyperlinks)
     }
 
     if env["ITERM_SESSION_ID"] != nil || termProgram == "iterm.app" {
-        return TerminalCapabilities(images: .iterm2, trueColor: true, hyperlinks: !isMultiplexed)
+        return TerminalCapabilities(images: .iterm2, trueColor: true, hyperlinks: hyperlinks)
     }
 
     if termProgram == "vscode" {
-        return TerminalCapabilities(images: nil, trueColor: true, hyperlinks: !isMultiplexed)
+        return TerminalCapabilities(images: nil, trueColor: true, hyperlinks: hyperlinks)
     }
 
-    if termProgram == "alacritty" {
-        return TerminalCapabilities(images: nil, trueColor: true, hyperlinks: !isMultiplexed)
+    if termProgram == "alacritty" || termProgram == "zed" {
+        return TerminalCapabilities(images: nil, trueColor: true, hyperlinks: hyperlinks)
     }
 
     let trueColor = colorTerm == "truecolor" || colorTerm == "24bit"
@@ -335,7 +357,7 @@ func detectCapabilities(environment env: [String: String]) -> TerminalCapabiliti
 
 /// v0.67.6: test override for terminal capabilities. Pass `nil` to reset to detection.
 public func setCapabilities(_ capabilities: TerminalCapabilities?) {
-    cachedCapabilities.set(capabilities)
+    capabilityState.update { $0.cached = capabilities }
 }
 
 /// v0.67.6: build an OSC 8 hyperlink escape sequence wrapping `text` with the given URL.
@@ -347,17 +369,29 @@ public func hyperlink(_ text: String, url: String) -> String {
 
 /// Return cached terminal capabilities, detecting once if needed.
 public func getCapabilities() -> TerminalCapabilities {
-    if let cached = cachedCapabilities.get() {
-        return cached
+    capabilityState.update { state in
+        if let cached = state.cached { return cached }
+        let detected = detectCapabilities { state.overrides.hyperlinks ?? false }
+        let result = TerminalCapabilities(images: state.overrides.images ?? detected.images,
+            trueColor: state.overrides.trueColor ?? detected.trueColor,
+            hyperlinks: state.overrides.hyperlinks ?? detected.hyperlinks)
+        state.cached = result
+        return result
     }
-    let detected = detectCapabilities()
-    cachedCapabilities.set(detected)
-    return detected
 }
 
-/// Clear the cached terminal capabilities.
+/// Replace the override set. Keep the cache when the set is unchanged.
+public func setCapabilityOverrides(_ overrides: TerminalCapabilityOverrides) {
+    capabilityState.update { state in
+        guard state.overrides != overrides else { return }
+        state.overrides = overrides
+        state.cached = nil
+    }
+}
+
+/// Clear cached detection, retaining explicit overrides.
 public func resetCapabilitiesCache() {
-    cachedCapabilities.set(nil)
+    capabilityState.update { $0.cached = nil }
 }
 
 /// Allocate a random image ID for Kitty graphics protocol.

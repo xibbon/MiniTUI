@@ -22,10 +22,36 @@ final class RenderTrace {
     }
 }
 
+@MainActor
+enum LayoutMouseDispatchContext {
+    static var component: (any Component)?
+}
+
 /// Component that composes and renders a list of child components.
 open class Container: Component {
     /// Current child components in render order.
     public private(set) var children: [Component] = []
+
+    private var mouseLayout: (width: Int, children: [(component: any Component, height: Int)])?
+
+    open func handleMouse(_ event: TuiMouseEvent) -> TuiMouseEventResult? {
+        if LayoutMouseDispatchContext.component === self && self is any LayoutComponent { return nil }
+        guard event.y >= 0, event.y < event.height else { return nil }
+        let layout = mouseLayout?.width == event.width ? mouseLayout!.children
+            : children.map { (component: $0, height: $0.render(width: event.width).count) }
+        var childY = 0
+        for (child, height) in layout {
+            if event.y >= childY && event.y < childY + height {
+                var local = event
+                local.y -= childY; local.height = height
+                let result = dispatchMouseEvent(child, local)
+                if let result, result.focus == true, self is any MouseFocusOwner { return result.withFocusTarget(self) }
+                return result
+            }
+            childY += height
+        }
+        return nil
+    }
 
     /// Create an empty container.
     public init() {}
@@ -56,6 +82,8 @@ open class Container: Component {
 
     /// Render all children sequentially and concatenate their lines.
     open func render(width: Int) -> [String] {
+        var mouseChildren: [(component: any Component, height: Int)] = []
+        defer { mouseLayout = (width, mouseChildren) }
         if let trace = RenderTrace.active {
             func componentLabel(_ component: AnyObject) -> String {
                 let ptr = Unmanaged.passUnretained(component).toOpaque()
@@ -69,6 +97,7 @@ open class Container: Component {
                 if let container = child as? Container {
                     let originCountBefore = trace.origins.count
                     let childLines = container.render(width: width)
+                    mouseChildren.append((child, childLines.count))
                     let added = trace.origins.count - originCountBefore
                     if added < childLines.count {
                         trace.push(componentLabel(child))
@@ -79,6 +108,7 @@ open class Container: Component {
                 } else {
                     trace.push(componentLabel(child))
                     let childLines = child.render(width: width)
+                    mouseChildren.append((child, childLines.count))
                     trace.recordLines(childLines.count)
                     trace.pop()
                     lines.append(contentsOf: childLines)
@@ -89,7 +119,9 @@ open class Container: Component {
 
         var lines: [String] = []
         for child in children {
-            lines.append(contentsOf: child.render(width: width))
+            let childLines = child.render(width: width)
+            mouseChildren.append((child, childLines.count))
+            lines.append(contentsOf: childLines)
         }
         return lines
     }

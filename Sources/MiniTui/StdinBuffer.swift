@@ -212,10 +212,14 @@ private func extractCompleteSequences(_ buffer: String) -> (sequences: [String],
 }
 
 public struct StdinBufferOptions: Sendable {
-    /// Maximum time to wait for sequence completion (default: 10ms).
+    /// Seconds to wait for an incomplete sequence (default: 50 ms).
     public var timeout: TimeInterval
 
-    public init(timeout: TimeInterval = 0.01) {
+    /// Seconds to wait for a lone Escape, independent of incomplete sequences.
+    public var escapeTimeout: TimeInterval
+
+    public init(timeout: TimeInterval = 0.05, escapeTimeout: TimeInterval = 0.01) {
+        self.escapeTimeout = escapeTimeout
         self.timeout = timeout
     }
 }
@@ -272,6 +276,7 @@ public final class StdinBuffer {
     private var buffer = ""
     private var timeoutWorkItem: DispatchWorkItem?
     private let timeoutSeconds: TimeInterval
+    private let escapeTimeoutSeconds: TimeInterval
     private var pasteMode = false
     private var pasteBuffer = ""
     private var pendingKittyDuplicate: Character?
@@ -279,6 +284,7 @@ public final class StdinBuffer {
 
     public init(options: StdinBufferOptions = StdinBufferOptions()) {
         self.timeoutSeconds = options.timeout
+        self.escapeTimeoutSeconds = options.escapeTimeout
     }
 
     public func process(_ data: Data) {
@@ -368,7 +374,8 @@ public final class StdinBuffer {
                 }
             }
             timeoutWorkItem = workItem
-            DispatchQueue.global().asyncAfter(deadline: .now() + timeoutSeconds, execute: workItem)
+            let delay = buffer == esc ? escapeTimeoutSeconds : timeoutSeconds
+            DispatchQueue.global().asyncAfter(deadline: .now() + delay, execute: workItem)
         }
     }
 

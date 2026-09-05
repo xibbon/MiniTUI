@@ -80,7 +80,8 @@ private func walkDirectoryWithFd(
     baseDir: String,
     fdPath: String,
     query: String,
-    maxResults: Int
+    maxResults: Int,
+    maxDepth: Int? = nil
 ) -> [(path: String, isDirectory: Bool)] {
     var args = [
         "--base-directory",
@@ -101,6 +102,7 @@ private func walkDirectoryWithFd(
         "--exclude",
         ".git/**",
     ]
+    if let maxDepth { args += ["--max-depth", String(maxDepth)] }
     if !query.isEmpty {
         args.append(query)
     }
@@ -613,14 +615,24 @@ public final class CombinedAutocompleteProvider: AutocompleteProvider {
         let scopedQuery = resolveScopedFuzzyQuery(query)
         let fdBaseDir = scopedQuery?.baseDir ?? basePath
         let fdQuery = scopedQuery?.query ?? query
-        let entries = walkDirectoryWithFd(baseDir: fdBaseDir, fdPath: fdPath, query: fdQuery, maxResults: 100)
+        let baseEntries = walkDirectoryWithFd(baseDir: fdBaseDir, fdPath: fdPath, query: fdQuery, maxResults: 100, maxDepth: 1)
+        let recursiveEntries = walkDirectoryWithFd(baseDir: fdBaseDir, fdPath: fdPath, query: fdQuery, maxResults: 100)
+        var seen = Set(baseEntries.map { $0.path })
+        let entries = baseEntries + recursiveEntries.filter { seen.insert($0.path).inserted }
         if signal?.isCancelled == true { return [] }
         let scored = entries
             .map { entry in
                 (entry: entry, score: fdQuery.isEmpty ? 1 : scoreEntry(filePath: entry.path, query: fdQuery, isDirectory: entry.isDirectory))
             }
             .filter { $0.score > 0 }
-            .sorted { $0.score > $1.score }
+            .sorted { a, b in
+                if a.score != b.score { return a.score > b.score }
+                let aDepth = a.entry.path.replacingOccurrences(of: "\\", with: "/").split(separator: "/").count
+                let bDepth = b.entry.path.replacingOccurrences(of: "\\", with: "/").split(separator: "/").count
+                if aDepth != bDepth { return aDepth < bDepth }
+                if a.entry.path.utf16.count != b.entry.path.utf16.count { return a.entry.path.utf16.count < b.entry.path.utf16.count }
+                return a.entry.path.localizedCompare(b.entry.path) == .orderedAscending
+            }
             .prefix(20)
         if signal?.isCancelled == true { return [] }
 

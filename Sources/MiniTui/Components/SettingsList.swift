@@ -1,5 +1,18 @@
 import Foundation
 
+public struct SettingsSubmenuOptions: Sendable {
+    public var navigateTo: String?
+    public init(navigateTo: String? = nil) { self.navigateTo = navigateTo }
+}
+
+public struct SettingsSubmenuDone {
+    private let callback: (String?, SettingsSubmenuOptions?) -> Void
+    public init(_ callback: @escaping (String?, SettingsSubmenuOptions?) -> Void) { self.callback = callback }
+    public func callAsFunction(_ selectedValue: String? = nil, options: SettingsSubmenuOptions? = nil) {
+        callback(selectedValue, options)
+    }
+}
+
 /// A single settings entry displayed in a settings list.
 public struct SettingItem {
     /// Stable identifier for the setting.
@@ -15,6 +28,8 @@ public struct SettingItem {
     /// Optional submenu component factory.
     public let submenu: ((String, @escaping (String?) -> Void) -> Component)?
 
+    public let submenuWithNavigation: ((String, SettingsSubmenuDone) -> Component)?
+
     /// Create a settings item.
     public init(
         id: String,
@@ -22,7 +37,8 @@ public struct SettingItem {
         description: String? = nil,
         currentValue: String,
         values: [String]? = nil,
-        submenu: ((String, @escaping (String?) -> Void) -> Component)? = nil
+        submenu: ((String, @escaping (String?) -> Void) -> Component)? = nil,
+        submenuWithNavigation: ((String, SettingsSubmenuDone) -> Component)? = nil
     ) {
         self.id = id
         self.label = label
@@ -30,6 +46,7 @@ public struct SettingItem {
         self.currentValue = currentValue
         self.values = values
         self.submenu = submenu
+        self.submenuWithNavigation = submenuWithNavigation
     }
 }
 
@@ -77,6 +94,8 @@ public final class SettingsList: SystemCursorAware {
     private var filteredItems: [SettingItem]
     private let theme: SettingsListTheme
     private var selectedIndex = 0
+    private var mousePressedIndex: Int?
+    private var navigateAfterClose: String?
     private let maxVisible: Int
     private let onChange: (String, String) -> Void
     private let onCancel: () -> Void
@@ -143,7 +162,7 @@ public final class SettingsList: SystemCursorAware {
         }
 
         let kb = getKeybindings()
-        let displayItems = searchEnabled ? filteredItems : items
+        let displayItems = getDisplayItems()
         if kb.matches(data, TUIKeybinding.selectUp) {
             guard !displayItems.isEmpty else { return }
             selectedIndex = selectedIndex == 0 ? max(displayItems.count - 1, 0) : selectedIndex - 1
@@ -185,16 +204,15 @@ public final class SettingsList: SystemCursorAware {
             return lines
         }
 
-        let displayItems = searchEnabled ? filteredItems : items
+        let displayItems = getDisplayItems()
         if displayItems.isEmpty {
             lines.append(theme.hint("  No matching settings"))
             addHintLine(into: &lines)
             return lines
         }
 
-        let startIndex = max(0, min(selectedIndex - maxVisible / 2, displayItems.count - maxVisible))
-        let endIndex = min(startIndex + maxVisible, displayItems.count)
-        let maxLabelWidth = min(30, items.map { visibleWidth($0.label) }.max() ?? 0)
+        let (startIndex, endIndex) = getVisibleRange(displayItems)
+        let maxLabelWidth = min(36, items.map { visibleWidth($0.label) }.max() ?? 0)
 
         for i in startIndex..<endIndex {
             let item = displayItems[i]
@@ -233,13 +251,62 @@ public final class SettingsList: SystemCursorAware {
         return lines
     }
 
+    public func selectItem(id: String) {
+        if let index = getDisplayItems().firstIndex(where: { $0.id == id }) { selectedIndex = index }
+    }
+
+    private func getDisplayItems() -> [SettingItem] { searchEnabled ? filteredItems : items }
+    private func getVisibleRange(_ items: [SettingItem]) -> (Int, Int) {
+        let start = max(0, min(selectedIndex - maxVisible / 2, items.count - maxVisible))
+        return (start, min(start + maxVisible, items.count))
+    }
+
+    public func handleMouse(_ event: TuiMouseEvent) -> TuiMouseEventResult? {
+        if let submenuComponent {
+            let result = submenuComponent.handleMouse(event)
+            return result?.requestingFocus()
+        }
+        if searchEnabled, let searchInput {
+            if event.y == 0 {
+                let result = searchInput.handleMouse(event)
+                return result?.requestingFocus()
+            }
+            if event.y == 1 { return nil }
+        }
+        let items = getDisplayItems()
+        guard !items.isEmpty else { return nil }
+        if event.type == .wheel, let delta = event.wheelDelta, delta != 0 {
+            let previous = selectedIndex
+            selectedIndex = max(0, min(items.count - 1, selectedIndex + (delta < 0 ? -1 : 1)))
+            return TuiMouseEventResult(handled: true, render: selectedIndex != previous)
+        }
+        guard event.type == .move || event.button == .left else { return nil }
+        let (start, end) = getVisibleRange(items)
+        let index = start + event.y - (searchEnabled ? 2 : 0)
+        guard index >= start, index < end else { return nil }
+        if event.type == .move || event.type == .press {
+            if event.type == .press { mousePressedIndex = index }
+            let changed = selectedIndex != index
+            selectedIndex = index
+            return TuiMouseEventResult(handled: true, focus: event.type == .press,
+                                      render: event.type == .move ? changed : nil)
+        }
+        if event.type == .click {
+            selectedIndex = mousePressedIndex ?? index
+            mousePressedIndex = nil
+            activateItem()
+            return TuiMouseEventResult(handled: true)
+        }
+        return nil
+    }
+
     private func activateItem() {
-        let displayItems = searchEnabled ? filteredItems : items
+        let displayItems = getDisplayItems()
         guard let item = displayItems[safe: selectedIndex] else { return }
 
-        if let submenu = item.submenu {
+        if item.submenu != nil || item.submenuWithNavigation != nil {
             submenuItemIndex = selectedIndex
-            submenuComponent = submenu(item.currentValue) { [weak self] selectedValue in
+            let done = SettingsSubmenuDone { [weak self] selectedValue, options in
                 guard let self else { return }
                 if let selectedValue {
                     if let index = self.items.firstIndex(where: { $0.id == item.id }) {
@@ -250,7 +317,13 @@ public final class SettingsList: SystemCursorAware {
                     }
                     self.onChange(item.id, selectedValue)
                 }
+                self.navigateAfterClose = options?.navigateTo
                 self.closeSubmenu()
+            }
+            if let factory = item.submenuWithNavigation {
+                submenuComponent = factory(item.currentValue, done)
+            } else if let factory = item.submenu {
+                submenuComponent = factory(item.currentValue) { value in done(value) }
             }
             if let submenuAware = submenuComponent as? SystemCursorAware {
                 submenuAware.usesSystemCursor = usesSystemCursor
@@ -271,7 +344,11 @@ public final class SettingsList: SystemCursorAware {
 
     private func closeSubmenu() {
         submenuComponent = nil
-        if let submenuItemIndex {
+        if let id = navigateAfterClose {
+            navigateAfterClose = nil; submenuItemIndex = nil
+            selectItem(id: id)
+            activateItem()
+        } else if let submenuItemIndex {
             selectedIndex = submenuItemIndex
             self.submenuItemIndex = nil
         }

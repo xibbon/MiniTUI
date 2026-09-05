@@ -6,6 +6,7 @@ public final class MainScreenRenderer: TuiRenderer {
     public let mode = TuiMode.mainScreen
 
     private let terminal: Terminal
+    private let logDirectory: String?
     private var onRenderFailure: () -> Void
     private var previousLines: [String] = []
     private var previousResetSource: [String] = []
@@ -17,9 +18,15 @@ public final class MainScreenRenderer: TuiRenderer {
     private var fullRedrawCount = 0
 
     /// Create a main-screen renderer for a terminal.
-    public init(terminal: Terminal) {
+    public init(terminal: Terminal, logDirectory: String? = nil) {
+        self.logDirectory = logDirectory
         self.terminal = terminal
         self.onRenderFailure = {}
+    }
+
+    var crashLogURL: URL {
+        let directory = logDirectory.map { URL(fileURLWithPath: $0) } ?? FileManager.default.temporaryDirectory
+        return directory.appendingPathComponent("pi-tui-crash.log")
     }
 
     func setRenderFailureHandler(_ handler: @escaping () -> Void) {
@@ -84,11 +91,10 @@ public final class MainScreenRenderer: TuiRenderer {
         let widthChanged = previousWidth != 0 && previousWidth != frame.width
         let heightChanged = previousHeight != 0 && previousHeight != frame.height
 
-        let debugRedraw = ProcessInfo.processInfo.environment["PI_DEBUG_REDRAW"] == "1"
+        let debugRedraw = ProcessInfo.processInfo.environment["PI_TUI_DEBUG_REDRAW"] == "1"
         func logRedraw(_ reason: String) {
-            guard debugRedraw else { return }
-            let logPath = FileManager.default.homeDirectoryForCurrentUser
-                .appendingPathComponent(".pi/agent/pi-debug.log")
+            guard debugRedraw, let logDirectory else { return }
+            let logPath = URL(fileURLWithPath: logDirectory).appendingPathComponent("pi-tui-debug.log")
             let formatter = ISO8601DateFormatter()
             let message = "[\(formatter.string(from: Date()))] fullRender: \(reason) (prev=\(previousLines.count), new=\(newLines.count), height=\(frame.height))\n"
             do {
@@ -96,6 +102,9 @@ public final class MainScreenRenderer: TuiRenderer {
                     at: logPath.deletingLastPathComponent(),
                     withIntermediateDirectories: true
                 )
+                if !FileManager.default.fileExists(atPath: logPath.path) {
+                    FileManager.default.createFile(atPath: logPath.path, contents: nil)
+                }
                 let handle = try FileHandle(forWritingTo: logPath)
                 handle.seekToEndOfFile()
                 if let data = message.data(using: .utf8) {
@@ -303,15 +312,10 @@ public final class MainScreenRenderer: TuiRenderer {
         lastSystemCursor = cursor
     }
 
-    private func reportOverlongLine(
-        _ line: String,
-        index: Int,
-        lines: [String],
-        frame: TuiRenderFrame
-    ) -> Never {
+    @discardableResult
+    func writeCrashDump(_ line: String, index: Int, lines: [String], frame: TuiRenderFrame) -> URL {
         let origin = frame.lineOrigins.flatMap { index < $0.count ? $0[index] : nil }
-        let crashLogPath = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".pi/agent/pi-crash.log")
+        let crashLogPath = crashLogURL
         let formatter = ISO8601DateFormatter()
         var crashLines = [
             "Crash at \(formatter.string(from: Date()))",
@@ -340,6 +344,19 @@ public final class MainScreenRenderer: TuiRenderer {
         } catch {
             // Best-effort logging, continue to crash.
         }
+
+        return crashLogPath
+    }
+
+    private func reportOverlongLine(
+        _ line: String,
+        index: Int,
+        lines: [String],
+        frame: TuiRenderFrame
+    ) -> Never {
+        let origin = frame.lineOrigins.flatMap { index < $0.count ? $0[index] : nil }
+        let crashLogPath = crashLogURL
+        writeCrashDump(line, index: index, lines: lines, frame: frame)
 
         onRenderFailure()
 

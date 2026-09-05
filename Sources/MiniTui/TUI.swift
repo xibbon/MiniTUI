@@ -98,6 +98,16 @@ public struct OverlayOptions: Sendable {
     }
 }
 
+public struct OverlayBounds: Sendable, Equatable {
+    public var row: Int
+    public var col: Int
+    public var width: Int
+    public var height: Int
+    public init(row: Int, col: Int, width: Int, height: Int) {
+        self.row = row; self.col = col; self.width = width; self.height = height
+    }
+}
+
 /// Handle returned by showOverlay for controlling the overlay.
 @MainActor
 public final class OverlayHandle {
@@ -108,6 +118,9 @@ public final class OverlayHandle {
         self.tui = tui
         self.entry = entry
     }
+
+    /// Return the last rendered bounds while this overlay is present and visible.
+    public func getBounds() -> OverlayBounds? { tui?.overlayBounds(entry) }
 
     /// Permanently remove the overlay.
     public func hide() {
@@ -143,7 +156,7 @@ public final class TUI: Container {
     /// Return true to stop propagation to the focused component.
     public var onGlobalInput: ((String) -> Bool)?
     /// When true, show and position the terminal cursor instead of rendering a custom cursor.
-    public var useSystemCursor = true {
+    public var useSystemCursor = false {
         didSet {
             updateCursorMode()
         }
@@ -159,7 +172,7 @@ public final class TUI: Container {
     private var terminalColorSchemeListeners: [UUID: (TerminalColorScheme) -> Void] = [:]
     private var terminalBackgroundColorQueries: [UUID: TerminalBackgroundColorQuery] = [:]
     private var terminalColorSchemeNotificationsEnabled = false
-    private var clearOnShrink = ProcessInfo.processInfo.environment["PI_CLEAR_ON_SHRINK"] == "1"
+    private var clearOnShrink = false
     /// v0.70.5: rate-limit renders to ~60Hz so streaming token bursts don't redraw faster
     /// than terminals can repaint. `lastRenderAt` is updated each time `doRender()` actually
     /// runs, and `pendingRenderTask` holds the throttled follow-up if a render is requested
@@ -169,6 +182,7 @@ public final class TUI: Container {
     private var pendingRenderTask: Task<Void, Never>?
     private var renderCompletionContinuations: [CheckedContinuation<Void, Never>] = []
     private var overlayStack: [OverlayEntry] = []
+    private var renderedOverlayLayouts: [(entry: OverlayEntry, bounds: OverlayBounds)] = []
     /// v0.69.0 + v0.70.0: keep-alive timer for OSC 9;4 progress indicator.
     private var progressTimer: DispatchSourceTimer?
 
@@ -215,6 +229,7 @@ public final class TUI: Container {
         let options: OverlayOptions?
         let preFocus: Component?
         var hidden: Bool
+        var bounds: OverlayBounds?
 
         init(component: Component, options: OverlayOptions?, preFocus: Component?, hidden: Bool) {
             self.component = component
@@ -225,8 +240,9 @@ public final class TUI: Container {
     }
 
     /// Create a TUI bound to a terminal.
-    public init(terminal: Terminal) {
-        let renderer = MainScreenRenderer(terminal: terminal)
+    public init(terminal: Terminal, showHardwareCursor: Bool = false, logDirectory: String? = nil) {
+        let renderer = MainScreenRenderer(terminal: terminal, logDirectory: logDirectory)
+        self.useSystemCursor = showHardwareCursor
         self.terminal = terminal
         self.activeRenderer = renderer
         self.renderers = [.mainScreen: renderer]
@@ -291,7 +307,11 @@ public final class TUI: Container {
     }
 
     /// Set the component that receives keyboard input.
+    public func getFocusedComponent() -> Component? { focusedComponent }
+
     public func setFocus(_ component: Component?) {
+        (focusedComponent as? any Focusable)?.focused = false
+        (component as? any Focusable)?.focused = true
         if let focusedComponent = focusedComponent as? SystemCursorAware {
             focusedComponent.usesSystemCursor = false
         }
@@ -354,6 +374,40 @@ public final class TUI: Container {
         }
         updateCursorMode()
         requestRender()
+    }
+
+    fileprivate func overlayBounds(_ entry: OverlayEntry) -> OverlayBounds? {
+        guard overlayStack.contains(where: { $0 === entry }), isOverlayVisible(entry) else { return nil }
+        return entry.bounds
+    }
+
+    public func isOverlayFocused() -> Bool {
+        overlayStack.contains { $0.component === focusedComponent && isOverlayVisible($0) }
+    }
+
+    public func resolveMouseFocusTarget(_ component: any Component) -> any Component {
+        func contains(_ root: any Component, _ target: any Component) -> Bool {
+            if root === target { return true }
+            let children = (root as? Container)?.children ?? (root as? Box)?.children ?? []
+            return children.contains { contains($0, target) }
+        }
+        for entry in overlayStack.reversed() where isOverlayVisible(entry) {
+            if contains(entry.component, component) { return entry.component }
+        }
+        return component
+    }
+
+    public func dispatchMouseToOverlay(_ event: TuiMouseEvent) -> (hit: Bool, result: TuiMouseDispatchResult?) {
+        for (entry, bounds) in renderedOverlayLayouts.reversed() {
+            guard event.screenX >= bounds.col, event.screenX < bounds.col + bounds.width,
+                  event.screenY >= bounds.row, event.screenY < bounds.row + bounds.height else { continue }
+            var local = event
+            local.x = event.screenX - bounds.col; local.y = event.screenY - bounds.row
+            local.width = bounds.width; local.height = bounds.height
+            let result = dispatchMouseEvent(entry.component, local)
+            return (true, result?.focus == true ? result?.withFocusTarget(entry.component) : result)
+        }
+        return (false, nil)
     }
 
     private func isOverlayVisible(_ entry: OverlayEntry) -> Bool {
@@ -834,6 +888,8 @@ public final class TUI: Container {
         termHeight: Int,
         lineOrigins: LineOrigins? = nil
     ) -> [String] {
+        renderedOverlayLayouts = []
+        for entry in overlayStack { entry.bounds = nil }
         if overlayStack.isEmpty { return lines }
         var result = lines
         var rendered: [(lines: [String], row: Int, col: Int, width: Int, component: Component)] = []
@@ -849,6 +905,9 @@ public final class TUI: Container {
             }
             let layout = resolveOverlayLayout(options: entry.options, overlayHeight: overlayLines.count, termWidth: termWidth, termHeight: termHeight)
 
+            let bounds = OverlayBounds(row: layout.row, col: layout.col, width: layout.width, height: overlayLines.count)
+            entry.bounds = bounds
+            renderedOverlayLayouts.append((entry, bounds))
             rendered.append((lines: overlayLines, row: layout.row, col: layout.col, width: layout.width, component: entry.component))
             minLinesNeeded = max(minLinesNeeded, layout.row + overlayLines.count)
         }
@@ -980,7 +1039,7 @@ public final class TUI: Container {
         } else {
             renderedLines = render(width: width)
         }
-        if !overlayStack.isEmpty {
+        do {
             renderedLines = compositeOverlays(
                 renderedLines,
                 termWidth: width,

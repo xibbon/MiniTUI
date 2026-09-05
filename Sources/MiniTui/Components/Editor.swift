@@ -280,10 +280,14 @@ private let defaultAutocompleteTriggerCharacters: Set<Character> = ["@", "#"]
 private let attachmentAutocompleteDebounceMilliseconds = 20
 
 /// Multi-line editor with history and autocomplete support.
-public final class Editor: SystemCursorAware, KillBufferAware, EditorComponent {
+open class Editor: SystemCursorAware, KillBufferAware, EditorComponent {
     private var state = EditorState(lines: [""], cursorLine: 0, cursorCol: 0)
     private let theme: EditorTheme
     private var lastWidth: Int = 80
+    private weak var ui: TUI?
+    private var scrollOffset = 0
+    private var renderedVisibleLineCount = 1
+    private var renderedAutocompleteHeight = 0
 
     /// Formatter used to color the editor border.
     public var borderColor: @Sendable (String) -> String
@@ -339,7 +343,8 @@ public final class Editor: SystemCursorAware, KillBufferAware, EditorComponent {
     public var disableSubmit = false
 
     /// Create an editor with a theme.
-    public init(theme: EditorTheme, options: EditorOptions = EditorOptions()) {
+    public init(ui: TUI? = nil, theme: EditorTheme, options: EditorOptions = EditorOptions()) {
+        self.ui = ui
         self.theme = theme
         self.borderColor = theme.borderColor
         if let paddingX = options.paddingX {
@@ -390,6 +395,52 @@ public final class Editor: SystemCursorAware, KillBufferAware, EditorComponent {
         }
     }
 
+    open func renderTopBorder(width: Int, hiddenLineCount: Int) -> String {
+        borderColor(hiddenLineCount > 0 ? createScrollBorder(direction: "↑", hiddenLineCount: hiddenLineCount, width: width) : String(repeating: "─", count: max(0, width)))
+    }
+
+    open func renderBottomBorder(width: Int, hiddenLineCount: Int) -> String {
+        borderColor(hiddenLineCount > 0 ? createScrollBorder(direction: "↓", hiddenLineCount: hiddenLineCount, width: width) : String(repeating: "─", count: max(0, width)))
+    }
+
+    public func handleMouse(_ event: TuiMouseEvent) -> TuiMouseEventResult? {
+        let start = renderedVisibleLineCount + 2
+        if isAutocompleting, let list = autocompleteList, event.y >= start, event.y < start + renderedAutocompleteHeight {
+            let padding = min(paddingX, max(0, (event.width - 1) / 2))
+            var local = event
+            local.x -= padding; local.y -= start
+            local.width = max(1, event.width - padding * 2); local.height = renderedAutocompleteHeight
+            let result = list.handleMouse(local)
+            return result?.requestingFocus()
+        }
+        guard event.type == .click, event.button == .left else { return nil }
+        guard event.y > 0, event.y <= renderedVisibleLineCount else { return TuiMouseEventResult(handled: true, focus: true) }
+        let visualLines = buildVisualLineMap(width: lastWidth)
+        let index = scrollOffset + event.y - 1
+        guard visualLines.indices.contains(index) else { return TuiMouseEventResult(handled: true, focus: true) }
+        let line = visualLines[index]
+        let chunk = state.lines[line.logicalLine].substring(from: line.startCol, length: line.length)
+        let padding = min(paddingX, max(0, (event.width - 1) / 2))
+        let targetColumn = max(0, event.x - padding)
+        var column = 0
+        var target = chunk.count
+        var last = 0
+        for (offset, grapheme) in chunk.enumerated() {
+            let next = column + visibleWidth(String(grapheme))
+            last = offset
+            if targetColumn < next { target = offset; break }
+            column = next
+        }
+        let isLast = index == visualLines.count - 1 || visualLines[index + 1].logicalLine != line.logicalLine
+        if !isLast && target == chunk.count && !chunk.isEmpty { target = last }
+        state.cursorLine = line.logicalLine
+        setCursorCol(line.startCol + target)
+        setLastAction(nil)
+        historyIndex = -1
+        if isAutocompleting { updateAutocomplete() }
+        return TuiMouseEventResult(handled: true, focus: true)
+    }
+
     /// Render the editor content and optional autocomplete list.
     public func render(width: Int) -> [String] {
         let maxPadding = max(0, (width - 1) / 2)
@@ -397,15 +448,21 @@ public final class Editor: SystemCursorAware, KillBufferAware, EditorComponent {
         let contentWidth = max(1, width - effectivePaddingX * 2)
         let layoutWidth = max(1, contentWidth - (effectivePaddingX == 0 ? 1 : 0))
         lastWidth = layoutWidth
-        let horizontal = borderColor("─")
         let layoutLines = layoutText(contentWidth: layoutWidth)
+        let maxVisibleLines = ui.map { max(5, Int(Double($0.terminal.rows) * 0.3)) } ?? max(1, layoutLines.count)
+        let cursorLine = layoutLines.firstIndex(where: { $0.hasCursor }) ?? 0
+        if cursorLine < scrollOffset { scrollOffset = cursorLine }
+        else if cursorLine >= scrollOffset + maxVisibleLines { scrollOffset = cursorLine - maxVisibleLines + 1 }
+        scrollOffset = max(0, min(scrollOffset, layoutLines.count - maxVisibleLines))
+        let visibleLines = Array(layoutLines.dropFirst(scrollOffset).prefix(maxVisibleLines))
+        renderedVisibleLineCount = visibleLines.count
         var result: [String] = []
         let leftPadding = String(repeating: " ", count: effectivePaddingX)
         let rightPadding = leftPadding
 
-        result.append(String(repeating: horizontal, count: width))
+        result.append(renderTopBorder(width: width, hiddenLineCount: scrollOffset))
 
-        for layoutLine in layoutLines {
+        for layoutLine in visibleLines {
             var displayText = layoutLine.text
             var lineVisibleWidth = visibleWidth(displayText)
             var cursorInPadding = false
@@ -443,10 +500,13 @@ public final class Editor: SystemCursorAware, KillBufferAware, EditorComponent {
             result.append(leftPadding + displayText + padding + lineRightPadding)
         }
 
-        result.append(String(repeating: horizontal, count: width))
+        result.append(renderBottomBorder(width: width, hiddenLineCount: layoutLines.count - scrollOffset - visibleLines.count))
 
+        renderedAutocompleteHeight = 0
         if isAutocompleting, let autocompleteList {
-            for line in autocompleteList.render(width: contentWidth) {
+            let lines = autocompleteList.render(width: contentWidth)
+            renderedAutocompleteHeight = lines.count
+            for line in lines {
                 let lineWidth = visibleWidth(line)
                 let linePadding = String(repeating: " ", count: max(0, contentWidth - lineWidth))
                 result.append(leftPadding + line + linePadding + rightPadding)
@@ -1847,7 +1907,7 @@ public final class Editor: SystemCursorAware, KillBufferAware, EditorComponent {
                 applyUpdatedAutocomplete(suggestions)
             } else {
                 autocompletePrefix = suggestions.prefix
-                autocompleteList = SelectList(items: suggestions.items, maxVisible: autocompleteMaxVisible, theme: theme.selectList)
+                autocompleteList = createAutocompleteList(items: suggestions.items)
                 isAutocompleting = true
             }
         } else {
@@ -1880,13 +1940,29 @@ public final class Editor: SystemCursorAware, KillBufferAware, EditorComponent {
             if let suggestions = combined.getForceFileSuggestions(lines: state.lines, cursorLine: state.cursorLine, cursorCol: state.cursorCol), !suggestions.items.isEmpty {
                 guard requestToken == autocompleteRequestToken else { return }
                 autocompletePrefix = suggestions.prefix
-                autocompleteList = SelectList(items: suggestions.items, maxVisible: autocompleteMaxVisible, theme: theme.selectList)
+                autocompleteList = createAutocompleteList(items: suggestions.items)
                 isAutocompleting = true
                 return
             }
         }
 
         tryTriggerAutocomplete(explicitTab: true)
+    }
+
+    private func createAutocompleteList(items: [AutocompleteItem]) -> SelectList {
+        let list = SelectList(items: items, maxVisible: autocompleteMaxVisible, theme: theme.selectList)
+        list.onSelect = { [weak self] selected in
+            guard let self, let provider = self.autocompleteProvider else { return }
+            self.pushUndoSnapshot()
+            self.setLastAction(nil)
+            let result = provider.applyCompletion(lines: self.state.lines, cursorLine: self.state.cursorLine,
+                cursorCol: self.state.cursorCol, item: selected, prefix: self.autocompletePrefix)
+            self.state.lines = result.lines; self.state.cursorLine = result.cursorLine
+            self.setCursorCol(result.cursorCol)
+            self.cancelAutocomplete()
+            self.onChange?(self.getText())
+        }
+        return list
     }
 
     private func cancelAutocomplete() {
@@ -1904,7 +1980,7 @@ public final class Editor: SystemCursorAware, KillBufferAware, EditorComponent {
 
     private func applyUpdatedAutocomplete(_ suggestions: (items: [AutocompleteItem], prefix: String)) {
         autocompletePrefix = suggestions.prefix
-        let list = SelectList(items: suggestions.items, maxVisible: autocompleteMaxVisible, theme: theme.selectList)
+        let list = createAutocompleteList(items: suggestions.items)
         // Move highlight to the first item whose value starts with the typed prefix.
         if !suggestions.prefix.isEmpty {
             let lowered = suggestions.prefix.lowercased()
@@ -1931,4 +2007,18 @@ private extension Array {
         guard index >= 0 && index < count else { return nil }
         return self[index]
     }
+}
+
+func createScrollBorder(direction: String, hiddenLineCount: Int, width: Int) -> String {
+    let width = max(0, width)
+    let label = " \(direction) \(hiddenLineCount) more "
+    let labelWidth = visibleWidth(label)
+    if labelWidth + 2 <= width {
+        let left = (width - labelWidth) / 2
+        return String(repeating: "─", count: left) + label + String(repeating: "─", count: width - labelWidth - left)
+    }
+    let indicator = "───\(label)"
+    if visibleWidth(indicator) <= width { return indicator + String(repeating: "─", count: width - visibleWidth(indicator)) }
+    let ellipsis = String("...".prefix(width))
+    return sliceByColumn(indicator, startCol: 0, length: width - visibleWidth(ellipsis), strict: true) + ellipsis
 }
