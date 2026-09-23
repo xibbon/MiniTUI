@@ -280,16 +280,15 @@ public final class SettingsList: SystemCursorAware {
             selectedIndex = max(0, min(items.count - 1, selectedIndex + (delta < 0 ? -1 : 1)))
             return TuiMouseEventResult(handled: true, render: selectedIndex != previous)
         }
-        guard event.type == .move || event.button == .left else { return nil }
+        // Hover must not change selection because the visible range is centered on it.
+        guard event.button == .left, event.type == .press || event.type == .click else { return nil }
         let (start, end) = getVisibleRange(items)
         let index = start + event.y - (searchEnabled ? 2 : 0)
         guard index >= start, index < end else { return nil }
-        if event.type == .move || event.type == .press {
-            if event.type == .press { mousePressedIndex = index }
-            let changed = selectedIndex != index
+        if event.type == .press {
+            mousePressedIndex = index
             selectedIndex = index
-            return TuiMouseEventResult(handled: true, focus: event.type == .press,
-                                      render: event.type == .move ? changed : nil)
+            return TuiMouseEventResult(handled: true, focus: true)
         }
         if event.type == .click {
             selectedIndex = mousePressedIndex ?? index

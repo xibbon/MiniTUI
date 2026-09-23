@@ -56,10 +56,18 @@ struct B1MouseTests {
         #expect(list.handleMouse(b1Mouse(.click, 1, 2))?.handled == true)
         #expect(selected == "c")
         #expect(changes == ["c"])
-        #expect(list.handleMouse(b1Mouse(.move, 1, 0, button: .none))?.render == true)
-        #expect(list.getSelectedItem()?.value == "b")
+        // Upstream v0.85.1: hover no longer changes selection (#select-list hover stability).
+        #expect(list.handleMouse(b1Mouse(.move, 1, 0, button: .none)) == nil)
+        // Upstream v0.85.1: hover no longer changes selection (#select-list hover stability).
+        #expect(list.getSelectedItem()?.value == "c")
         #expect(list.handleMouse(b1Mouse(.wheel, delta: -10))?.render == true)
+        // Upstream v0.85.1: hover no longer changes selection (#select-list hover stability).
+        #expect(list.getSelectedItem()?.value == "b")
+        // Upstream v0.85.1: hover no longer changes selection (#select-list hover stability).
+        #expect(list.handleMouse(b1Mouse(.wheel, delta: -10))?.render == true)
+        // Upstream v0.85.1: hover no longer changes selection (#select-list hover stability).
         #expect(list.getSelectedItem()?.value == "a")
+        // Upstream v0.85.1: hover no longer changes selection (#select-list hover stability).
         #expect(list.handleMouse(b1Mouse(.wheel, delta: -10))?.render == false)
         #expect(list.handleMouse(b1Mouse(.press, button: .right)) == nil)
     }
@@ -95,7 +103,8 @@ struct B1MouseTests {
         ], maxVisible: 5, theme: b1SettingsTheme, onChange: { _, _ in }, onCancel: {}, options: SettingsListOptions(enableSearch: true))
         #expect(list.handleMouse(b1Mouse(.press, 2, 0))?.focus == true)
         #expect(list.handleMouse(b1Mouse(.wheel, 1, 1, delta: 1)) == nil)
-        #expect(list.handleMouse(b1Mouse(.move, 1, 2, button: .none))?.render == false)
+        // Upstream v0.85.1: hover no longer changes selection (#select-list hover stability).
+        #expect(list.handleMouse(b1Mouse(.move, 1, 2, button: .none)) == nil)
         _ = list.handleMouse(b1Mouse(.click, 1, 2))
         #expect(list.handleMouse(b1Mouse(.press, 2, 0))?.focus == true)
         done?("updated", options: SettingsSubmenuOptions(navigateTo: "next"))

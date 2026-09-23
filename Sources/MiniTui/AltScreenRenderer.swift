@@ -12,7 +12,20 @@ private let focusOut = "\u{001B}[O"
 private let beginSynchronizedOutput = "\u{001B}[?2026h"
 private let endSynchronizedOutput = "\u{001B}[?2026l"
 private let pageScrollOverlap = 4
+private let altWheelScrollMultiplier = 5
+private let copyErrorFlashDurationMilliseconds = 5_000
 private let doubleClickIntervalMilliseconds = 500.0
+
+/// Result of a system clipboard copy request.
+public enum ClipboardCopyResult: Sendable, Equatable, ExpressibleByBooleanLiteral {
+    case copied
+    case failed(String?)
+
+    /// Keep literal `true` and `false` callbacks source compatible during migration.
+    public init(booleanLiteral value: Bool) {
+        self = value ? .copied : .failed(nil)
+    }
+}
 
 /// Mouse motion reports requested while the alternate screen is active.
 public enum AltScreenMouseMotion: Sendable, Equatable {
@@ -51,7 +64,7 @@ public struct AltScreenRendererOptions {
     public var searchNavigationButtonStyle: (String, Bool) -> String
     public var scrollToEndIndicator: (() -> String)?
     public var copyOnSelect: Bool
-    public var copySelection: (@MainActor (String) async -> Bool)?
+    public var copySelection: (@MainActor (String) async -> ClipboardCopyResult)?
 
     public init(
         wheelScrollLines: Int = 1,
@@ -64,7 +77,7 @@ public struct AltScreenRendererOptions {
         searchNavigationButtonStyle: @escaping (String, Bool) -> String = { text, _ in text },
         scrollToEndIndicator: (() -> String)? = nil,
         copyOnSelect: Bool = true,
-        copySelection: (@MainActor (String) async -> Bool)? = nil
+        copySelection: (@MainActor (String) async -> ClipboardCopyResult)? = nil
     ) {
         self.wheelScrollLines = max(1, wheelScrollLines)
         self.mouse = mouse
@@ -266,6 +279,7 @@ public final class AltScreenRenderer: TuiRenderer, TuiLayoutRenderer, TuiInputRe
     private var requestRenderCallback: () -> Void = {}
     private var hasOverlayCallback: () -> Bool = { false }
     private var previousScreen: [String] = []
+    private var previousContentScreen: [String] = []
     private var previousWidth = 0
     private var previousHeight = 0
     private var currentLayout: LayoutFrame?
@@ -440,6 +454,7 @@ public final class AltScreenRenderer: TuiRenderer, TuiLayoutRenderer, TuiInputRe
 
     public func invalidateRenderState() {
         previousScreen = []
+        previousContentScreen = []
         previousWidth = -1
         previousHeight = -1
         currentLayout = nil
@@ -449,6 +464,7 @@ public final class AltScreenRenderer: TuiRenderer, TuiLayoutRenderer, TuiInputRe
 
     public func clearRenderState() {
         previousScreen = []
+        previousContentScreen = []
         previousWidth = 0
         previousHeight = 0
         currentLayout = nil
@@ -457,6 +473,7 @@ public final class AltScreenRenderer: TuiRenderer, TuiLayoutRenderer, TuiInputRe
     public func takeOverRenderState(from previous: any TuiRenderer) {
         guard let previous = previous as? AltScreenRenderer, previous !== self else { return }
         previousScreen = previous.previousScreen
+        previousContentScreen = previous.previousContentScreen
         previousWidth = previous.previousWidth
         previousHeight = previous.previousHeight
         currentLayout = previous.currentLayout
@@ -485,6 +502,7 @@ public final class AltScreenRenderer: TuiRenderer, TuiLayoutRenderer, TuiInputRe
         let nextLayout = frame.layoutFrame
         var screen = frame.lines.map(stripLeadingOSC133Zones)
         if screen.count > height { screen = Array(screen.suffix(height)) }
+        let contentScreen = screen
         screen = applySelection(to: screen, layout: nextLayout)
         screen = compositeFlashes(on: screen, width: width, height: height)
         screen = screen.map { line in
@@ -519,12 +537,26 @@ public final class AltScreenRenderer: TuiRenderer, TuiLayoutRenderer, TuiInputRe
         }
         buffer += prepared.evictedImageDeletion
 
+        // In WezTerm, a later row erase can remove a Kitty image that overlaps that row.
+        let clearRowsBeforeKittyImages = redrawImages && imageProtocol == .kitty
+            && screen.contains(where: isImageLine)
+            && isWezTerm(environment: ProcessInfo.processInfo.environment)
+        if clearRowsBeforeKittyImages {
+            for row in 0..<height {
+                let line = screen.indices.contains(row) ? screen[row] : ""
+                let old = previousScreen.indices.contains(row) ? previousScreen[row] : ""
+                if !fullRedraw && !imagesNeedRedraw && line == old { continue }
+                buffer += "\u{001B}[\(row + 1);1H\u{001B}[2K"
+            }
+        }
+
         for row in 0..<height {
             let line = screen.indices.contains(row) ? screen[row] : ""
             let old = previousScreen.indices.contains(row) ? previousScreen[row] : ""
             if !fullRedraw && !imagesNeedRedraw && line == old { continue }
             let outputLine = prepared.lines.indices.contains(row) ? prepared.lines[row] : ""
-            buffer += "\u{001B}[\(row + 1);1H\u{001B}[2K" + outputLine
+            buffer += "\u{001B}[\(row + 1);1H"
+                + (clearRowsBeforeKittyImages ? "" : "\u{001B}[2K") + outputLine
         }
 
         if frame.useSystemCursor, !frame.hasVisibleOverlay, let cursor = frame.cursor {
@@ -538,6 +570,7 @@ public final class AltScreenRenderer: TuiRenderer, TuiLayoutRenderer, TuiInputRe
         terminal.write(buffer)
 
         previousScreen = screen
+        previousContentScreen = contentScreen
         previousWidth = width
         previousHeight = height
         currentLayout = nextLayout
@@ -566,14 +599,14 @@ public final class AltScreenRenderer: TuiRenderer, TuiLayoutRenderer, TuiInputRe
 
         if let wheel = parseWheelEvent(data) {
             let event = createMouseEvent(.wheel, rawButton: wheel.button, x: wheel.x, y: wheel.y,
-                wheelDelta: wheel.direction * options.wheelScrollLines)
+                wheelDelta: wheel.direction * wheelScrollLines(button: wheel.button))
             let overlay = dispatchMouseToOverlay(event)
             if let result = overlay.result ?? (overlay.hit ? nil : dispatchMouseToLayout(event)) {
                 if applyMouseDispatchResult(event, result) { requestRender() }
                 return true
             }
             if shouldDeferViewportInputToOverlay { return false }
-            routeWheel(direction: wheel.direction, x: wheel.x, y: wheel.y)
+            routeWheel(direction: wheel.direction, x: wheel.x, y: wheel.y, button: wheel.button)
             return true
         }
         if let event = parseSgrMouseEvent(data) {
@@ -935,11 +968,14 @@ public final class AltScreenRenderer: TuiRenderer, TuiLayoutRenderer, TuiInputRe
         let clip = box.clip
         let row = clip.y + clip.height - 1
         guard screen.indices.contains(row), !isImageLine(screen[row]) else { return screen }
-        let available = max(0, (getScrollbarGeometry(box)?.column ?? clip.x + clip.width) - clip.x)
-        let text = truncateToWidth(indicator(), maxWidth: available, ellipsis: "")
+        let label = truncateToWidth(indicator(), maxWidth: clip.width, ellipsis: "")
+        let labelWidth = visibleWidth(label)
+        let column = clip.x + (clip.width - labelWidth) / 2
+        let rightEdge = getScrollbarGeometry(box)?.column ?? clip.x + clip.width
+        let available = max(0, rightEdge - column)
+        let text = truncateToWidth(label, maxWidth: available, ellipsis: "")
         let textWidth = visibleWidth(text)
         guard textWidth > 0 else { return screen }
-        let column = clip.x + (available - textWidth) / 2
         var result = screen
         result[row] = compositeLayoutLine(baseLine: result[row], overlayLine: text, startColumn: column,
             overlayWidth: textWidth, totalWidth: width)
@@ -1032,8 +1068,12 @@ public final class AltScreenRenderer: TuiRenderer, TuiLayoutRenderer, TuiInputRe
         return nil
     }
 
-    private func routeWheel(direction: Int, x: Int, y: Int) {
-        var remaining = direction * options.wheelScrollLines
+    private func wheelScrollLines(button: Int) -> Int {
+        button & 8 != 0 ? options.wheelScrollLines * altWheelScrollMultiplier : options.wheelScrollLines
+    }
+
+    private func routeWheel(direction: Int, x: Int, y: Int, button: Int) {
+        var remaining = direction * wheelScrollLines(button: button)
         var seen: Set<ObjectIdentifier> = []
         if let currentLayout {
             for scrollView in getScrollViewsAt(frame: currentLayout, x: x, y: y) {
@@ -1180,7 +1220,7 @@ public final class AltScreenRenderer: TuiRenderer, TuiLayoutRenderer, TuiInputRe
            let lines = getScrollViewBox(frame: currentLayout, scrollView: scrollView)?.scrollContentLines {
             return lines.indices.contains(point.row) ? lines[point.row] : ""
         }
-        return previousScreen.indices.contains(point.row) ? previousScreen[point.row] : ""
+        return previousContentScreen.indices.contains(point.row) ? previousContentScreen[point.row] : ""
     }
 
     private func wordSelection(_ point: SelectionPoint) -> SelectionRange? {
@@ -1232,7 +1272,7 @@ public final class AltScreenRenderer: TuiRenderer, TuiLayoutRenderer, TuiInputRe
            let lines = getScrollViewBox(frame: currentLayout, scrollView: scrollView)?.scrollContentLines {
             source = lines
         } else {
-            source = previousScreen
+            source = previousContentScreen
         }
         let row = max(0, min(max(0, source.count - 1), point.row))
         var start = point
@@ -1513,7 +1553,7 @@ public final class AltScreenRenderer: TuiRenderer, TuiLayoutRenderer, TuiInputRe
                   let lines = getScrollViewBox(frame: currentLayout, scrollView: scrollView)?.scrollContentLines else { return nil }
             source = lines
         } else {
-            source = previousScreen
+            source = previousContentScreen
         }
         var result: [String] = []
         for row in selection.start.row...selection.end.row {
@@ -1541,9 +1581,14 @@ public final class AltScreenRenderer: TuiRenderer, TuiLayoutRenderer, TuiInputRe
     @discardableResult
     private func copyTextToClipboard(_ text: String) async -> Bool {
         if let copy = options.copySelection {
-            let success = await copy(text)
-            flash(success ? "Copied!" : "Copy failed")
-            return success
+            switch await copy(text) {
+            case .copied:
+                flash("Copied!")
+                return true
+            case .failed(let message):
+                flash(message ?? "Copy failed", durationMilliseconds: copyErrorFlashDurationMilliseconds)
+                return false
+            }
         }
         copyViaOSC52(text)
         return true

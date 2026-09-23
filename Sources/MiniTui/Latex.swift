@@ -129,6 +129,7 @@ private let spacingCommands: Set<String> = [
     "thickspace", "thinspace",
 ]
 private let negativeSpacingCommands: Set<String> = ["!", "negmedspace", "negthickspace", "negthinspace"]
+private let fontSwitchCommands: Set<String> = ["bf", "cal", "it", "rm", "sf", "sl", "tt"]
 private let ignoredCommands: Set<String> = [
     "displaystyle", "limits", "nolimits", "scriptstyle", "scriptscriptstyle", "textstyle",
 ]
@@ -195,8 +196,7 @@ private func compactScriptOperators(_ value: String) -> String {
 
 private func formatScript(_ source: String, kind: ScriptKind) -> String {
     let value = compactScriptOperators(trimWhitespace(source))
-    let replacements = kind == .sub ? subscripts : superscripts
-    if let unicode = replaceCharacters(value, replacements: replacements) {
+    if let unicode = formatUnicodeScript(value, kind: kind) {
         return unicode
     }
 
@@ -206,6 +206,11 @@ private func formatScript(_ source: String, kind: ScriptKind) -> String {
         return prefix + value
     }
     return "\(prefix)(\(value))"
+}
+
+private func formatUnicodeScript(_ source: String, kind: ScriptKind) -> String? {
+    let value = compactScriptOperators(trimWhitespace(source))
+    return replaceCharacters(value, replacements: kind == .sub ? subscripts : superscripts)
 }
 
 private enum ScriptKind {
@@ -286,6 +291,11 @@ private struct OperatorNode {
     var upper: String?
 }
 
+private struct ScriptNode {
+    var lower: String?
+    var upper: String?
+}
+
 private struct MatrixNode {
     var lines: [String]
     var baseline: Int
@@ -294,6 +304,7 @@ private struct MatrixNode {
 private enum LatexLayoutNode {
     case fraction(FractionNode)
     case `operator`(OperatorNode)
+    case script(ScriptNode)
     case matrix(MatrixNode)
 }
 
@@ -419,6 +430,14 @@ private func renderLatexLayout(_ source: String, nodes: [LatexLayoutNode]) -> La
                     width: contentWidth + 1,
                     baseline: node.upper == nil ? 0 : 1
                 ))
+            case .script(let node):
+                let upper = node.upper.map { renderLatexLayout($0, nodes: nodes) }
+                let lower = node.lower.map { renderLatexLayout($0, nodes: nodes) }
+                let width = max(upper?.width ?? 0, lower?.width ?? 0)
+                let lines = (upper?.lines.map { padLayoutLine($0, width: width) } ?? [])
+                    + [String(repeating: " ", count: width)]
+                    + (lower?.lines.map { padLayoutLine($0, width: width) } ?? [])
+                layouts.append(LatexLayout(lines: lines, width: width, baseline: upper?.lines.count ?? 0))
             case .matrix(let node):
                 let width = node.lines.map(visibleWidth).max() ?? 0
                 layouts.append(LatexLayout(
@@ -458,6 +477,7 @@ private final class LatexParser {
     private var position = 0
     private var supported = true
     private var stackFractions = true
+    private var scriptDepth = 0
 
     init(source: String, layoutNodes: [LatexLayoutNode] = [], display: Bool) {
         self.source = Array(source)
@@ -501,7 +521,7 @@ private final class LatexParser {
             if character == "^" || character == "_" {
                 position += 1
                 result = trimEnd(result)
-                let script = formatScript(parseRequiredArgument(stackFractions: false), kind: character == "_" ? .sub : .sup)
+                let script = parseScripts(initialMarker: character)
                 if result.last == namedOperatorEnd {
                     result.removeLast()
                     result += script
@@ -551,6 +571,56 @@ private final class LatexParser {
         return parsed.index
     }
 
+    private func parseScripts(initialMarker: Character) -> String {
+        var sub: String?
+        var sup: String?
+        var order: [ScriptKind] = []
+
+        func parse(_ marker: Character) {
+            let kind: ScriptKind = marker == "_" ? .sub : .sup
+            scriptDepth += 1
+            let value = parseRequiredArgument(stackFractions: false)
+            scriptDepth -= 1
+            if kind == .sub { sub = value } else { sup = value }
+            order.append(kind)
+        }
+
+        parse(initialMarker)
+        var nextPosition = position
+        while nextPosition < source.count, source[nextPosition].isWhitespace { nextPosition += 1 }
+        if nextPosition < source.count {
+            let nextMarker = source[nextPosition]
+            if (nextMarker == "^" || nextMarker == "_") && nextMarker != initialMarker {
+                position = nextPosition + 1
+                parse(nextMarker)
+            }
+        }
+
+        let subUnicode = sub.flatMap { formatUnicodeScript($0, kind: .sub) }
+        let supUnicode = sup.flatMap { formatUnicodeScript($0, kind: .sup) }
+        let canUseLayout = [sub, sup].allSatisfy { value in
+            guard let value else { return true }
+            if value.contains("/") { return false }
+            return value.contains(layoutMarkerStart) || value.count <= 1 || value.contains {
+                ($0.isASCII && $0.isUppercase) || $0 == "*" || $0 == "∗"
+            }
+        }
+        let needsLayout = display && canUseLayout &&
+            (scriptDepth > 0 || (sub != nil && subUnicode == nil) || (sup != nil && supUnicode == nil))
+        if !needsLayout {
+            return order.map { kind in
+                if kind == .sub { return subUnicode ?? formatScript(sub ?? "", kind: .sub) }
+                return supUnicode ?? formatScript(sup ?? "", kind: .sup)
+            }.joined()
+        }
+
+        layoutNodes.append(.script(ScriptNode(
+            lower: sub.map(normalizeLatexOutput),
+            upper: sup.map(normalizeLatexOutput)
+        )))
+        return layoutMarker(layoutNodes.count - 1)
+    }
+
     private func parseWhitespace() -> String {
         while position < source.count, source[position].isWhitespace { position += 1 }
         return " "
@@ -581,6 +651,10 @@ private final class LatexParser {
         if command == "\\" { return "\n" }
         if spacingCommands.contains(command) { return " " }
         if negativeSpacingCommands.contains(command) { return negativeSpace }
+        if fontSwitchCommands.contains(command) {
+            while position < source.count, source[position].isWhitespace { position += 1 }
+            return ""
+        }
         if ignoredCommands.contains(command) { return "" }
         if ["{", "}", "$", "%", "#", "_", "&"].contains(command) { return command }
         if command == "|" { return "‖" }
@@ -867,21 +941,7 @@ private final class LatexParser {
             }.joined(separator: "\n")
         }
         if environment == "cases" || environment == "cases*" {
-            let rows = splitEnvironmentRows(body).map { row in
-                row.components(separatedBy: "&").map { trimWhitespace(renderNested($0, stackFractions: false)) }
-            }.filter { $0.contains(where: { !$0.isEmpty }) }
-            return rows.enumerated().map { index, row in
-                let rawValue = row.first ?? ""
-                let value = rawValue.replacingTrailingComma()
-                let condition = row.count > 1 ? row[1] : ""
-                let delimiter = index == 0 ? "⎧" : index == rows.count - 1 ? "⎩" : "⎨"
-                let lower = condition.lowercased()
-                let hasPrefix = ["if", "when", "for", "otherwise"].contains { keyword in
-                    lower == keyword || lower.hasPrefix(keyword + " ")
-                }
-                let conditionPrefix = hasPrefix ? " " : " if "
-                return "\(delimiter) \(value)\(condition.isEmpty ? "" : conditionPrefix + condition)"
-            }.joined(separator: "\n")
+            return renderCases(body)
         }
         let matrixEnvironments = ["array", "matrix", "smallmatrix", "pmatrix", "bmatrix", "Bmatrix", "vmatrix", "Vmatrix"]
         if matrixEnvironments.contains(environment) {
@@ -890,6 +950,38 @@ private final class LatexParser {
 
         supported = false
         return body
+    }
+
+    private func renderCases(_ body: String) -> String {
+        let rows = splitEnvironmentRows(body).map { row in
+            row.components(separatedBy: "&").map { trimWhitespace(renderNested($0, stackFractions: false)) }
+        }.filter { $0.contains(where: { !$0.isEmpty }) }
+        let valueWidth = rows.map { visibleWidth(($0.first ?? "").replacingTrailingComma()) }.max() ?? 0
+        let contents = rows.map { row in
+            let value = (row.first ?? "").replacingTrailingComma()
+            let condition = row.count > 1 ? row[1] : ""
+            guard !condition.isEmpty else { return value }
+            let lower = condition.lowercased()
+            let hasPrefix = ["if", "when", "for", "otherwise"].contains { keyword in
+                guard lower.hasPrefix(keyword) else { return false }
+                guard let next = lower.dropFirst(keyword.count).first else { return true }
+                return !(next.isASCII && (next.isLetter || next.isNumber || next == "_"))
+            }
+            let prefix = hasPrefix ? " " : " if "
+            return value + String(repeating: String(protectedSpace), count: max(0, valueWidth - visibleWidth(value)))
+                + prefix + condition
+        }
+        if contents.count <= 1 { return contents.first.map { "⎧ " + $0 } ?? "" }
+
+        let middle = contents.count / 2
+        var visualRows: [String?] = contents.map(Optional.some)
+        if contents.count.isMultiple(of: 2) { visualRows.insert(nil, at: middle) }
+        let lines = visualRows.enumerated().map { index, content in
+            let delimiter = index == 0 ? "⎧" : index == visualRows.count - 1 ? "⎩" : "⎨"
+            return content.map { delimiter + " " + $0 } ?? delimiter
+        }
+        layoutNodes.append(.matrix(MatrixNode(lines: lines, baseline: middle)))
+        return layoutMarker(layoutNodes.count - 1)
     }
 
     private func droppingInitialGroup(_ value: String) -> String {

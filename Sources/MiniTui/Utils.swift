@@ -340,6 +340,42 @@ public func isWhitespaceChar(_ char: Character) -> Bool {
     return char.unicodeScalars.allSatisfy { CharacterSet.whitespacesAndNewlines.contains($0) }
 }
 
+/// A completion token ends at whitespace or CJK punctuation. CJK letters stay in the token.
+func isAutocompleteSeparator(_ char: Character) -> Bool {
+    if isWhitespaceChar(char) { return true }
+    let explicitPunctuation = "，．：；！？（）［］｛｝“”‘’…—"
+    return char.unicodeScalars.contains { scalar in
+        if explicitPunctuation.unicodeScalars.contains(scalar) { return true }
+        switch scalar.properties.generalCategory {
+        case .connectorPunctuation, .dashPunctuation, .openPunctuation, .closePunctuation,
+             .initialPunctuation, .finalPunctuation, .otherPunctuation:
+            let value = scalar.value
+            return (0x3000...0x303F).contains(value)
+                || (0x3040...0x30FF).contains(value)
+                || (0x31F0...0x31FF).contains(value)
+                || (0xFF00...0xFFEF).contains(value)
+        default:
+            return false
+        }
+    }
+}
+
+/// Match the CJK script families used to refresh symbol completion as users type.
+func isCJKCharacter(_ char: Character) -> Bool {
+    char.unicodeScalars.contains { scalar in
+        let value = scalar.value
+        return value == 0x3005
+            || (0x3400...0x9FFF).contains(value)
+            || (0x20000...0x323AF).contains(value)
+            || (0x3040...0x30FF).contains(value)
+            || (0x31F0...0x31FF).contains(value)
+            || (0x1100...0x11FF).contains(value)
+            || (0x3130...0x318F).contains(value)
+            || (0xAC00...0xD7AF).contains(value)
+            || (0x3100...0x312F).contains(value)
+    }
+}
+
 private let punctuationSet = CharacterSet(charactersIn: "(){}[]<>.,;:'\"!?+-=*/\\|&%^$#@~`")
 
 /// Return true when a character is treated as punctuation.

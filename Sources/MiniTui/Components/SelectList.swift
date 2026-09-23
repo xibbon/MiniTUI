@@ -247,16 +247,15 @@ public final class SelectList: SystemCursorAware {
             if selectedIndex != previous { notifySelectionChange() }
             return TuiMouseEventResult(handled: true, render: selectedIndex != previous)
         }
-        guard event.type == .move || event.button == .left else { return nil }
+        // Hover must not change selection because the visible range is centered on it.
+        guard event.button == .left, event.type == .press || event.type == .click else { return nil }
         let (start, end) = getVisibleRange()
         let index = start + event.y
         guard index >= start, index < end else { return nil }
-        if event.type == .move || event.type == .press {
-            if event.type == .press { mousePressedIndex = index }
-            let changed = selectedIndex != index
-            if changed { selectedIndex = index; notifySelectionChange() }
-            return TuiMouseEventResult(handled: true, focus: event.type == .press,
-                                      render: event.type == .move ? changed : nil)
+        if event.type == .press {
+            mousePressedIndex = index
+            if selectedIndex != index { selectedIndex = index; notifySelectionChange() }
+            return TuiMouseEventResult(handled: true, focus: true)
         }
         if event.type == .click {
             let clicked = mousePressedIndex ?? index

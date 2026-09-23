@@ -6,7 +6,7 @@ private func findLastDelimiter(_ text: String) -> Int {
     guard !text.isEmpty else { return -1 }
     let chars = Array(text)
     for i in stride(from: chars.count - 1, through: 0, by: -1) {
-        if pathDelimiters.contains(chars[i]) {
+        if pathDelimiters.contains(chars[i]) || isAutocompleteSeparator(chars[i]) {
             return i
         }
     }
@@ -31,7 +31,7 @@ private func findUnclosedQuoteStart(_ text: String) -> Int? {
 private func isTokenStart(_ text: String, _ index: Int) -> Bool {
     if index == 0 { return true }
     let chars = Array(text)
-    return pathDelimiters.contains(chars[index - 1])
+    return pathDelimiters.contains(chars[index - 1]) || isAutocompleteSeparator(chars[index - 1])
 }
 
 private func substring(_ text: String, from offset: Int) -> String {
@@ -68,7 +68,7 @@ private func buildCompletionValue(
     isAtPrefix: Bool,
     isQuotedPrefix: Bool
 ) -> String {
-    let needsQuotes = isQuotedPrefix || path.contains(" ")
+    let needsQuotes = isQuotedPrefix || path.contains(where: isAutocompleteSeparator)
     let prefix = isAtPrefix ? "@" : ""
     if !needsQuotes {
         return "\(prefix)\(path)"
@@ -287,7 +287,12 @@ public final class CombinedAutocompleteProvider: AutocompleteProvider {
                 return (suggestions, argumentText)
             } else {
                 let prefix = String(textBeforeCursor.dropFirst())
-                let filtered = fuzzyFilter(commands, query: prefix) { $0.name }
+                let filtered = fuzzyFilter(commands, query: prefix) { command in
+                    if !prefix.hasPrefix("skill:"), command.name.hasPrefix("skill:") {
+                        return String(command.name.dropFirst("skill:".count))
+                    }
+                    return command.name
+                }
                 if filtered.isEmpty { return nil }
                 let items = filtered.map { command in
                     AutocompleteItem(value: command.name, label: command.label, description: command.description)
@@ -415,7 +420,7 @@ public final class CombinedAutocompleteProvider: AutocompleteProvider {
             return pathPrefix
         }
 
-        if pathPrefix.isEmpty && text.hasSuffix(" ") {
+        if pathPrefix.isEmpty && !text.isEmpty && text.last.map(isAutocompleteSeparator) == true {
             return pathPrefix
         }
 
@@ -563,8 +568,8 @@ public final class CombinedAutocompleteProvider: AutocompleteProvider {
             }
 
             suggestions.sort { a, b in
-                let aIsDir = a.value.hasSuffix("/")
-                let bIsDir = b.value.hasSuffix("/")
+                let aIsDir = a.label.hasSuffix("/")
+                let bIsDir = b.label.hasSuffix("/")
                 if aIsDir != bIsDir {
                     return aIsDir
                 }

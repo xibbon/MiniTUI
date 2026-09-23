@@ -309,6 +309,12 @@ func detectCapabilities(environment env: [String: String], tmuxForwardsHyperlink
     return TerminalCapabilities(images: images, trueColor: trueColor, hyperlinks: hyperlinks ?? detected.hyperlinks)
 }
 
+func isWezTerm(environment env: [String: String]) -> Bool {
+    env["WEZTERM_PANE"] != nil
+        || env["TERM_PROGRAM"]?.lowercased() == "wezterm"
+        || env["TERM"]?.lowercased().contains("wezterm") == true
+}
+
 private func detectCapabilitiesFromEnvironment(_ env: [String: String], tmuxForwardsHyperlink: () -> Bool) -> TerminalCapabilities {
     let termProgram = env["TERM_PROGRAM"]?.lowercased() ?? ""
     let term = env["TERM"]?.lowercased() ?? ""
@@ -329,7 +335,7 @@ private func detectCapabilitiesFromEnvironment(_ env: [String: String], tmuxForw
         return TerminalCapabilities(images: .kitty, trueColor: true, hyperlinks: hyperlinks)
     }
 
-    if env["WEZTERM_PANE"] != nil || termProgram == "wezterm" || term.contains("wezterm") {
+    if isWezTerm(environment: env) {
         return TerminalCapabilities(images: .kitty, trueColor: true, hyperlinks: hyperlinks)
     }
 

@@ -898,11 +898,11 @@ open class Editor: SystemCursorAware, KillBufferAware, EditorComponent {
             } else if isAutocompleteTriggerCharacter(text) {
                 let currentLine = state.lines[safe: state.cursorLine] ?? ""
                 let textBeforeCursor = currentLine.prefixCharacters(max(0, state.cursorCol))
-                let charBeforeSymbol = textBeforeCursor.count > 1 ? textBeforeCursor.suffixCharacters(2).first : nil
-                if textBeforeCursor.count == 1 || charBeforeSymbol.map(isWhitespaceChar) == true {
+                if isInSymbolCompletionContext(textBeforeCursor) {
                     tryTriggerAutocomplete(explicitTab: false)
                 }
-            } else if text.range(of: "^[a-zA-Z0-9._-]$", options: .regularExpression) != nil {
+            } else if text.range(of: "^[a-zA-Z0-9._-]$", options: .regularExpression) != nil
+                        || (text.count == 1 && text.first.map(isCJKCharacter) == true) {
                 let currentLine = state.lines[safe: state.cursorLine] ?? ""
                 let textBeforeCursor = currentLine.prefixCharacters(max(0, state.cursorCol))
                 if textBeforeCursor.trimmingCharacters(in: .whitespaces).hasPrefix("/") {
@@ -1838,11 +1838,24 @@ open class Editor: SystemCursorAware, KillBufferAware, EditorComponent {
     }
 
     private func isInSymbolCompletionContext(_ textBeforeCursor: String) -> Bool {
-        guard let token = textBeforeCursor.split(whereSeparator: isWhitespaceChar).last,
-              let first = token.first else {
+        let chars = Array(textBeforeCursor)
+        var openQuote: Int?
+        for index in chars.indices where chars[index] == "\"" {
+            openQuote = openQuote == nil ? index : nil
+        }
+        if let quote = openQuote, quote > 0, chars[quote - 1] == "@" {
+            let atIndex = quote - 1
+            if atIndex == 0 || isAutocompleteSeparator(chars[atIndex - 1]) {
+                return true
+            }
+        }
+
+        let tokenStart = (chars.lastIndex(where: isAutocompleteSeparator) ?? -1) + 1
+        guard tokenStart < chars.count else { return false }
+        if chars[tokenStart] == "@", tokenStart + 1 < chars.count, chars[tokenStart + 1] == "\"" {
             return false
         }
-        return autocompleteTriggerCharacters.contains(first)
+        return autocompleteTriggerCharacters.contains(chars[tokenStart])
     }
 
     private func tryTriggerAutocomplete(explicitTab: Bool) {
