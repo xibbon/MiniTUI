@@ -91,7 +91,12 @@ public protocol MouseFocusOwner: Component {}
 @MainActor
 public func dispatchMouseEvent(_ component: any Component, _ event: TuiMouseEvent) -> TuiMouseDispatchResult? {
     guard let result = component.handleMouse(event) else { return nil }
-    if let dispatched = result as? TuiMouseDispatchResult { return dispatched }
+    if let dispatched = result as? TuiMouseDispatchResult {
+        if dispatched.focus == true, component is any MouseFocusOwner {
+            return dispatched.withFocusTarget(component)
+        }
+        return dispatched
+    }
     guard result.handled == true || result.capture == true || result.focus == true else { return nil }
     return TuiMouseDispatchResult(
         target: TuiMouseDispatchTarget(component: component,

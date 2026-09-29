@@ -81,12 +81,24 @@ public struct ImageRenderOptions {
     public let maxHeightCells: Int?
     /// Preserve aspect ratio when scaling.
     public let preserveAspectRatio: Bool?
+    /// Kitty image ID. Callers can reuse this ID for updates.
+    public let imageId: Int?
+    /// Whether Kitty moves the cursor after image placement. The default is true.
+    public let moveCursor: Bool?
 
     /// Create image render options.
-    public init(maxWidthCells: Int? = nil, maxHeightCells: Int? = nil, preserveAspectRatio: Bool? = nil) {
+    public init(
+        maxWidthCells: Int? = nil,
+        maxHeightCells: Int? = nil,
+        preserveAspectRatio: Bool? = nil,
+        imageId: Int? = nil,
+        moveCursor: Bool? = nil
+    ) {
         self.maxWidthCells = maxWidthCells
         self.maxHeightCells = maxHeightCells
         self.preserveAspectRatio = preserveAspectRatio
+        self.imageId = imageId
+        self.moveCursor = moveCursor
     }
 }
 
@@ -139,8 +151,13 @@ struct KittyImagePlacement: Sendable {
     let replacementLine: String
 }
 
-private let kittyLayoutMetadata = LockedValue<[UInt32: KittyImageMetadata]>([:])
-private let kittyTransmissionGeneration = LockedValue(0)
+private struct KittyMetadataRegistry: Sendable {
+    var values: [UInt32: KittyImageMetadata] = [:]
+    var insertionOrder: [UInt32] = []
+    var transmissionGeneration = 0
+}
+
+private let kittyMetadataRegistry = LockedValue(KittyMetadataRegistry())
 
 private func kittyTransmission(in line: String) -> String? {
     guard let firstStart = line.range(of: kittyPrefix)?.lowerBound else { return nil }
@@ -176,19 +193,35 @@ private func kittyImageID(in line: String) -> UInt32? {
     return nil
 }
 
-private func registerKittyLayoutMetadata(metadata: KittyImageMetadata) {
-    kittyLayoutMetadata.update { values in
-        values.removeValue(forKey: metadata.imageID)
-        values[metadata.imageID] = metadata
-        if values.count > 1_000, let oldestKey = values.keys.first {
-            values.removeValue(forKey: oldestKey)
+private func registerKittyLayoutMetadata(
+    imageID: UInt32,
+    columns: Int,
+    rows: Int,
+    widthPx: Int,
+    heightPx: Int
+) {
+    kittyMetadataRegistry.update { registry in
+        registry.transmissionGeneration += 1
+        registry.insertionOrder.removeAll { $0 == imageID }
+        registry.insertionOrder.append(imageID)
+        registry.values[imageID] = KittyImageMetadata(
+            imageID: imageID,
+            columns: columns,
+            rows: rows,
+            widthPx: widthPx,
+            heightPx: heightPx,
+            transmissionGeneration: registry.transmissionGeneration
+        )
+        if registry.values.count > 1_000 {
+            let oldestID = registry.insertionOrder.removeFirst()
+            registry.values.removeValue(forKey: oldestID)
         }
     }
 }
 
 func getKittyImageMetadata(_ line: String) -> KittyImageMetadata? {
     guard let imageID = kittyImageID(in: line) else { return nil }
-    return kittyLayoutMetadata.get()[imageID]
+    return kittyMetadataRegistry.get().values[imageID]
 }
 
 func getKittyImagePlacement(_ line: String) -> KittyImagePlacement? {
@@ -356,7 +389,7 @@ private func detectCapabilitiesFromEnvironment(_ env: [String: String], tmuxForw
         return TerminalCapabilities(images: nil, trueColor: true, hyperlinks: hyperlinks)
     }
 
-    let trueColor = colorTerm == "truecolor" || colorTerm == "24bit"
+    let trueColor = colorTerm == "truecolor" || colorTerm == "24bit" || term.hasSuffix("-direct")
     // Unknown terminal: don't claim OSC 8 support to avoid silent link drops.
     return TerminalCapabilities(images: nil, trueColor: trueColor, hyperlinks: false)
 }
@@ -384,6 +417,11 @@ public func getCapabilities() -> TerminalCapabilities {
         state.cached = result
         return result
     }
+}
+
+/// Return the color mode after applying terminal capability overrides.
+public func getTerminalColorMode(_ capabilities: TerminalCapabilities = getCapabilities()) -> TerminalColorMode {
+    capabilities.trueColor ? .truecolor : .color256
 }
 
 /// Replace the override set. Keep the cache when the set is unchanged.
@@ -427,14 +465,16 @@ public func encodeKitty(
     base64Data: String,
     columns: Int? = nil,
     rows: Int? = nil,
-    imageId: Int? = nil
+    imageId: Int? = nil,
+    moveCursor: Bool? = nil
 ) -> String {
     let chunkSize = 4096
 
     var params = ["a=T", "f=100", "q=2"]
+    if moveCursor == false { params.append("C=1") }
     if let columns { params.append("c=\(columns)") }
     if let rows { params.append("r=\(rows)") }
-    if let imageId { params.append("i=\(imageId)") }
+    if let imageId, imageId != 0 { params.append("i=\(imageId)") }
 
     if base64Data.count <= chunkSize {
         return "\u{001B}_G" + params.joined(separator: ",") + ";" + base64Data + "\u{001B}\\"
@@ -490,17 +530,70 @@ public func encodeITerm2(
     return "\u{001B}]1337;File=" + params.joined(separator: ";") + ":" + base64Data + "\u{0007}"
 }
 
+/// The terminal cells reserved for an image.
+public struct ImageCellSize: Sendable, Equatable {
+    public let columns: Int
+    public let rows: Int
+
+    public init(columns: Int, rows: Int) {
+        self.columns = columns
+        self.rows = rows
+    }
+}
+
+private func chooseLessDistortedCellCount(upper: Int, ideal: Double) -> Int {
+    guard upper > 1 else { return upper }
+    let lower = upper - 1
+    let upperDistortion = max(Double(upper) / ideal, ideal / Double(upper))
+    let lowerDistortion = max(Double(lower) / ideal, ideal / Double(lower))
+    return lowerDistortion < upperDistortion ? lower : upper
+}
+
+/// Calculate the cell size of an image, subject to width and height limits.
+public func calculateImageCellSize(
+    imageDimensions: ImageDimensions,
+    maxWidthCells: Int,
+    maxHeightCells: Int? = nil,
+    cellDimensions: CellDimensions = CellDimensions(widthPx: 9, heightPx: 18),
+    optimizeAspectRatio: Bool = false
+) -> ImageCellSize {
+    let maxWidth = max(1, maxWidthCells)
+    let maxHeight = maxHeightCells.map { max(1, $0) }
+    let imageWidth = Double(max(1, imageDimensions.widthPx))
+    let imageHeight = Double(max(1, imageDimensions.heightPx))
+    let cellWidth = Double(cellDimensions.widthPx)
+    let cellHeight = Double(cellDimensions.heightPx)
+    let widthScale = Double(maxWidth) * cellWidth / imageWidth
+    let heightScale = maxHeight.map { Double($0) * cellHeight / imageHeight } ?? widthScale
+    let scale = min(widthScale, heightScale)
+    let scaledWidth = imageWidth * scale
+    let scaledHeight = imageHeight * scale
+    var columns = max(1, min(maxWidth, Int(ceil(scaledWidth / cellWidth))))
+    var rows = max(1, Int(ceil(scaledHeight / cellHeight)))
+    if let maxHeight { rows = min(maxHeight, rows) }
+    guard optimizeAspectRatio else { return ImageCellSize(columns: columns, rows: rows) }
+
+    if widthScale <= heightScale {
+        let ideal = Double(columns) * cellWidth * imageHeight / (imageWidth * cellHeight)
+        rows = chooseLessDistortedCellCount(upper: rows, ideal: ideal)
+    } else {
+        let ideal = Double(rows) * cellHeight * imageWidth / (imageHeight * cellWidth)
+        columns = chooseLessDistortedCellCount(upper: columns, ideal: ideal)
+    }
+    return ImageCellSize(columns: columns, rows: rows)
+}
+
 /// Calculate the number of terminal rows an image should occupy.
 public func calculateImageRows(
     imageDimensions: ImageDimensions,
     targetWidthCells: Int,
     cellDimensions: CellDimensions = CellDimensions(widthPx: 9, heightPx: 18)
 ) -> Int {
-    let targetWidthPx = targetWidthCells * cellDimensions.widthPx
-    let scale = Double(targetWidthPx) / Double(imageDimensions.widthPx)
-    let scaledHeightPx = Double(imageDimensions.heightPx) * scale
-    let rows = Int(ceil(scaledHeightPx / Double(cellDimensions.heightPx)))
-    return max(1, rows)
+    calculateImageCellSize(
+        imageDimensions: imageDimensions,
+        maxWidthCells: targetWidthCells,
+        cellDimensions: cellDimensions
+    ).rows
 }
 
 /// Read PNG dimensions from base64 data.
@@ -627,49 +720,50 @@ public func renderImage(
     base64Data: String,
     imageDimensions: ImageDimensions,
     options: ImageRenderOptions = ImageRenderOptions()
-) -> (sequence: String, rows: Int)? {
+) -> (sequence: String, columns: Int, rows: Int, imageId: Int?)? {
     let caps = getCapabilities()
     guard let images = caps.images else {
         return nil
     }
 
     let maxWidth = options.maxWidthCells ?? 80
-    let rows = calculateImageRows(imageDimensions: imageDimensions, targetWidthCells: maxWidth, cellDimensions: getCellDimensions())
+    let size = calculateImageCellSize(
+        imageDimensions: imageDimensions,
+        maxWidthCells: maxWidth,
+        maxHeightCells: options.maxHeightCells,
+        cellDimensions: getCellDimensions(),
+        optimizeAspectRatio: images == .kitty
+    )
 
     switch images {
     case .kitty:
-        let imageID = allocateImageId()
+        if let imageId = options.imageId, let imageID = UInt32(exactly: imageId) {
+            registerKittyLayoutMetadata(
+                imageID: imageID,
+                columns: size.columns,
+                rows: size.rows,
+                widthPx: imageDimensions.widthPx,
+                heightPx: imageDimensions.heightPx
+            )
+        }
         let sequence = encodeKitty(
             base64Data: base64Data,
-            columns: maxWidth,
-            rows: rows,
-            imageId: Int(imageID)
+            columns: size.columns,
+            rows: size.rows,
+            imageId: options.imageId,
+            moveCursor: options.moveCursor
         )
-        let generation = kittyTransmissionGeneration.update { value in
-            value += 1
-            return value
-        }
-        registerKittyLayoutMetadata(
-            metadata: KittyImageMetadata(
-                imageID: imageID,
-                columns: maxWidth,
-                rows: rows,
-                widthPx: imageDimensions.widthPx,
-                heightPx: imageDimensions.heightPx,
-                transmissionGeneration: generation
-            )
-        )
-        return (sequence, rows)
+        return (sequence, size.columns, size.rows, options.imageId)
     case .iterm2:
         let sequence = encodeITerm2(
             base64Data: base64Data,
-            width: String(maxWidth),
+            width: String(size.columns),
             height: "auto",
             name: nil,
             preserveAspectRatio: options.preserveAspectRatio ?? true,
             inline: true
         )
-        return (sequence, rows)
+        return (sequence, size.columns, size.rows, nil)
     }
 }
 

@@ -38,7 +38,8 @@ let package = Package(
         ),
         .testTarget(
             name: "MiniTuiTests",
-            dependencies: ["MiniTui"]
+            dependencies: ["MiniTui"],
+            resources: [.process("Resources")]
         ),
         .executableTarget(
             name: "MiniTuiDemo",

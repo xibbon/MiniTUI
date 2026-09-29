@@ -19,101 +19,128 @@ public enum TerminalColorScheme: String, Sendable, Equatable {
     case light
 }
 
-/// Return whether `data` is a complete OSC 11 background-color response.
-public func isOsc11BackgroundColorResponse(_ data: String) -> Bool {
-    let prefix = "\u{001B}]11;"
-    guard data.hasPrefix(prefix), data.count > prefix.count else { return false }
-    guard data.hasSuffix("\u{0007}") || data.hasSuffix("\u{001B}\\") else { return false }
+/// The default colors and ANSI palette reported by a terminal.
+public struct TerminalColors: Sendable, Equatable {
+    public let foreground: RgbColor?
+    public let background: RgbColor?
+    /// Present only when the terminal reported valid colors for all 16 entries.
+    public let palette: [RgbColor]?
 
-    let terminatorLength = data.hasSuffix("\u{0007}") ? 1 : 2
-    let valueEnd = data.index(data.endIndex, offsetBy: -terminatorLength)
-    let valueStart = data.index(data.startIndex, offsetBy: prefix.count)
-    let value = data[valueStart..<valueEnd]
-    return !value.unicodeScalars.contains { $0.value == 0x07 || $0.value == 0x1B }
+    public init(foreground: RgbColor? = nil, background: RgbColor? = nil, palette: [RgbColor]? = nil) {
+        self.foreground = foreground
+        self.background = background
+        self.palette = palette
+    }
 }
 
-/// Parse the RGB value from a complete OSC 11 background-color response.
-public func parseOsc11BackgroundColor(_ data: String) -> RgbColor? {
-    guard isOsc11BackgroundColorResponse(data) else { return nil }
+/// The target of an OSC color reply.
+public enum OscColorTarget: Sendable, Equatable, Hashable {
+    case foreground
+    case background
+    case palette(Int)
+}
 
-    let prefix = "\u{001B}]11;"
-    let terminatorLength = data.hasSuffix("\u{0007}") ? 1 : 2
-    let valueStart = data.index(data.startIndex, offsetBy: prefix.count)
-    let valueEnd = data.index(data.endIndex, offsetBy: -terminatorLength)
-    let value = String(data[valueStart..<valueEnd]).trimmingCharacters(in: .whitespacesAndNewlines)
+/// Parse one complete OSC 10, 11, or 4 color reply.
+/// A reply with an invalid color has a target and a nil RGB value.
+public func parseOscColorResponse(_ data: String) -> (target: OscColorTarget, rgb: RgbColor?)? {
+    guard let response = parseOscColorResponsePrefix(data), response.length == data.count else { return nil }
+    return (response.target, response.rgb)
+}
 
+/// Parse a color reply at the start of a terminal input batch.
+func parseOscColorResponsePrefix(_ data: String) -> (target: OscColorTarget, rgb: RgbColor?, length: Int)? {
+    let prefix = "\u{001B}]"
+    guard data.hasPrefix(prefix) else { return nil }
+    let bodyStart = data.index(data.startIndex, offsetBy: prefix.count)
+    guard let semicolon = data[bodyStart...].firstIndex(of: ";") else { return nil }
+    let selector = data[bodyStart..<semicolon]
+    let target: OscColorTarget
+    let valueStart: String.Index
+
+    if selector == "10" {
+        target = .foreground
+        valueStart = data.index(after: semicolon)
+    } else if selector == "11" {
+        target = .background
+        valueStart = data.index(after: semicolon)
+    } else if selector == "4" {
+        let indexStart = data.index(after: semicolon)
+        guard let indexEnd = data[indexStart...].firstIndex(of: ";") else { return nil }
+        let digits = data[indexStart..<indexEnd]
+        guard (1...3).contains(digits.count), digits.allSatisfy({ $0.isASCII && $0.isNumber }),
+              let index = Int(digits) else { return nil }
+        target = .palette(index)
+        valueStart = data.index(after: indexEnd)
+    } else {
+        return nil
+    }
+
+    var cursor = valueStart
+    while cursor < data.endIndex {
+        let character = data[cursor]
+        if character == "\u{0007}" {
+            let end = data.index(after: cursor)
+            return (target, parseOscColorValue(String(data[valueStart..<cursor])), data.distance(from: data.startIndex, to: end))
+        }
+        if character == "\u{001B}" {
+            let next = data.index(after: cursor)
+            guard next < data.endIndex, data[next] == "\\" else { return nil }
+            let end = data.index(after: next)
+            return (target, parseOscColorValue(String(data[valueStart..<cursor])), data.distance(from: data.startIndex, to: end))
+        }
+        cursor = data.index(after: cursor)
+    }
+    return nil
+}
+
+private func parseOscColorValue(_ rawValue: String) -> RgbColor? {
+    let value = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
     if value.hasPrefix("#") {
-        let hex = String(value.dropFirst())
-        if hex.count == 6, let r = Int(hex.prefix(2), radix: 16),
-           let g = Int(hex.dropFirst(2).prefix(2), radix: 16),
-           let b = Int(hex.dropFirst(4).prefix(2), radix: 16) {
+        let hex = value.dropFirst()
+        guard hex.allSatisfy({ $0.isASCII && $0.isHexDigit }) else { return nil }
+        if hex.count == 6 {
+            guard let r = Int(hex.prefix(2), radix: 16),
+                  let g = Int(hex.dropFirst(2).prefix(2), radix: 16),
+                  let b = Int(hex.dropFirst(4).prefix(2), radix: 16) else { return nil }
             return RgbColor(r: r, g: g, b: b)
         }
-        if hex.count == 12,
-           let r = parseOscHexChannel(String(hex.prefix(4))),
-           let g = parseOscHexChannel(String(hex.dropFirst(4).prefix(4))),
-           let b = parseOscHexChannel(String(hex.dropFirst(8).prefix(4))) {
+        if hex.count == 12 {
+            guard let r = parseOscHexChannel(String(hex.prefix(4))),
+                  let g = parseOscHexChannel(String(hex.dropFirst(4).prefix(4))),
+                  let b = parseOscHexChannel(String(hex.dropFirst(8).prefix(4))) else { return nil }
             return RgbColor(r: r, g: g, b: b)
         }
         return nil
     }
 
-    let lowercased = value.lowercased()
-    let rgbValue: String
-    if lowercased.hasPrefix("rgb:") {
-        rgbValue = String(value.dropFirst(4))
-    } else if lowercased.hasPrefix("rgba:") {
-        rgbValue = String(value.dropFirst(5))
+    let channelText: Substring
+    if value.lowercased().hasPrefix("rgba:") {
+        channelText = value.dropFirst(5)
+    } else if value.lowercased().hasPrefix("rgb:") {
+        channelText = value.dropFirst(4)
     } else {
-        rgbValue = value
+        channelText = value[...]
     }
-
-    let channels = rgbValue.split(separator: "/", omittingEmptySubsequences: false)
-    guard channels.count == 3,
+    // Upstream reads the first three slash-separated values and ignores later fields.
+    let channels = channelText.split(separator: "/", omittingEmptySubsequences: false)
+    guard channels.count >= 3,
           let r = parseOscHexChannel(String(channels[0])),
           let g = parseOscHexChannel(String(channels[1])),
-          let b = parseOscHexChannel(String(channels[2])) else {
-        return nil
-    }
+          let b = parseOscHexChannel(String(channels[2])) else { return nil }
     return RgbColor(r: r, g: g, b: b)
 }
 
-/// Parse an OSC 11 response at the start of `data`, including malformed color values.
-func parseOsc11BackgroundColorResponsePrefix(_ data: String) -> (color: RgbColor?, length: Int)? {
-    let prefix = "\u{001B}]11;"
-    guard data.hasPrefix(prefix) else { return nil }
-
-    var index = data.index(data.startIndex, offsetBy: prefix.count)
-    while index < data.endIndex {
-        let responseEnd: String.Index?
-        if data[index] == "\u{0007}" {
-            responseEnd = data.index(after: index)
-        } else if data[index] == "\u{001B}" {
-            let nextIndex = data.index(after: index)
-            if nextIndex < data.endIndex, data[nextIndex] == "\\" {
-                responseEnd = data.index(after: nextIndex)
-            } else {
-                responseEnd = nil
-            }
-        } else {
-            responseEnd = nil
-        }
-
-        if let responseEnd {
-            let response = String(data[..<responseEnd])
-            return (parseOsc11BackgroundColor(response), response.count)
-        }
-        index = data.index(after: index)
-    }
-
-    return nil
+private func parseOscHexChannel(_ channel: String) -> Int? {
+    guard !channel.isEmpty,
+          channel.allSatisfy({ $0.isASCII && $0.isHexDigit }),
+          let value = Int(channel, radix: 16) else { return nil }
+    let maximum = pow(16.0, Double(channel.count)) - 1
+    return Int((Double(value) / maximum * 255).rounded())
 }
 
 /// Parse a terminal color-scheme report (`CSI ? 997 ; 1 n` / `CSI ? 997 ; 2 n`).
 public func parseTerminalColorSchemeReport(_ data: String) -> TerminalColorScheme? {
-    guard let report = parseTerminalColorSchemeReportPrefix(data), report.length == data.count else {
-        return nil
-    }
+    guard let report = parseTerminalColorSchemeReportPrefix(data), report.length == data.count else { return nil }
     return report.scheme
 }
 
@@ -144,16 +171,16 @@ func parseTerminalColorSchemeReportPrefix(_ data: String) -> (scheme: TerminalCo
     return (scheme, consumedLength)
 }
 
-private func parseOscHexChannel(_ channel: String) -> Int? {
-    guard !channel.isEmpty,
-          channel.unicodeScalars.allSatisfy({
-              (48...57).contains($0.value) || (65...70).contains($0.value) || (97...102).contains($0.value)
-          }),
-          let value = Int(channel, radix: 16) else {
-        return nil
+/// Parse a primary device attributes reply at the start of an input batch.
+func parseDeviceAttributesResponsePrefix(_ data: String) -> Int? {
+    let prefix = "\u{001B}[?"
+    guard data.hasPrefix(prefix) else { return nil }
+    var cursor = data.index(data.startIndex, offsetBy: prefix.count)
+    while cursor < data.endIndex {
+        let character = data[cursor]
+        if character == "c" { return data.distance(from: data.startIndex, to: data.index(after: cursor)) }
+        guard character == ";" || (character.isASCII && character.isNumber) else { return nil }
+        cursor = data.index(after: cursor)
     }
-
-    let maximum = pow(16.0, Double(channel.count)) - 1
-    guard maximum > 0 else { return nil }
-    return Int((Double(value) / maximum * 255).rounded())
+    return nil
 }

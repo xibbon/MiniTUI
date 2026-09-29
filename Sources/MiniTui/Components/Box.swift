@@ -10,7 +10,7 @@ open class Box: Component {
 
     private var mouseLayout: (width: Int, children: [(component: any Component, height: Int)])?
     private var cachedWidth: Int?
-    private var cachedChildLines: String?
+    private var cachedChildLines: [String]?
     private var cachedBgSample: String?
     private var cachedLines: [String]?
 
@@ -89,9 +89,7 @@ open class Box: Component {
         for child in children {
             let lines = child.render(width: contentWidth)
             mouseChildren.append((child, lines.count))
-            for line in lines {
-                childLines.append(leftPad + line)
-            }
+            childLines.append(contentsOf: lines)
         }
 
         if childLines.isEmpty {
@@ -99,9 +97,7 @@ open class Box: Component {
         }
 
         let bgSample = bgFn?("test")
-        let childLinesKey = childLines.joined(separator: "\n")
-
-        if let cachedLines, cachedWidth == width, cachedChildLines == childLinesKey, cachedBgSample == bgSample {
+        if let cachedLines, cachedWidth == width, cachedChildLines == childLines, cachedBgSample == bgSample {
             return cachedLines
         }
 
@@ -112,7 +108,7 @@ open class Box: Component {
         }
 
         for line in childLines {
-            result.append(applyBg(line, width: width))
+            result.append(applyBg(leftPad + line, width: width))
         }
 
         for _ in 0..<paddingY {
@@ -120,7 +116,7 @@ open class Box: Component {
         }
 
         cachedWidth = width
-        cachedChildLines = childLinesKey
+        cachedChildLines = childLines
         cachedBgSample = bgSample
         cachedLines = result
 
@@ -131,10 +127,7 @@ open class Box: Component {
         let visLen = visibleWidth(line)
         let padNeeded = max(0, width - visLen)
         let padded = line + String(repeating: " ", count: padNeeded)
-        if let bgFn {
-            return applyBackgroundToLine(padded, width: width, bgFn: bgFn)
-        }
-        return padded
+        return bgFn?(padded) ?? padded
     }
 
     private func invalidateCache() {

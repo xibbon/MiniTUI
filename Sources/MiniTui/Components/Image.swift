@@ -19,12 +19,15 @@ public struct ImageOptions {
     public let maxHeightCells: Int?
     /// Optional filename used for fallback text.
     public let filename: String?
+    /// Kitty image ID. The component reuses this ID for updates when supplied.
+    public let imageId: Int?
 
     /// Create image render options.
-    public init(maxWidthCells: Int? = nil, maxHeightCells: Int? = nil, filename: String? = nil) {
+    public init(maxWidthCells: Int? = nil, maxHeightCells: Int? = nil, filename: String? = nil, imageId: Int? = nil) {
         self.maxWidthCells = maxWidthCells
         self.maxHeightCells = maxHeightCells
         self.filename = filename
+        self.imageId = imageId
     }
 }
 
@@ -35,6 +38,7 @@ public final class Image: Component {
     private let theme: ImageTheme
     private let options: ImageOptions
     private let dimensions: ImageDimensions
+    private var imageId: Int?
 
     private var cachedLines: [String]?
     private var cachedWidth: Int?
@@ -52,7 +56,11 @@ public final class Image: Component {
         self.theme = theme
         self.options = options
         self.dimensions = dimensions ?? getImageDimensions(base64Data, mimeType: mimeType) ?? ImageDimensions(widthPx: 800, heightPx: 600)
+        imageId = options.imageId
     }
+
+    /// Return the Kitty image ID, including an ID assigned on the first render.
+    public func getImageId() -> Int? { imageId }
 
     /// Clear cached render state.
     public func invalidate() {
@@ -66,14 +74,35 @@ public final class Image: Component {
             return cachedLines
         }
 
-        let maxWidth = min(width - 2, options.maxWidthCells ?? 60)
+        let maxWidth = max(1, min(width - 2, options.maxWidthCells ?? 60))
+        let cellDimensions = getCellDimensions()
+        let defaultMaxHeight = max(1, Int(ceil(
+            Double(maxWidth * cellDimensions.widthPx) / Double(cellDimensions.heightPx)
+        )))
+        let maxHeight = options.maxHeightCells ?? defaultMaxHeight
         let caps = getCapabilities()
         let lines: [String]
 
         if caps.images != nil {
-            if let result = renderImage(base64Data: base64Data, imageDimensions: dimensions, options: ImageRenderOptions(maxWidthCells: maxWidth)) {
+            if caps.images == .kitty, imageId == nil {
+                imageId = Int(allocateImageId())
+            }
+            if let result = renderImage(
+                base64Data: base64Data,
+                imageDimensions: dimensions,
+                options: ImageRenderOptions(
+                    maxWidthCells: maxWidth,
+                    maxHeightCells: maxHeight,
+                    imageId: imageId,
+                    moveCursor: false
+                )
+            ) {
+                if let resultImageId = result.imageId { imageId = resultImageId }
                 var rendered: [String] = []
-                if result.rows > 1 {
+                if caps.images == .kitty {
+                    rendered.append(result.sequence)
+                    rendered.append(contentsOf: Array(repeating: "", count: max(0, result.rows - 1)))
+                } else if result.rows > 1 {
                     rendered.append(contentsOf: Array(repeating: "", count: result.rows - 1))
                     let moveUp = "\u{001B}[\(result.rows - 1)A"
                     rendered.append(moveUp + result.sequence)

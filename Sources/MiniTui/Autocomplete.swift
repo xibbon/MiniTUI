@@ -1,6 +1,18 @@
 import Foundation
 
 private let pathDelimiters: Set<Character> = [" ", "\t", "\"", "'", "="]
+private let pathWrappers: [Character: Character] = ["(": ")", "[": "]", "{": "}", "<": ">", "`": "`"]
+
+/// Remove an opening wrapper only when its closer is absent from the token.
+private func stripLeadingWrappers(_ token: String) -> String {
+    var result = token[...]
+    while let opener = result.first, let closer = pathWrappers[opener] {
+        let rest = result.dropFirst()
+        if rest.contains(closer) { break }
+        result = rest
+    }
+    return String(result)
+}
 
 private func findLastDelimiter(_ text: String) -> Int {
     guard !text.isEmpty else { return -1 }
@@ -29,9 +41,13 @@ private func findUnclosedQuoteStart(_ text: String) -> Int? {
 }
 
 private func isTokenStart(_ text: String, _ index: Int) -> Bool {
-    if index == 0 { return true }
     let chars = Array(text)
-    return pathDelimiters.contains(chars[index - 1]) || isAutocompleteSeparator(chars[index - 1])
+    var start = index
+    while start > 0, pathWrappers[chars[start - 1]] != nil {
+        start -= 1
+    }
+    if start == 0 { return true }
+    return pathDelimiters.contains(chars[start - 1]) || isAutocompleteSeparator(chars[start - 1])
 }
 
 private func substring(_ text: String, from offset: Int) -> String {
@@ -287,12 +303,15 @@ public final class CombinedAutocompleteProvider: AutocompleteProvider {
                 return (suggestions, argumentText)
             } else {
                 let prefix = String(textBeforeCursor.dropFirst())
-                let filtered = fuzzyFilter(commands, query: prefix) { command in
-                    if !prefix.hasPrefix("skill:"), command.name.hasPrefix("skill:") {
-                        return String(command.name.dropFirst("skill:".count))
-                    }
-                    return command.name
+                let bareNameMatches = fuzzyFilter(commands, query: prefix) { command in
+                    command.name.hasPrefix("skill:") ? String(command.name.dropFirst("skill:".count)) : command.name
                 }
+                let bareNameMatchNames = Set(bareNameMatches.map(\.name))
+                let fullNameOnlyMatches = fuzzyFilter(
+                    commands.filter { $0.name.hasPrefix("skill:") && !bareNameMatchNames.contains($0.name) },
+                    query: prefix
+                ) { $0.name }
+                let filtered = bareNameMatches + fullNameOnlyMatches
                 if filtered.isEmpty { return nil }
                 let items = filtered.map { command in
                     AutocompleteItem(value: command.name, label: command.label, description: command.description)
@@ -398,10 +417,8 @@ public final class CombinedAutocompleteProvider: AutocompleteProvider {
         }
 
         let lastDelimiterIndex = findLastDelimiter(text)
-        let tokenStart = lastDelimiterIndex == -1 ? 0 : lastDelimiterIndex + 1
-        let chars = Array(text)
-        guard tokenStart < chars.count, chars[tokenStart] == "@" else { return nil }
-        return substring(text, from: tokenStart)
+        let token = stripLeadingWrappers(lastDelimiterIndex == -1 ? text : substring(text, from: lastDelimiterIndex + 1))
+        return token.hasPrefix("@") ? token : nil
     }
 
     private func extractPathPrefix(_ text: String, forceExtract: Bool) -> String? {
@@ -410,7 +427,7 @@ public final class CombinedAutocompleteProvider: AutocompleteProvider {
         }
 
         let lastDelimiterIndex = findLastDelimiter(text)
-        let pathPrefix = lastDelimiterIndex == -1 ? text : substring(text, from: lastDelimiterIndex + 1)
+        let pathPrefix = stripLeadingWrappers(lastDelimiterIndex == -1 ? text : substring(text, from: lastDelimiterIndex + 1))
 
         if forceExtract {
             return pathPrefix

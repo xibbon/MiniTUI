@@ -1839,18 +1839,29 @@ open class Editor: SystemCursorAware, KillBufferAware, EditorComponent {
 
     private func isInSymbolCompletionContext(_ textBeforeCursor: String) -> Bool {
         let chars = Array(textBeforeCursor)
+        func startsAtBoundary(_ triggerIndex: Int) -> Bool {
+            var start = triggerIndex
+            while start > 0, "([{<`".contains(chars[start - 1]) {
+                start -= 1
+            }
+            return start == 0 || isAutocompleteSeparator(chars[start - 1])
+        }
+
         var openQuote: Int?
         for index in chars.indices where chars[index] == "\"" {
             openQuote = openQuote == nil ? index : nil
         }
         if let quote = openQuote, quote > 0, chars[quote - 1] == "@" {
             let atIndex = quote - 1
-            if atIndex == 0 || isAutocompleteSeparator(chars[atIndex - 1]) {
+            if startsAtBoundary(atIndex) {
                 return true
             }
         }
 
-        let tokenStart = (chars.lastIndex(where: isAutocompleteSeparator) ?? -1) + 1
+        var tokenStart = (chars.lastIndex(where: isAutocompleteSeparator) ?? -1) + 1
+        while tokenStart < chars.count, "([{<`".contains(chars[tokenStart]) {
+            tokenStart += 1
+        }
         guard tokenStart < chars.count else { return false }
         if chars[tokenStart] == "@", tokenStart + 1 < chars.count, chars[tokenStart + 1] == "\"" {
             return false

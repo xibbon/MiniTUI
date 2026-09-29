@@ -89,7 +89,7 @@ public struct SettingsListOptions: Sendable {
 }
 
 /// List UI for editing and selecting setting values.
-public final class SettingsList: SystemCursorAware {
+public final class SettingsList: SystemCursorAware, MouseFocusOwner {
     private var items: [SettingItem]
     private var filteredItems: [SettingItem]
     private let theme: SettingsListTheme

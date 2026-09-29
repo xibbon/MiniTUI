@@ -1,4 +1,9 @@
 import Foundation
+#if canImport(os)
+import os
+#else
+import Synchronization
+#endif
 
 private let ansiEscape = "\u{001B}"
 
@@ -10,28 +15,32 @@ public func normalizeTerminalOutput(_ str: String) -> String {
     guard str.contains("\t") else { return str }
 
     var result = ""
-    var index = 0
-    let length = str.count
-    while index < length {
-        if let ansi = extractAnsiCode(str, at: index) {
-            result += ansi.code
-            index += ansi.length
+    var index = str.startIndex
+    while index < str.endIndex {
+        if let range = ansiCodeRange(in: str, at: index) {
+            result += str[range]
+            index = range.upperBound
             continue
         }
 
-        let character = str[str.index(at: index)]
+        let character = str[index]
         result += character == "\t" ? "   " : String(character)
-        index += 1
+        index = str.index(after: index)
     }
     return result
 }
 
-/// SAFETY: cache dictionaries and eviction order are accessed only while
-/// holding `lock`.
-private final class VisibleWidthCache: @unchecked Sendable {
-    private let lock = NSLock()
-    private var values: [String: Int] = [:]
-    private var order: [String] = []
+private struct VisibleWidthCacheState: Sendable {
+    var values: [String: Int] = [:]
+    var order: [String] = []
+}
+
+private final class VisibleWidthCache: Sendable {
+    #if canImport(os)
+    private let storage = OSAllocatedUnfairLock(initialState: VisibleWidthCacheState())
+    #else
+    private let storage = Mutex(VisibleWidthCacheState())
+    #endif
     private let maxSize: Int
 
     init(maxSize: Int) {
@@ -39,25 +48,22 @@ private final class VisibleWidthCache: @unchecked Sendable {
     }
 
     func get(_ key: String) -> Int? {
-        lock.lock()
-        defer { lock.unlock() }
-        return values[key]
+        storage.withLock { $0.values[key] }
     }
 
     func set(_ key: String, value: Int) {
-        lock.lock()
-        if values[key] != nil {
-            values[key] = value
-            lock.unlock()
-            return
+        storage.withLock { state in
+            if state.values[key] != nil {
+                state.values[key] = value
+                return
+            }
+            state.values[key] = value
+            state.order.append(key)
+            if state.order.count > maxSize, let oldest = state.order.first {
+                state.order.removeFirst()
+                state.values.removeValue(forKey: oldest)
+            }
         }
-        values[key] = value
-        order.append(key)
-        if order.count > maxSize, let oldest = order.first {
-            order.removeFirst()
-            values.removeValue(forKey: oldest)
-        }
-        lock.unlock()
     }
 }
 
@@ -65,18 +71,29 @@ private final class VisibleWidthCache: @unchecked Sendable {
 public func visibleWidth(_ str: String) -> Int {
     guard !str.isEmpty else { return 0 }
 
-    var asciiCount = 0
-    for scalar in str.unicodeScalars {
-        let value = scalar.value
-        if value < 0x20 || value > 0x7E {
-            asciiCount = -1
+    // Styled ASCII lines use this path without a copy or grapheme scan.
+    var asciiWidth = 0
+    var asciiIndex = str.startIndex
+    var isAscii = true
+    while asciiIndex < str.endIndex {
+        let character = str[asciiIndex]
+        if character == "\u{001B}", let range = ansiCodeRange(in: str, at: asciiIndex) {
+            asciiIndex = range.upperBound
+            continue
+        }
+        if character == "\t" {
+            asciiWidth += 3
+        } else if let scalar = character.unicodeScalars.first,
+                  character.unicodeScalars.count == 1,
+                  scalar.value >= 0x20, scalar.value <= 0x7E {
+            asciiWidth += 1
+        } else {
+            isAscii = false
             break
         }
-        asciiCount += 1
+        asciiIndex = str.index(after: asciiIndex)
     }
-    if asciiCount >= 0 {
-        return asciiCount
-    }
+    if isAscii { return asciiWidth }
 
     if let cached = visibleWidthCache.get(str) {
         return cached
@@ -105,14 +122,14 @@ public func stripTerminalSequences(_ str: String) -> String {
     guard str.contains(ansiEscape) else { return str }
 
     var result = ""
-    var index = 0
-    while index < str.count {
-        if let ansi = extractAnsiCode(str, at: index) {
-            index += ansi.length
+    var index = str.startIndex
+    while index < str.endIndex {
+        if let range = ansiCodeRange(in: str, at: index) {
+            index = range.upperBound
             continue
         }
-        result.append(str[str.index(at: index)])
-        index += 1
+        result.append(str[index])
+        index = str.index(after: index)
     }
     return result
 }
@@ -871,59 +888,42 @@ private func trimTrailingSpaces(_ text: String) -> String {
 
 /// Extract one ANSI, OSC, or APC escape sequence at a character offset.
 public func extractAnsiCode(_ text: String, at index: Int) -> (code: String, length: Int)? {
-    guard index >= 0, index < text.count else {
-        return nil
-    }
+    guard index >= 0, index < text.count else { return nil }
+    let start = text.index(text.startIndex, offsetBy: index)
+    guard let range = ansiCodeRange(in: text, at: start) else { return nil }
+    return (String(text[range]), text.distance(from: range.lowerBound, to: range.upperBound))
+}
 
-    let startIndex = text.index(at: index)
-    guard startIndex < text.endIndex, text[startIndex] == "\u{001B}" else {
-        return nil
-    }
+/// Scan from a native index so a caller can advance through long strings in linear time.
+private func ansiCodeRange(in text: String, at start: String.Index) -> Range<String.Index>? {
+    guard start < text.endIndex, text[start] == "\u{001B}" else { return nil }
+    let second = text.index(after: start)
+    guard second < text.endIndex else { return nil }
+    let introducer = text[second]
+    var cursor = text.index(after: second)
 
-    let nextOffset = index + 1
-    guard nextOffset < text.count else {
-        return nil
-    }
-
-    let nextIndex = text.index(at: nextOffset)
-    let next = text[nextIndex]
-
-    if next == "[" {
-        var j = nextOffset + 1
-        while j < text.count {
-            let ch = text[text.index(at: j)]
-            if ch == "m" || ch == "G" || ch == "K" || ch == "H" || ch == "J" {
-                let endOffset = j + 1
-                let endIndex = text.index(at: endOffset)
-                return (String(text[startIndex..<endIndex]), endOffset - index)
+    if introducer == "[" {
+        while cursor < text.endIndex {
+            if "mGKHJ".contains(text[cursor]) {
+                return start..<text.index(after: cursor)
             }
-            j += 1
+            cursor = text.index(after: cursor)
         }
         return nil
     }
-
-    if next == "]" || next == "_" {
-        var j = nextOffset + 1
-        while j < text.count {
-            let ch = text[text.index(at: j)]
-            if ch == "\u{0007}" {
-                let endOffset = j + 1
-                let endIndex = text.index(at: endOffset)
-                return (String(text[startIndex..<endIndex]), endOffset - index)
-            }
-            if ch == "\u{001B}" {
-                let escNext = j + 1
-                if escNext < text.count, text[text.index(at: escNext)] == "\\" {
-                    let endOffset = escNext + 1
-                    let endIndex = text.index(at: endOffset)
-                    return (String(text[startIndex..<endIndex]), endOffset - index)
+    if introducer == "]" || introducer == "_" {
+        while cursor < text.endIndex {
+            let character = text[cursor]
+            if character == "\u{0007}" { return start..<text.index(after: cursor) }
+            if character == "\u{001B}" {
+                let next = text.index(after: cursor)
+                if next < text.endIndex, text[next] == "\\" {
+                    return start..<text.index(after: next)
                 }
             }
-            j += 1
+            cursor = text.index(after: cursor)
         }
-        return nil
     }
-
     return nil
 }
 
@@ -935,14 +935,13 @@ public func getActiveBackgroundAnsi(_ text: String) -> String {
 }
 
 private func updateTrackerFromText(_ text: String, tracker: AnsiCodeTracker) {
-    var index = 0
-    let length = text.count
-    while index < length {
-        if let ansiResult = extractAnsiCode(text, at: index) {
-            tracker.process(ansiResult.code)
-            index += ansiResult.length
+    var index = text.startIndex
+    while index < text.endIndex {
+        if let range = ansiCodeRange(in: text, at: index) {
+            tracker.process(String(text[range]))
+            index = range.upperBound
         } else {
-            index += 1
+            index = text.index(after: index)
         }
     }
 }
@@ -953,16 +952,15 @@ private func splitIntoTokensWithAnsi(_ text: String) -> [String] {
     var pendingAnsi = ""
     var inWhitespace = false
 
-    var index = 0
-    let length = text.count
-    while index < length {
-        if let ansiResult = extractAnsiCode(text, at: index) {
-            pendingAnsi += ansiResult.code
-            index += ansiResult.length
+    var index = text.startIndex
+    while index < text.endIndex {
+        if let range = ansiCodeRange(in: text, at: index) {
+            pendingAnsi += text[range]
+            index = range.upperBound
             continue
         }
 
-        let char = text[text.index(at: index)]
+        let char = text[index]
         let charIsSpace = char == " "
 
         if charIsSpace != inWhitespace, !current.isEmpty {
@@ -977,7 +975,7 @@ private func splitIntoTokensWithAnsi(_ text: String) -> [String] {
 
         inWhitespace = charIsSpace
         current.append(char)
-        index += 1
+        index = text.index(after: index)
     }
 
     if !pendingAnsi.isEmpty {

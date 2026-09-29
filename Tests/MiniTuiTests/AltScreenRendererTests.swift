@@ -373,7 +373,8 @@ struct AltScreenRendererTests {
         guard let image = renderImage(
             base64Data: "AAAA",
             imageDimensions: ImageDimensions(widthPx: 9, heightPx: 9),
-            options: ImageRenderOptions(maxWidthCells: 4)
+            // b8712457d: renderImage registers Kitty metadata only for a caller-owned ID.
+            options: ImageRenderOptions(maxWidthCells: 4, imageId: 8938)
         ) else {
             Issue.record("Expected a Kitty image")
             return

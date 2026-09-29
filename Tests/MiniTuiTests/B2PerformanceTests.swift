@@ -55,6 +55,24 @@ private final class B2BenchmarkEditor: Component {
 struct B2PerformanceTests {
     private var full: Bool { ProcessInfo.processInfo.environment["MINITUI_FULL_BENCHMARKS"] == "1" }
 
+    @Test("Styled ASCII and Unicode width scan benchmark")
+    func styledWidthScan() {
+        let styled = String(repeating: "\u{001B}[36mstatus\u{001B}[39m plain text ", count: full ? 2_000 : 100)
+        let unicode = String(repeating: "\u{001B}[36m界🙂\u{001B}[39m text ", count: full ? 2_000 : 100)
+        let frames = full ? 100 : 5
+        let elapsed = ContinuousClock().measure {
+            for _ in 0..<frames {
+                _ = visibleWidth(styled)
+                _ = visibleWidth(unicode)
+                _ = stripTerminalSequences(styled)
+                _ = getActiveBackgroundAnsi(styled)
+            }
+        }
+        #expect(visibleWidth(styled) == 18 * (full ? 2_000 : 100))
+        #expect(visibleWidth(unicode) == 10 * (full ? 2_000 : 100))
+        report("styled-width", frames: frames, elapsed: elapsed)
+    }
+
     private func report(_ name: String, frames: Int, elapsed: Duration, bytes: Int? = nil) {
         let parts = elapsed.components
         let milliseconds = Double(parts.seconds) * 1_000 + Double(parts.attoseconds) / 1e15

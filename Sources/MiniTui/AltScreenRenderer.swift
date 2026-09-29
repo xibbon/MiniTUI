@@ -54,7 +54,7 @@ public enum AltScreenMouseMotion: Sendable, Equatable {
 
 /// Configuration for an alternate-screen renderer.
 public struct AltScreenRendererOptions {
-    public var wheelScrollLines: Int
+    public var wheelScrollLines: WheelScrollLines
     public var mouse: Bool
     public var mouseMotion: AltScreenMouseMotion
     public var openURL: ((String) -> Void)?
@@ -67,7 +67,7 @@ public struct AltScreenRendererOptions {
     public var copySelection: (@MainActor (String) async -> ClipboardCopyResult)?
 
     public init(
-        wheelScrollLines: Int = 1,
+        wheelScrollLines: WheelScrollLines = .lines(1),
         mouse: Bool = true,
         mouseMotion: AltScreenMouseMotion = .auto,
         openURL: ((String) -> Void)? = nil,
@@ -79,7 +79,7 @@ public struct AltScreenRendererOptions {
         copyOnSelect: Bool = true,
         copySelection: (@MainActor (String) async -> ClipboardCopyResult)? = nil
     ) {
-        self.wheelScrollLines = max(1, wheelScrollLines)
+        self.wheelScrollLines = wheelScrollLines
         self.mouse = mouse
         self.mouseMotion = mouseMotion
         self.openURL = openURL
@@ -309,10 +309,12 @@ public final class AltScreenRenderer: TuiRenderer, TuiLayoutRenderer, TuiInputRe
     private var mousePressPoint: (x: Int, y: Int)?
     private var mousePressMoved = false
     private var lastComponentClick: (timestamp: Double, count: Int, component: any Component, x: Int, y: Int)?
+    private let wheelScroll: WheelScrollAccelerator
 
     public init(terminal: Terminal, options: AltScreenRendererOptions = AltScreenRendererOptions()) {
         self.terminal = terminal
         self.options = options
+        wheelScroll = WheelScrollAccelerator(lines: options.wheelScrollLines)
     }
 
     func attach(
@@ -335,6 +337,11 @@ public final class AltScreenRenderer: TuiRenderer, TuiLayoutRenderer, TuiInputRe
 
     public var viewportTop: Int { primaryScrollView.scrollTop }
     public var isFollowingOutput: Bool { primaryScrollView.isFollowingEnd }
+
+    public func setWheelScrollLines(_ lines: WheelScrollLines) {
+        options.wheelScrollLines = lines
+        wheelScroll.setLines(lines)
+    }
 
     public func getCopyOnSelect() -> Bool { options.copyOnSelect }
     public func setCopyOnSelect(_ enabled: Bool) { options.copyOnSelect = enabled }
@@ -598,15 +605,17 @@ public final class AltScreenRenderer: TuiRenderer, TuiLayoutRenderer, TuiInputRe
         if data == focusIn { return true }
 
         if let wheel = parseWheelEvent(data) {
+            let lines = wheelScroll.next(direction: wheel.direction, now: ProcessInfo.processInfo.systemUptime * 1000)
+            let wheelDelta = wheel.direction * (wheel.button & 8 != 0 ? lines * altWheelScrollMultiplier : lines)
             let event = createMouseEvent(.wheel, rawButton: wheel.button, x: wheel.x, y: wheel.y,
-                wheelDelta: wheel.direction * wheelScrollLines(button: wheel.button))
+                wheelDelta: wheelDelta)
             let overlay = dispatchMouseToOverlay(event)
             if let result = overlay.result ?? (overlay.hit ? nil : dispatchMouseToLayout(event)) {
                 if applyMouseDispatchResult(event, result) { requestRender() }
                 return true
             }
             if shouldDeferViewportInputToOverlay { return false }
-            routeWheel(direction: wheel.direction, x: wheel.x, y: wheel.y, button: wheel.button)
+            routeWheel(delta: wheelDelta, x: wheel.x, y: wheel.y)
             return true
         }
         if let event = parseSgrMouseEvent(data) {
@@ -1068,12 +1077,8 @@ public final class AltScreenRenderer: TuiRenderer, TuiLayoutRenderer, TuiInputRe
         return nil
     }
 
-    private func wheelScrollLines(button: Int) -> Int {
-        button & 8 != 0 ? options.wheelScrollLines * altWheelScrollMultiplier : options.wheelScrollLines
-    }
-
-    private func routeWheel(direction: Int, x: Int, y: Int, button: Int) {
-        var remaining = direction * wheelScrollLines(button: button)
+    private func routeWheel(delta: Int, x: Int, y: Int) {
+        var remaining = delta
         var seen: Set<ObjectIdentifier> = []
         if let currentLayout {
             for scrollView in getScrollViewsAt(frame: currentLayout, x: x, y: y) {

@@ -170,7 +170,7 @@ public final class TUI: Container {
     private var inputBuffer = ""
     private var cellSizeQueryPending = false
     private var terminalColorSchemeListeners: [UUID: (TerminalColorScheme) -> Void] = [:]
-    private var terminalBackgroundColorQueries: [UUID: TerminalBackgroundColorQuery] = [:]
+    private var pendingTerminalColorQueries: [TerminalColorQuery] = []
     private var terminalColorSchemeNotificationsEnabled = false
     private var clearOnShrink = false
     /// v0.70.5: rate-limit renders to ~60Hz so streaming token bursts don't redraw faster
@@ -186,33 +186,36 @@ public final class TUI: Container {
     /// v0.69.0 + v0.70.0: keep-alive timer for OSC 9;4 progress indicator.
     private var progressTimer: DispatchSourceTimer?
 
-    private final class TerminalColorSchemeQuery {
-        var settled = false
-        var unsubscribe: (() -> Void)?
-        var continuation: CheckedContinuation<TerminalColorScheme?, Never>?
+    @MainActor private final class TerminalColorQuery {
+        var foreground: RgbColor?
+        var background: RgbColor?
+        var palette: [RgbColor?] = Array(repeating: nil, count: 16)
+        var replied: Set<OscColorTarget> = []
+        var continuation: CheckedContinuation<TerminalColors, Never>?
+        var onLateReply: (@MainActor (TerminalColors) -> Void)?
+        var timeoutTask: Task<Void, Never>?
+        var complete = false
 
-        func settle(_ scheme: TerminalColorScheme?) {
-            guard !settled else { return }
-            settled = true
-            unsubscribe?()
-            unsubscribe = nil
-            continuation?.resume(returning: scheme)
-            continuation = nil
+        var result: TerminalColors {
+            TerminalColors(
+                foreground: foreground,
+                background: background,
+                palette: palette.allSatisfy { $0 != nil } ? palette.compactMap { $0 } : nil
+            )
         }
-    }
 
-    private final class TerminalBackgroundColorQuery {
-        var settled = false
-        var continuation: CheckedContinuation<RgbColor?, Never>?
-        var removeFromPendingQueries: (() -> Void)?
-
-        func settle(_ color: RgbColor?) {
-            guard !settled else { return }
-            settled = true
-            removeFromPendingQueries?()
-            removeFromPendingQueries = nil
-            continuation?.resume(returning: color)
-            continuation = nil
+        func finish() {
+            guard !complete else { return }
+            complete = true
+            timeoutTask?.cancel()
+            timeoutTask = nil
+            if let continuation {
+                self.continuation = nil
+                continuation.resume(returning: result)
+            } else {
+                onLateReply?(result)
+            }
+            onLateReply = nil
         }
     }
 
@@ -582,15 +585,15 @@ public final class TUI: Container {
         var input = data
 
         while !input.isEmpty {
-            let afterColorScheme = consumeTerminalColorSchemeReportPrefix(input)
-            if afterColorScheme.count != input.count {
-                input = afterColorScheme
+            let afterColorResponse = consumeTerminalColorResponsePrefix(input)
+            if afterColorResponse.count != input.count {
+                input = afterColorResponse
                 continue
             }
 
-            let afterBackgroundColor = consumeTerminalBackgroundColorResponsePrefix(input)
-            if afterBackgroundColor.count != input.count {
-                input = afterBackgroundColor
+            let afterColorScheme = consumeTerminalColorSchemeReportPrefix(input)
+            if afterColorScheme.count != input.count {
+                input = afterColorScheme
                 continue
             }
             break
@@ -681,42 +684,28 @@ public final class TUI: Container {
         }
     }
 
-    /// Query the terminal's preferred color scheme. Unsupported terminals resolve to `nil`
-    /// after `timeoutMs` milliseconds.
-    public func queryTerminalColorScheme(timeoutMs: Int) async -> TerminalColorScheme? {
-        let query = TerminalColorSchemeQuery()
+    /// Query the default foreground, background, and ANSI colors 0 through 15.
+    /// The terminal's DA1 reply ends the query. A timeout returns the colors received so far.
+    /// If more replies arrive, `onLateReply` receives the completed result.
+    public func queryTerminalColors(
+        timeoutMs: Int,
+        onLateReply: (@MainActor (TerminalColors) -> Void)? = nil
+    ) async -> TerminalColors {
+        let query = TerminalColorQuery()
+        query.onLateReply = onLateReply
         return await withCheckedContinuation { continuation in
             query.continuation = continuation
-            query.unsubscribe = onTerminalColorSchemeChange { scheme in
-                query.settle(scheme)
-            }
-            let nanoseconds = UInt64(max(0, timeoutMs)) * 1_000_000
-            Task { @MainActor [weak query] in
+            let milliseconds = max(0, timeoutMs)
+            let nanoseconds = UInt64(milliseconds) * 1_000_000
+            query.timeoutTask = Task { @MainActor in
                 try? await Task.sleep(nanoseconds: nanoseconds)
-                query?.settle(nil)
+                guard !Task.isCancelled, let continuation = query.continuation else { return }
+                query.continuation = nil
+                continuation.resume(returning: query.result)
             }
-            terminal.write("\u{001B}[?996n")
-        }
-    }
-
-    /// Query the terminal's background color. Unsupported terminals resolve to `nil`
-    /// after `timeoutMs` milliseconds.
-    public func queryTerminalBackgroundColor(timeoutMs: Int) async -> RgbColor? {
-        let id = UUID()
-        let query = TerminalBackgroundColorQuery()
-        terminalBackgroundColorQueries[id] = query
-        query.removeFromPendingQueries = { [weak self] in
-            self?.terminalBackgroundColorQueries[id] = nil
-        }
-
-        return await withCheckedContinuation { continuation in
-            query.continuation = continuation
-            let nanoseconds = UInt64(max(0, timeoutMs)) * 1_000_000
-            Task { @MainActor in
-                try? await Task.sleep(nanoseconds: nanoseconds)
-                query.settle(nil)
-            }
-            terminal.write("\u{001B}]11;?\u{0007}")
+            pendingTerminalColorQueries.append(query)
+            let paletteRequests = (0..<16).map { "\u{001B}]4;\($0);?\u{0007}" }.joined()
+            terminal.write("\u{001B}]10;?\u{0007}\u{001B}]11;?\u{0007}" + paletteRequests + "\u{001B}[c")
         }
     }
 
@@ -729,14 +718,24 @@ public final class TUI: Container {
         return data.substring(from: report.length, length: data.count - report.length)
     }
 
-    private func consumeTerminalBackgroundColorResponsePrefix(_ data: String) -> String {
-        guard !terminalBackgroundColorQueries.isEmpty,
-              let response = parseOsc11BackgroundColorResponsePrefix(data) else {
-            return data
+    private func consumeTerminalColorResponsePrefix(_ data: String) -> String {
+        guard let query = pendingTerminalColorQueries.first else { return data }
+        if let length = parseDeviceAttributesResponsePrefix(data) {
+            pendingTerminalColorQueries.removeFirst()
+            query.finish()
+            return data.substring(from: length, length: data.count - length)
         }
-        let queries = Array(terminalBackgroundColorQueries.values)
-        for query in queries {
-            query.settle(response.color)
+        guard let response = parseOscColorResponsePrefix(data) else { return data }
+        if !query.complete, query.replied.insert(response.target).inserted {
+            switch response.target {
+            case .foreground:
+                query.foreground = response.rgb
+            case .background:
+                query.background = response.rgb
+            case .palette(let index):
+                if index < 16 { query.palette[index] = response.rgb }
+            }
+            if query.replied.count == 18 { query.finish() }
         }
         return data.substring(from: response.length, length: data.count - response.length)
     }
@@ -1075,6 +1074,7 @@ public final class TUI: Container {
         )
     }
     private func updateCursorMode() {
+        guard !stopped else { return }
         let overlayActive = hasOverlay()
         let shouldShowSystemCursor = !overlayActive && useSystemCursor && focusedComponent is SystemCursorAware
         if shouldShowSystemCursor {
