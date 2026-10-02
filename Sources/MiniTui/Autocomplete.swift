@@ -3,6 +3,19 @@ import Foundation
 private let pathDelimiters: Set<Character> = [" ", "\t", "\"", "'", "="]
 private let pathWrappers: [Character: Character] = ["(": ")", "[": "]", "{": "}", "<": ">", "`": "`"]
 
+/// Remove leading whitespace with the same scalar set as JavaScript trimStart().
+private func trimCommandStart(_ text: String) -> String {
+    String(text.unicodeScalars.drop(while: { scalar in
+        switch scalar.value {
+        case 0x0009...0x000D, 0x0020, 0x00A0, 0x1680, 0x2000...0x200A,
+             0x2028, 0x2029, 0x202F, 0x205F, 0x3000, 0xFEFF:
+            true
+        default:
+            false
+        }
+    }))
+}
+
 /// Remove an opening wrapper only when its closer is absent from the token.
 private func stripLeadingWrappers(_ token: String) -> String {
     var result = token[...]
@@ -290,10 +303,11 @@ public final class CombinedAutocompleteProvider: AutocompleteProvider {
             return (suggestions, atPrefix)
         }
 
-        if textBeforeCursor.hasPrefix("/") {
-            if let spaceIndex = textBeforeCursor.firstIndex(of: " ") {
-                let commandName = String(textBeforeCursor[textBeforeCursor.index(after: textBeforeCursor.startIndex)..<spaceIndex])
-                let argumentText = String(textBeforeCursor[textBeforeCursor.index(after: spaceIndex)...])
+        let commandText = trimCommandStart(textBeforeCursor)
+        if commandText.hasPrefix("/") {
+            if let spaceIndex = commandText.firstIndex(of: " ") {
+                let commandName = String(commandText[commandText.index(after: commandText.startIndex)..<spaceIndex])
+                let argumentText = String(commandText[commandText.index(after: spaceIndex)...])
                 guard let command = commands.first(where: { $0.name == commandName }), let completions = command.argumentCompletions else {
                     return nil
                 }
@@ -302,7 +316,7 @@ public final class CombinedAutocompleteProvider: AutocompleteProvider {
                 }
                 return (suggestions, argumentText)
             } else {
-                let prefix = String(textBeforeCursor.dropFirst())
+                let prefix = String(commandText.dropFirst())
                 let bareNameMatches = fuzzyFilter(commands, query: prefix) { command in
                     command.name.hasPrefix("skill:") ? String(command.name.dropFirst("skill:".count)) : command.name
                 }
@@ -316,7 +330,7 @@ public final class CombinedAutocompleteProvider: AutocompleteProvider {
                 let items = filtered.map { command in
                     AutocompleteItem(value: command.name, label: command.label, description: command.description)
                 }
-                return (items, textBeforeCursor)
+                return (items, commandText)
             }
         }
 
@@ -347,7 +361,7 @@ public final class CombinedAutocompleteProvider: AutocompleteProvider {
             ? String(afterCursor.dropFirst())
             : afterCursor
 
-        let isSlashCommand = prefix.hasPrefix("/") && beforePrefix.trimmingCharacters(in: .whitespaces).isEmpty && !prefix.dropFirst().contains("/")
+        let isSlashCommand = prefix.hasPrefix("/") && trimCommandStart(beforePrefix).isEmpty && !prefix.dropFirst().contains("/")
         if isSlashCommand {
             let newLine = "\(beforePrefix)/\(item.value) \(adjustedAfterCursor)"
             var newLines = lines

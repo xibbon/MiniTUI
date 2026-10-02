@@ -338,6 +338,9 @@ public final class AltScreenRenderer: TuiRenderer, TuiLayoutRenderer, TuiInputRe
     public var viewportTop: Int { primaryScrollView.scrollTop }
     public var isFollowingOutput: Bool { primaryScrollView.isFollowingEnd }
 
+    /// Return a copy of the lines from the last rendered frame.
+    public func getScreenLines() -> [String] { previousScreen }
+
     public func setWheelScrollLines(_ lines: WheelScrollLines) {
         options.wheelScrollLines = lines
         wheelScroll.setLines(lines)

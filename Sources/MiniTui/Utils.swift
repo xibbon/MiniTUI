@@ -756,7 +756,9 @@ public func sliceWithWidth(
     while i < lineLength {
         if let ansi = extractAnsiCode(line, at: i) {
             if currentCol >= startCol && currentCol < endCol {
-                result += ansi.code
+                // Keep codes before the range ahead of codes at the boundary.
+                result += pendingAnsi + ansi.code
+                pendingAnsi = ""
             } else if currentCol < startCol {
                 pendingAnsi += ansi.code
             }

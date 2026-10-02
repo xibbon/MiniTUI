@@ -56,6 +56,15 @@ public extension Terminal {
     func setProgress(_ active: Bool) {}
 }
 
+/// Return true for an Apple Terminal session on macOS.
+public func isAppleTerminalSession(environment: [String: String] = ProcessInfo.processInfo.environment) -> Bool {
+    #if os(macOS)
+    return environment["TERM_PROGRAM"] == "Apple_Terminal"
+    #else
+    return false
+    #endif
+}
+
 /// Terminal backed by stdin/stdout with raw mode enabled.
 public final class ProcessTerminal: Terminal {
     private var inputHandler: ((String) -> Void)?

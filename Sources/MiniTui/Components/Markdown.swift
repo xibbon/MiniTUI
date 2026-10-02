@@ -146,8 +146,6 @@ public final class Markdown: Component {
     private var cachedTransformedText: String?
     private var cachedWidth: Int?
     private var cachedLines: [String]?
-    /// Parsing depends on the normalized source, not the render width or theme.
-    private var cachedDocument: (source: String, document: Document)?
 
     /// Create a Markdown component.
     public init(
@@ -211,13 +209,7 @@ public final class Markdown: Component {
             escapeSingleTildeDelimiters(transformedText.replacingOccurrences(of: "\t", with: "   "))
         )
         sourceText = normalizedText
-        let document: Document
-        if let cachedDocument, cachedDocument.source == normalizedText {
-            document = cachedDocument.document
-        } else {
-            document = Document(parsing: normalizedText)
-            cachedDocument = (normalizedText, document)
-        }
+        let document = MarkdownDocumentCache.shared.document(for: normalizedText).document
         let blocks = Array(document.children)
 
         let blockOutputs: [(lines: [String], isBlank: Bool)] = blocks.map { block in
