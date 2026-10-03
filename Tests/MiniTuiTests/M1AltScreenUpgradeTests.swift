@@ -55,6 +55,132 @@ private func m1Frame(_ renderer: AltScreenRenderer, root: Component, width: Int,
 @Suite("M1 alternate screen upgrades", .serialized)
 @MainActor
 struct M1AltScreenUpgradeTests {
+    private func withImageEnvironment(
+        pane: String? = "1", term: String = "xterm-256color", imageProtocol: ImageProtocol = .kitty,
+        _ body: () throws -> Void
+    ) rethrows {
+        let savedProgram = getenv("TERM_PROGRAM").map { String(cString: $0) }
+        let savedTerm = getenv("TERM").map { String(cString: $0) }
+        let savedPane = getenv("WEZTERM_PANE").map { String(cString: $0) }
+        defer {
+            if let savedProgram { setenv("TERM_PROGRAM", savedProgram, 1) } else { unsetenv("TERM_PROGRAM") }
+            if let savedTerm { setenv("TERM", savedTerm, 1) } else { unsetenv("TERM") }
+            if let savedPane { setenv("WEZTERM_PANE", savedPane, 1) } else { unsetenv("WEZTERM_PANE") }
+            setCapabilities(nil)
+        }
+        setenv("TERM_PROGRAM", "Other", 1)
+        setenv("TERM", term, 1)
+        if let pane { setenv("WEZTERM_PANE", pane, 1) } else { unsetenv("WEZTERM_PANE") }
+        setCapabilities(.init(images: imageProtocol, trueColor: true, hyperlinks: true))
+        try body()
+    }
+
+    private func imageFrame(_ lines: [String]) -> TuiRenderFrame {
+        .init(lines: lines, cursor: nil, width: 20, height: lines.count,
+            clearOnShrink: false, hasOverlayEntries: false, hasVisibleOverlay: false, useSystemCursor: false)
+    }
+
+    @Test("redraws WezTerm Kitty images after writes to covered rows")
+    func coveredRowRedraw() throws {
+        try withImageEnvironment {
+            // #10319: a text write below an unchanged image anchor can erase image cells.
+            let terminal = M1RecordingTerminal(columns: 20, rows: 4)
+            let imageID: UInt32 = 10319
+            let imageLine = encodeKitty(base64Data: "AAAA", columns: 2, rows: 3,
+                imageId: Int(imageID), moveCursor: false)
+            registerKittyImageMetadata(imageID: imageID, columns: 2, rows: 3, widthPx: 100, heightPx: 100)
+            let renderer = AltScreenRenderer(terminal: terminal)
+            renderer.start()
+            defer { renderer.stop(preserveScreen: true) }
+            renderer.present(imageFrame([imageLine, "", "", "after"]))
+            renderer.present(imageFrame([imageLine, "changed", "", "after"]))
+            let output = try #require(terminal.writes.last)
+            #expect(output.contains("\u{1B}_Ga=d,d=a,q=2\u{1B}\\"))
+            let placement = try #require(output.range(of: "\u{1B}_Ga=p,q=2"))
+            let changed = try #require(output.range(of: "changed"))
+            #expect(placement.lowerBound > changed.lowerBound)
+            #expect(!output.contains("\u{1B}_Ga=T"))
+            for row in 1...4 {
+                let clear = try #require(output.range(of: "\u{1B}[\(row);1H\u{1B}[2K"))
+                #expect(clear.lowerBound < changed.lowerBound)
+            }
+        }
+    }
+
+    @Test("WezTerm writes all text before all images and reuses every uploaded image")
+    func allImagesLast() throws {
+        try withImageEnvironment {
+            let terminal = M1RecordingTerminal(columns: 20, rows: 5)
+            registerKittyImageMetadata(imageID: 103_191, columns: 2, rows: 3, widthPx: 20, heightPx: 30)
+            registerKittyImageMetadata(imageID: 103_192, columns: 2, rows: 1, widthPx: 20, heightPx: 10)
+            let first = encodeKitty(base64Data: "AAAA", columns: 2, rows: 3, imageId: 103_191, moveCursor: false)
+            let second = encodeKitty(base64Data: "BBBB", columns: 2, rows: 1, imageId: 103_192, moveCursor: false)
+            let renderer = AltScreenRenderer(terminal: terminal)
+            renderer.start()
+            defer { renderer.stop(preserveScreen: true) }
+            renderer.present(imageFrame([first, "covered", "", second, "after"]))
+            let initial = try #require(terminal.writes.last)
+            let lastText = try #require(initial.range(of: "after"))
+            let firstImage = try #require(initial.range(of: first))
+            #expect(lastText.lowerBound < firstImage.lowerBound)
+            renderer.present(imageFrame([first, "changed", "", second, "after"]))
+            let output = try #require(terminal.writes.last)
+            let text = try #require(output.range(of: "after"))
+            let placement = try #require(output.range(of: "\u{1B}_Ga=p,q=2"))
+            #expect(text.lowerBound < placement.lowerBound)
+            #expect(output.components(separatedBy: "\u{1B}_Ga=p,q=2").count - 1 == 2)
+            #expect(!output.contains("\u{1B}_Ga=T"))
+            renderer.present(imageFrame([first, "changed", "", second, "after"]))
+            let unchanged = try #require(terminal.writes.last)
+            #expect(!unchanged.contains("\u{1B}_G"))
+        }
+    }
+
+    @Test("covered row redraw requires WezTerm Kitty and a changed row inside the placement")
+    func coveredRowRedrawGates() throws {
+        for (pane, imageProtocol, changedRow, explicitRows) in [
+            (nil as String?, ImageProtocol.kitty, 1, 3),
+            ("1", .iterm2, 1, 3),
+            ("1", .kitty, 3, 3),
+            ("1", .kitty, 1, 1),
+        ] {
+            try withImageEnvironment(pane: pane, imageProtocol: imageProtocol) {
+                let terminal = M1RecordingTerminal(columns: 20, rows: 4)
+                registerKittyImageMetadata(imageID: 103_193, columns: 2, rows: 3, widthPx: 20, heightPx: 30)
+                let imageLine = encodeKitty(base64Data: "AAAA", columns: 2, rows: explicitRows,
+                    imageId: 103_193, moveCursor: false)
+                let renderer = AltScreenRenderer(terminal: terminal)
+                renderer.start()
+                defer { renderer.stop(preserveScreen: true) }
+                var lines = [imageLine, "", "", "after"]
+                renderer.present(imageFrame(lines))
+                lines[changedRow] = "changed"
+                renderer.present(imageFrame(lines))
+                let output = try #require(terminal.writes.last)
+                #expect(output.contains("changed"))
+                #expect(!output.contains("\u{1B}_G"))
+            }
+        }
+    }
+
+    @Test("covered row redraw uses metadata rows and keeps the wider Swift WezTerm check")
+    func metadataRowsAndTermDetection() throws {
+        try withImageEnvironment(pane: nil, term: "wezterm") {
+            let terminal = M1RecordingTerminal(columns: 20, rows: 4)
+            registerKittyImageMetadata(imageID: 103_194, columns: 2, rows: 3, widthPx: 20, heightPx: 30)
+            let imageLine = encodeKitty(base64Data: "AAAA", columns: 2, imageId: 103_194, moveCursor: false)
+            let renderer = AltScreenRenderer(terminal: terminal)
+            renderer.start()
+            defer { renderer.stop(preserveScreen: true) }
+            renderer.present(imageFrame([imageLine, "", "", "after"]))
+            renderer.present(imageFrame([imageLine, "", "changed", "after"]))
+            let output = try #require(terminal.writes.last)
+            #expect(output.contains("\u{1B}_Ga=d,d=a,q=2\u{1B}\\"))
+            #expect(output.contains("\u{1B}_Ga=p,q=2"))
+            #expect(!output.contains("\u{1B}_Ga=T"))
+        }
+    }
+
     @Test("Alt wheel multiplies dispatched delta and direct scrolling by five")
     func altWheelMultiplier() {
         let terminal = M1RecordingTerminal()

@@ -525,10 +525,24 @@ public final class AltScreenRenderer: TuiRenderer, TuiLayoutRenderer, TuiInputRe
         }
 
         let fullRedraw = previousScreen.isEmpty || previousWidth != width || previousHeight != height
-        let imagesNeedRedraw = screen.indices.contains { row in
-            let previous = previousScreen.indices.contains(row) ? previousScreen[row] : ""
-            return screen[row] != previous && (isImageLine(screen[row]) || isImageLine(previous))
+        let changedRows = screen.indices.map { row in
+            !previousScreen.indices.contains(row) || screen[row] != previousScreen[row]
         }
+        let imageAnchorsNeedRedraw = screen.indices.contains { row in
+            let previous = previousScreen.indices.contains(row) ? previousScreen[row] : ""
+            return changedRows[row] && (isImageLine(screen[row]) || isImageLine(previous))
+        }
+        let wezTerm = isWezTerm(environment: ProcessInfo.processInfo.environment)
+        let imageCellsNeedRedraw = !imageAnchorsNeedRedraw && wezTerm && imageProtocol == .kitty
+            && changedRows.contains(true) && screen.indices.contains { row in
+                guard let placementRows = getKittyImagePlacementRows(screen[row]), placementRows > 0 else {
+                    return false
+                }
+                // Limit the scan to screen rows. This also avoids overflow in row + placementRows.
+                let coveredRows = min(placementRows, screen.count - row)
+                return (row..<(row + coveredRows)).contains { changedRows[$0] }
+            }
+        let imagesNeedRedraw = imageAnchorsNeedRedraw || imageCellsNeedRedraw
         let redrawImages = fullRedraw || imagesNeedRedraw
         let hadUploadedKittyImages = !uploadedKittyImages.isEmpty
         let prepared = redrawImages && imageProtocol == .kitty
@@ -547,26 +561,41 @@ public final class AltScreenRenderer: TuiRenderer, TuiLayoutRenderer, TuiInputRe
         }
         buffer += prepared.evictedImageDeletion
 
-        // In WezTerm, a later row erase can remove a Kitty image that overlaps that row.
-        let clearRowsBeforeKittyImages = redrawImages && imageProtocol == .kitty
+        // In WezTerm, a later row write can remove image cells. Write image placements last.
+        let drawKittyImagesLast = redrawImages && imageProtocol == .kitty
             && screen.contains(where: isImageLine)
-            && isWezTerm(environment: ProcessInfo.processInfo.environment)
-        if clearRowsBeforeKittyImages {
+            && wezTerm
+        if drawKittyImagesLast {
             for row in 0..<height {
                 let line = screen.indices.contains(row) ? screen[row] : ""
                 let old = previousScreen.indices.contains(row) ? previousScreen[row] : ""
                 if !fullRedraw && !imagesNeedRedraw && line == old { continue }
                 buffer += "\u{001B}[\(row + 1);1H\u{001B}[2K"
             }
-        }
-
-        for row in 0..<height {
-            let line = screen.indices.contains(row) ? screen[row] : ""
-            let old = previousScreen.indices.contains(row) ? previousScreen[row] : ""
-            if !fullRedraw && !imagesNeedRedraw && line == old { continue }
-            let outputLine = prepared.lines.indices.contains(row) ? prepared.lines[row] : ""
-            buffer += "\u{001B}[\(row + 1);1H"
-                + (clearRowsBeforeKittyImages ? "" : "\u{001B}[2K") + outputLine
+            for row in 0..<height {
+                let line = screen.indices.contains(row) ? screen[row] : ""
+                let old = previousScreen.indices.contains(row) ? previousScreen[row] : ""
+                if !fullRedraw && !imagesNeedRedraw && line == old { continue }
+                let outputLine = prepared.lines.indices.contains(row) ? prepared.lines[row] : ""
+                if isImageLine(outputLine) { continue }
+                buffer += "\u{001B}[\(row + 1);1H" + outputLine
+            }
+            for row in 0..<height {
+                let line = screen.indices.contains(row) ? screen[row] : ""
+                let old = previousScreen.indices.contains(row) ? previousScreen[row] : ""
+                if !fullRedraw && !imagesNeedRedraw && line == old { continue }
+                let outputLine = prepared.lines.indices.contains(row) ? prepared.lines[row] : ""
+                if !isImageLine(outputLine) { continue }
+                buffer += "\u{001B}[\(row + 1);1H" + outputLine
+            }
+        } else {
+            for row in 0..<height {
+                let line = screen.indices.contains(row) ? screen[row] : ""
+                let old = previousScreen.indices.contains(row) ? previousScreen[row] : ""
+                if !fullRedraw && !imagesNeedRedraw && line == old { continue }
+                let outputLine = prepared.lines.indices.contains(row) ? prepared.lines[row] : ""
+                buffer += "\u{001B}[\(row + 1);1H\u{001B}[2K" + outputLine
+            }
         }
 
         if frame.useSystemCursor, !frame.hasVisibleOverlay, let cursor = frame.cursor {

@@ -4,6 +4,43 @@ import Testing
 @MainActor
 @Suite("Kitty redraw image encoding", .serialized)
 struct KittyRedrawImageTests {
+    @Test("reads explicit placement rows without registered metadata")
+    func explicitPlacementRows() {
+        let sequence = encodeKitty(base64Data: "AAAA", columns: 2, rows: 3, moveCursor: false)
+        #expect(getKittyImagePlacementRows(sequence) == 3)
+    }
+
+    @Test("creates placement-only commands for uploaded and cropped images")
+    func croppedPlacementCommand() throws {
+        registerKittyImageMetadata(imageID: 42, columns: 3, rows: 3, widthPx: 100, heightPx: 100)
+        let transmission = encodeKitty(base64Data: String(repeating: "A", count: 8192),
+            columns: 3, rows: 3, imageId: 42, moveCursor: false)
+        let line = "left " + cropKittyImageLine(transmission, hiddenRows: 2, visibleRows: 1) + " right"
+        let placement = try #require(getKittyImagePlacement(line))
+        #expect(getKittyImagePlacementRows(line) == 1)
+        #expect(placement.transmissionBytes == line.utf8.count - "left ".utf8.count - " right".utf8.count)
+        #expect(placement.estimatedDecodedBytes == 100 * 100 * 4)
+        #expect(placement.rows == 1)
+        #expect(placement.sequence == "\u{1B}_Ga=p,q=2,C=1,c=3,i=42,y=66,h=34,r=1\u{1B}\\")
+        #expect(placement.replacementLine == "left " + placement.sequence + " right")
+        #expect(!placement.replacementLine.contains("AAAA"))
+    }
+
+    @Test("placement rows prefer positive controls and otherwise use registered metadata")
+    func placementRowsPrecedence() throws {
+        registerKittyImageMetadata(imageID: 103_190, columns: 2, rows: 4, widthPx: 20, heightPx: 40)
+        for (controls, expected) in [("", 4), (",r=2", 2), (",r=0", 4), (",r=-1", 4),
+            (",r=bad", 4), (",r=0,r=2", 4), (",r=bad,r=2", 2), (",r=02", 2)] {
+            let line = "left \u{1B}_Gi=103190\(controls);AAAA,r=99\u{1B}\\ right"
+            #expect(getKittyImagePlacementRows(line) == expected)
+            #expect(try #require(getKittyImagePlacement(line)).rows == expected)
+        }
+        #expect(getKittyImagePlacementRows("\u{1B}_Gr=0;AAAA\u{1B}\\") == nil)
+        #expect(getKittyImagePlacementRows("\u{1B}_G;r=99\u{1B}\\") == nil)
+        #expect(getKittyImagePlacementRows("\u{1B}_Gr=3\u{1B}\\") == nil)
+        #expect(getKittyImagePlacementRows("text") == nil)
+    }
+
     @Test("Kitty can suppress terminal cursor movement")
     func cursorControl() {
         let defaultSequence = encodeKitty(base64Data: "AAAA", columns: 2, rows: 2)

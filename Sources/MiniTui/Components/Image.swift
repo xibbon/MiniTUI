@@ -1,5 +1,46 @@
 import Foundation
 
+/// Convert source image data to base64 PNG data during rendering.
+public typealias ImageTranscoder = @MainActor (_ base64Data: String, _ mimeType: String) -> String?
+
+/// Set the converter for non-PNG images on Kitty terminals and clear its shared cache.
+@MainActor
+public func setImageTranscoder(_ transcoder: ImageTranscoder?) {
+    ImageTranscoderCache.shared.setTranscoder(transcoder)
+}
+
+@MainActor
+private final class ImageTranscoderCache {
+    private struct Entry {
+        let png: String?
+    }
+
+    static let shared = ImageTranscoderCache()
+    private var transcoder: ImageTranscoder?
+    private var entries: [String: Entry] = [:]
+    private var order: [String] = []
+
+    private init() {}
+
+    func setTranscoder(_ transcoder: ImageTranscoder?) {
+        self.transcoder = transcoder
+        entries.removeAll()
+        order.removeAll()
+    }
+
+    func toPng(_ source: String, mimeType: String) -> String? {
+        guard let transcoder else { return nil }
+        let entry = entries[source] ?? Entry(png: transcoder(source, mimeType))
+        order.removeAll { $0 == source }
+        order.append(source)
+        entries[source] = entry
+        if order.count > 32 {
+            entries.removeValue(forKey: order.removeFirst())
+        }
+        return entry.png
+    }
+}
+
 /// Theme configuration for image rendering.
 public struct ImageTheme: Sendable {
     /// Style for fallback text when images are not supported.
@@ -39,6 +80,7 @@ public final class Image: Component {
     private let options: ImageOptions
     private let dimensions: ImageDimensions
     private var imageId: Int?
+    private var pngData: String?
 
     private var cachedLines: [String]?
     private var cachedWidth: Int?
@@ -81,15 +123,26 @@ public final class Image: Component {
         )))
         let maxHeight = options.maxHeightCells ?? defaultMaxHeight
         let caps = getCapabilities()
+        var data: String? = base64Data
+        var renderDimensions = dimensions
+        if caps.images == .kitty, mimeType != "image/png" {
+            if pngData == nil {
+                pngData = ImageTranscoderCache.shared.toPng(base64Data, mimeType: mimeType)
+            }
+            data = pngData
+            if let data {
+                renderDimensions = getPngDimensions(data) ?? dimensions
+            }
+        }
         let lines: [String]
 
-        if caps.images != nil {
+        if caps.images != nil, let data, !data.isEmpty {
             if caps.images == .kitty, imageId == nil {
                 imageId = Int(allocateImageId())
             }
             if let result = renderImage(
-                base64Data: base64Data,
-                imageDimensions: dimensions,
+                base64Data: data,
+                imageDimensions: renderDimensions,
                 options: ImageRenderOptions(
                     maxWidthCells: maxWidth,
                     maxHeightCells: maxHeight,
@@ -112,11 +165,11 @@ public final class Image: Component {
                 lines = rendered
             } else {
                 let fallback = imageFallback(mimeType, dimensions: dimensions, filename: options.filename)
-                lines = [theme.fallbackColor(fallback)]
+                lines = [truncateToWidth(theme.fallbackColor(fallback), maxWidth: width)]
             }
         } else {
             let fallback = imageFallback(mimeType, dimensions: dimensions, filename: options.filename)
-            lines = [theme.fallbackColor(fallback)]
+            lines = [truncateToWidth(theme.fallbackColor(fallback), maxWidth: width)]
         }
 
         cachedLines = lines

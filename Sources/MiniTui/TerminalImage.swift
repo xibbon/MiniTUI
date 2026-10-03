@@ -148,6 +148,8 @@ struct KittyImagePlacement: Sendable {
     let transmissionGeneration: Int
     let transmissionBytes: Int
     let estimatedDecodedBytes: Int
+    let rows: Int
+    let sequence: String
     let replacementLine: String
 }
 
@@ -193,7 +195,7 @@ private func kittyImageID(in line: String) -> UInt32? {
     return nil
 }
 
-private func registerKittyLayoutMetadata(
+func registerKittyImageMetadata(
     imageID: UInt32,
     columns: Int,
     rows: Int,
@@ -222,6 +224,26 @@ private func registerKittyLayoutMetadata(
 func getKittyImageMetadata(_ line: String) -> KittyImageMetadata? {
     guard let imageID = kittyImageID(in: line) else { return nil }
     return kittyMetadataRegistry.get().values[imageID]
+}
+
+/// Read only the first command's controls to find the placement height.
+func getKittyImagePlacementRows(_ line: String) -> Int? {
+    guard let commandStart = line.range(of: kittyPrefix)?.upperBound,
+          let controlsEnd = line[commandStart...].firstIndex(of: ";") else {
+        return nil
+    }
+    if let rows = explicitKittyImageRows(line[commandStart..<controlsEnd]) { return rows }
+    return getKittyImageMetadata(line)?.rows
+}
+
+private func explicitKittyImageRows(_ controls: Substring) -> Int? {
+    for control in controls.split(separator: ",") where control.hasPrefix("r=") {
+        let value = control.dropFirst(2)
+        guard !value.isEmpty, value.utf8.allSatisfy({ $0 >= 48 && $0 <= 57 }) else { continue }
+        guard let rows = Int(value), rows > 0 else { return nil }
+        return rows
+    }
+    return nil
 }
 
 func getKittyImagePlacement(_ line: String) -> KittyImagePlacement? {
@@ -268,6 +290,8 @@ func getKittyImagePlacement(_ line: String) -> KittyImagePlacement? {
         transmissionGeneration: metadata.transmissionGeneration,
         transmissionBytes: transmission.utf8.count,
         estimatedDecodedBytes: metadata.widthPx * metadata.heightPx * 4,
+        rows: explicitKittyImageRows(line[controlsStart..<controlsEnd]) ?? metadata.rows,
+        sequence: placement,
         replacementLine: replacement
     )
 }
@@ -738,7 +762,7 @@ public func renderImage(
     switch images {
     case .kitty:
         if let imageId = options.imageId, let imageID = UInt32(exactly: imageId) {
-            registerKittyLayoutMetadata(
+            registerKittyImageMetadata(
                 imageID: imageID,
                 columns: size.columns,
                 rows: size.rows,
