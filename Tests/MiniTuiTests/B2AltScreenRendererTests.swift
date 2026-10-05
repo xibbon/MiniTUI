@@ -725,6 +725,47 @@ struct B2AltScreenRendererTests {
         #expect(tui.getFocusedComponent() === editor)
     }
 
+    // v1.0.3 (#10314), upstream tui-alt-screen.test.ts "routes Home and End to the focused
+    // component and Ctrl+Home/End to the transcript".
+    @Test("Home and End reach the focused component; Ctrl+Home and Ctrl+End move the transcript")
+    func homeEndRouting() async {
+        let terminal = B2Terminal(20, 6)
+        let transcript = b2Transcript(12)
+        let editor = B2Control(["editor"])
+        let (tui, _) = await b2Start(terminal, root: b2Dock(transcript, editor))
+        defer { tui.stop() }
+        tui.setFocus(editor)
+        await b2Wait(tui)
+
+        let bottom = transcript.scrollTop
+        #expect(bottom > 0)
+
+        let editorKeys = ["\u{1b}OH", "\u{1b}[F", "\u{1b}[57423u", "\u{1b}[5;5~", "\u{1b}[6;5~"]
+        for input in editorKeys { terminal.send(input) }
+        await b2Wait(tui)
+        #expect(transcript.scrollTop == bottom)
+        #expect(editor.inputs == editorKeys)
+
+        terminal.send("\u{1b}[1;5H")
+        await b2Wait(tui)
+        #expect(transcript.scrollTop == 0)
+
+        terminal.send("\u{1b}[1;5F")
+        await b2Wait(tui)
+        #expect(transcript.scrollTop == bottom)
+        #expect(transcript.isFollowingEnd)
+
+        terminal.send("\u{1b}[57423;5u")
+        terminal.send("\u{1b}[57423;5:3u")
+        await b2Wait(tui)
+        #expect(transcript.scrollTop == 0)
+
+        terminal.send("\u{1b}[6~")
+        await b2Wait(tui)
+        #expect(transcript.scrollTop == 1)
+        #expect(editor.inputs == editorKeys)
+    }
+
     @Test("Focused search permits viewport keys and wheel scrolling")
     func searchAllowsViewportNavigation() async {
         let terminal = B2Terminal(20, 6)

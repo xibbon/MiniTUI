@@ -92,8 +92,8 @@ public let TUI_KEYBINDINGS: [String: KeybindingDefinition] = [
     TUIKeybinding.editorCursorRight: KeybindingDefinition(defaultKeys: [Key.right, Key.ctrl("f")], description: "Move cursor right"),
     TUIKeybinding.editorCursorWordLeft: KeybindingDefinition(defaultKeys: [Key.alt("left"), Key.ctrl("left"), Key.alt("b")], description: "Move cursor word left"),
     TUIKeybinding.editorCursorWordRight: KeybindingDefinition(defaultKeys: [Key.alt("right"), Key.ctrl("right"), Key.alt("f")], description: "Move cursor word right"),
-    TUIKeybinding.editorCursorLineStart: KeybindingDefinition(defaultKeys: [Key.home, Key.ctrl(Key.home), Key.ctrl("a")], description: "Move to line start"),
-    TUIKeybinding.editorCursorLineEnd: KeybindingDefinition(defaultKeys: [Key.end, Key.ctrl(Key.end), Key.ctrl("e")], description: "Move to line end"),
+    TUIKeybinding.editorCursorLineStart: KeybindingDefinition(defaultKeys: [Key.home, Key.ctrl("a")], description: "Move to line start"),
+    TUIKeybinding.editorCursorLineEnd: KeybindingDefinition(defaultKeys: [Key.end, Key.ctrl("e")], description: "Move to line end"),
     TUIKeybinding.editorJumpForward: KeybindingDefinition(defaultKey: Key.ctrl("]"), description: "Jump forward to character"),
     TUIKeybinding.editorJumpBackward: KeybindingDefinition(defaultKey: Key.ctrlAlt("]"), description: "Jump backward to character"),
     TUIKeybinding.editorPageUp: KeybindingDefinition(defaultKeys: [Key.pageUp, Key.ctrl(Key.pageUp)], description: "Page up"),
@@ -129,8 +129,8 @@ public let TUI_KEYBINDINGS: [String: KeybindingDefinition] = [
     TUIKeybinding.altScreenSearchNext: KeybindingDefinition(defaultKeys: [Key.enter, Key.ctrl("g")], description: "Select the next search match"),
     TUIKeybinding.altScreenSearchPrevious: KeybindingDefinition(defaultKeys: [Key.shift(Key.enter), Key.ctrlShift("g")], description: "Select the previous search match"),
     TUIKeybinding.altScreenSearchClose: KeybindingDefinition(defaultKey: Key.escape, description: "Close transcript search"),
-    TUIKeybinding.altScreenTop: KeybindingDefinition(defaultKey: Key.home, description: "Scroll viewport to top"),
-    TUIKeybinding.altScreenBottom: KeybindingDefinition(defaultKey: Key.end, description: "Scroll viewport to bottom"),
+    TUIKeybinding.altScreenTop: KeybindingDefinition(defaultKey: Key.ctrl(Key.home), description: "Scroll viewport to top"),
+    TUIKeybinding.altScreenBottom: KeybindingDefinition(defaultKey: Key.ctrl(Key.end), description: "Scroll viewport to bottom"),
 ]
 
 /// Unified keybindings manager with namespaced IDs.

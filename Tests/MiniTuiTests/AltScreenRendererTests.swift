@@ -187,7 +187,8 @@ struct AltScreenRendererTests {
         tui.stop()
     }
 
-    @Test("wheel, page, Home, and End move the viewport")
+    // v1.0.3 (#10314): the transcript top/bottom keys moved to Ctrl+Home/Ctrl+End.
+    @Test("wheel, page, Ctrl+Home, and Ctrl+End move the viewport")
     func viewportNavigation() async {
         let terminal = VirtualTerminal(columns: 12, rows: 6)
         let lines = (0..<20).map { "line-\($0)" }
@@ -203,10 +204,10 @@ struct AltScreenRendererTests {
         terminal.sendInput("\u{001B}[6~")
         await terminal.waitForRender(tui)
         #expect(renderer.viewportTop == 4)
-        terminal.sendInput("\u{001B}[H")
+        terminal.sendInput("\u{001B}[7^")
         await terminal.waitForRender(tui)
         #expect(renderer.viewportTop == 0)
-        terminal.sendInput("\u{001B}[F")
+        terminal.sendInput("\u{001B}[8^")
         await terminal.waitForRender(tui)
         #expect(renderer.viewportTop == 14)
         tui.stop()
@@ -340,8 +341,11 @@ struct AltScreenRendererTests {
         let defaults = TUIKeybindingsManager()
         #expect(defaults.getKeys(TUIKeybinding.altScreenHalfPageUp).isEmpty)
         #expect(defaults.getKeys(TUIKeybinding.altScreenHalfPageDown).isEmpty)
-        #expect(defaults.getKeys(TUIKeybinding.editorCursorLineStart).contains(Key.ctrl(Key.home)))
-        #expect(defaults.getKeys(TUIKeybinding.editorCursorLineEnd).contains(Key.ctrl(Key.end)))
+        // v1.0.3 (#10314): Ctrl+Home/Ctrl+End belong to the transcript, not the editor.
+        #expect(defaults.getKeys(TUIKeybinding.editorCursorLineStart) == [Key.home, Key.ctrl("a")])
+        #expect(defaults.getKeys(TUIKeybinding.editorCursorLineEnd) == [Key.end, Key.ctrl("e")])
+        #expect(defaults.getKeys(TUIKeybinding.altScreenTop) == [Key.ctrl(Key.home)])
+        #expect(defaults.getKeys(TUIKeybinding.altScreenBottom) == [Key.ctrl(Key.end)])
         #expect(defaults.getKeys(TUIKeybinding.editorPageUp).contains(Key.ctrl(Key.pageUp)))
         #expect(defaults.getKeys(TUIKeybinding.editorPageDown).contains(Key.ctrl(Key.pageDown)))
 
