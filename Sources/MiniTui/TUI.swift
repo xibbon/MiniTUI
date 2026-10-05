@@ -468,6 +468,11 @@ public final class TUI: Container {
         requestRender(force: true)
     }
 
+    /// Set or remove the terminal I/O error callback. It can run on an I/O queue.
+    public func setIOErrorHandler(_ handler: (@Sendable (TerminalIOError) -> Void)?) {
+        terminal.setIOErrorHandler(handler)
+    }
+
     /// Start terminal input and initial rendering.
     public func start() {
         stopped = false

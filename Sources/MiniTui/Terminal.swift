@@ -18,6 +18,8 @@ let terminalProgressClearSequence = "\u{001B}]9;4;0\u{0007}"
 public protocol Terminal: AnyObject {
     /// Start the terminal and provide input/resize handlers.
     func start(onInput: @escaping (String) -> Void, onResize: @escaping () -> Void)
+    /// Set or remove the I/O error callback. The callback can run on an I/O queue.
+    func setIOErrorHandler(_ handler: (@Sendable (TerminalIOError) -> Void)?)
     /// Stop the terminal and restore any modified state.
     func stop()
     /// Drain stdin before exiting to prevent Kitty key release events leaking to the parent shell.
@@ -51,6 +53,9 @@ public protocol Terminal: AnyObject {
 }
 
 public extension Terminal {
+    /// Terminals without checked I/O can keep the default implementation.
+    func setIOErrorHandler(_ handler: (@Sendable (TerminalIOError) -> Void)?) {}
+
     /// Default no-op so existing Terminal implementations don't break when callers invoke
     /// `setProgress`. Production terminals override.
     func setProgress(_ active: Bool) {}
@@ -69,10 +74,8 @@ public func isAppleTerminalSession(environment: [String: String] = ProcessInfo.p
 public final class ProcessTerminal: Terminal {
     private var inputHandler: ((String) -> Void)?
     private var resizeHandler: (() -> Void)?
-    private var readSource: DispatchSourceRead?
     private var resizeSource: DispatchSourceSignal?
-    private var originalTermios = termios()
-    private var hasOriginalTermios = false
+    private let io: CheckedTerminalIO
     private var kittyProtocolActiveFlag = false
     private var kittyQueryResolved = false
     private var kittyQueryBuffer = ""
@@ -83,7 +86,20 @@ public final class ProcessTerminal: Terminal {
     )
 
     /// Create a new process-backed terminal.
-    public init() {}
+    public convenience init() {
+        self.init(inputDescriptor: STDIN_FILENO, outputDescriptor: STDOUT_FILENO)
+    }
+
+    /// The caller owns these descriptors and must keep them open until stop returns.
+    init(inputDescriptor: Int32, outputDescriptor: Int32, calls: TerminalIOCalls = TerminalIOCalls()) {
+        io = CheckedTerminalIO(inputDescriptor: inputDescriptor, outputDescriptor: outputDescriptor, calls: calls)
+    }
+
+    public func setIOErrorHandler(_ handler: (@Sendable (TerminalIOError) -> Void)?) {
+        io.setHandler(handler)
+    }
+
+    var readAttempts: Int { io.readAttempts }
 
     public var kittyProtocolActive: Bool {
         return kittyProtocolActiveFlag
@@ -96,29 +112,16 @@ public final class ProcessTerminal: Terminal {
         kittyProtocolActiveFlag = false
         setKittyProtocolActive(false)
 
-        if tcgetattr(STDIN_FILENO, &originalTermios) == 0 {
-            hasOriginalTermios = true
-            var raw = originalTermios
-            #if os(Linux)
-            cfmakeraw(&raw)
-            #else
-            cfmakeraw(&raw)
-            #endif
-            tcsetattr(STDIN_FILENO, TCSANOW, &raw)
-        }
+        io.startRawMode()
+        guard !io.isLost else { return }
+        setupStdinBuffer()
 
-        let readSource = DispatchSource.makeReadSource(fileDescriptor: STDIN_FILENO, queue: DispatchQueue.global())
-        readSource.setEventHandler { [weak self] in
-            guard let self else { return }
-            var buffer = [UInt8](repeating: 0, count: 4096)
-            let count = read(STDIN_FILENO, &buffer, buffer.count)
-            if count > 0 {
-                let data = Data(buffer[0..<count])
-                self.handleStdinData(data)
-            }
+        let readSource = DispatchSource.makeReadSource(fileDescriptor: io.inputDescriptor, queue: DispatchQueue.global())
+        readSource.setEventHandler { [weak self, io] in
+            guard let data = io.readReady(), io.acceptsInput else { return }
+            self?.handleStdinData(data)
         }
-        readSource.resume()
-        self.readSource = readSource
+        io.installReadSource(readSource)
 
         signal(SIGWINCH, SIG_IGN)
         let resizeSource = DispatchSource.makeSignalSource(signal: SIGWINCH, queue: DispatchQueue.global())
@@ -137,8 +140,7 @@ public final class ProcessTerminal: Terminal {
         enableWindowsVTInput()
 
         write("\u{001B}[?2004h")
-        setupStdinBuffer()
-        queryAndEnableKittyProtocol()
+        if !io.isLost { queryAndEnableKittyProtocol() }
     }
 
     /// Stop raw input and restore the previous terminal state.
@@ -157,64 +159,42 @@ public final class ProcessTerminal: Terminal {
         stdinBuffer?.destroy()
         stdinBuffer = nil
 
-        readSource?.cancel()
-        readSource = nil
         resizeSource?.cancel()
         resizeSource = nil
         inputHandler = nil
         resizeHandler = nil
 
-        // Flush any pending stdin data before leaving raw mode.
-        tcflush(STDIN_FILENO, TCIFLUSH)
-
-        if hasOriginalTermios {
-            var termios = originalTermios
-            tcsetattr(STDIN_FILENO, TCSANOW, &termios)
-            hasOriginalTermios = false
-        }
+        io.stop()
     }
 
     public func drainInput(maxMs: Int = 1000, idleMs: Int = 50) {
+        guard io.beginDrain() else { return }
+        defer { io.endDrain() }
         if kittyProtocolActiveFlag {
             write("\u{001B}[<u")
             kittyProtocolActiveFlag = false
             setKittyProtocolActive(false)
         }
 
-        let previousHandler = inputHandler
-        inputHandler = nil
-        let previousOnData = stdinBuffer?.onData
-        let previousOnPaste = stdinBuffer?.onPaste
-
-        var lastDataTime = Date()
-        stdinBuffer?.onData = { _ in
-            lastDataTime = Date()
-        }
-        stdinBuffer?.onPaste = { _ in
-            lastDataTime = Date()
-        }
-
         let endTime = Date().addingTimeInterval(Double(maxMs) / 1000.0)
-        while Date() < endTime {
-            let idleElapsed = Date().timeIntervalSince(lastDataTime) * 1000.0
+        while !io.isLost && Date() < endTime {
+            let idleElapsed = Date().timeIntervalSince(io.lastInput) * 1000.0
             if idleElapsed >= Double(idleMs) { break }
             let remaining = endTime.timeIntervalSinceNow
             if remaining <= 0 { break }
-            Thread.sleep(forTimeInterval: min(Double(idleMs) / 1000.0, remaining))
+            Thread.sleep(forTimeInterval: min(0.01, max(0, Double(idleMs) / 1000.0), remaining))
         }
-
-        stdinBuffer?.onData = previousOnData
-        stdinBuffer?.onPaste = previousOnPaste
-        inputHandler = previousHandler
     }
 
     private func setupStdinBuffer() {
         let buffer = StdinBuffer(options: StdinBufferOptions(escapeTimeout: resolveEscapeTimeoutMs() / 1000))
         buffer.onData = { [weak self] sequence in
-            self?.inputHandler?(sequence)
+            guard let self, self.io.acceptsInput else { return }
+            self.inputHandler?(sequence)
         }
         buffer.onPaste = { [weak self] content in
-            self?.inputHandler?("\u{001B}[200~" + content + "\u{001B}[201~")
+            guard let self, self.io.acceptsInput else { return }
+            self.inputHandler?("\u{001B}[200~" + content + "\u{001B}[201~")
         }
         stdinBuffer = buffer
     }
@@ -224,7 +204,7 @@ public final class ProcessTerminal: Terminal {
         kittyQueryBuffer = ""
 
         let workItem = DispatchWorkItem { [weak self] in
-            guard let self, !self.kittyQueryResolved else { return }
+            guard let self, !self.io.isLost, !self.kittyQueryResolved else { return }
             self.kittyQueryResolved = true
             self.kittyProtocolActiveFlag = false
             setKittyProtocolActive(false)
@@ -255,6 +235,7 @@ public final class ProcessTerminal: Terminal {
     }
 
     private func handleStdinData(_ data: Data) {
+        guard io.acceptsInput else { return }
         guard !kittyQueryResolved else {
             stdinBuffer?.process(data)
             return
@@ -296,8 +277,7 @@ public final class ProcessTerminal: Terminal {
 
     /// Write UTF-8 data to stdout.
     public func write(_ data: String) {
-        if let output = data.data(using: .utf8) {
-            FileHandle.standardOutput.write(output)
+        if let output = data.data(using: .utf8), io.write(output) {
             if let writeLogPath {
                 do {
                     if FileManager.default.fileExists(atPath: writeLogPath.path) {
@@ -404,7 +384,7 @@ public final class ProcessTerminal: Terminal {
 
     private func terminalSize() -> (columns: Int, rows: Int) {
         var size = winsize()
-        if ioctl(STDOUT_FILENO, TIOCGWINSZ, &size) == 0 {
+        if ioctl(io.outputDescriptor, TIOCGWINSZ, &size) == 0 {
             let columns = Int(size.ws_col)
             let rows = Int(size.ws_row)
             if columns > 0, rows > 0 {
