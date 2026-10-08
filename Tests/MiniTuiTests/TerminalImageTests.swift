@@ -16,6 +16,40 @@ func detectsWarpCapabilities() {
     }
 }
 
+@Test("Herdr takes precedence over Kitty and uses true-color hints")
+func detectsHerdrCapabilities() {
+    let capabilities = detectCapabilities(environment: [
+        "TERM_PROGRAM": "herdr", "KITTY_WINDOW_ID": "1", "COLORTERM": "truecolor",
+    ])
+    #expect(capabilities.images == nil)
+    #expect(capabilities.trueColor)
+    #expect(capabilities.hyperlinks)
+    #expect(!detectCapabilities(environment: ["TERM_PROGRAM": "herdr"]).trueColor)
+    for hints in [["COLORTERM": "24bit"], ["TERM": "xterm-direct"]] {
+        let env = hints.merging(["TERM_PROGRAM": "herdr"]) { _, value in value }
+        #expect(detectCapabilities(environment: env).trueColor)
+    }
+}
+
+@Test("Herdr honors an explicit hyperlink override")
+func herdrHyperlinkOverride() {
+    let capabilities = detectCapabilities(environment: ["TERM_PROGRAM": "herdr", "PI_HYPERLINKS": "0"])
+    #expect(!capabilities.hyperlinks)
+}
+
+@Test("Herdr inside tmux keeps the tmux hyperlink rule")
+func herdrInsideTmux() {
+    let env = ["TERM_PROGRAM": "herdr", "TMUX": "/tmp/tmux", "KITTY_WINDOW_ID": "1", "COLORTERM": "truecolor"]
+    let blocked = detectCapabilities(environment: env)
+    #expect(blocked.images == nil)
+    #expect(blocked.trueColor)
+    #expect(!blocked.hyperlinks)
+    let forwarded = detectCapabilities(environment: env, tmuxForwardsHyperlink: { true })
+    #expect(forwarded.images == nil)
+    #expect(forwarded.hyperlinks)
+    #expect(!detectCapabilities(environment: ["TERM_PROGRAM": "herdr", "TERM": "screen"]).hyperlinks)
+}
+
 @Test("iTerm2 encoding includes decoded payload size and dimensions")
 func iTerm2PayloadMetadata() {
     #expect(encodeITerm2(base64Data: "AAAA", width: "2", height: "auto")

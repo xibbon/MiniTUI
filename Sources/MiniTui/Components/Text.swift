@@ -3,7 +3,7 @@ import Foundation
 /// Text component with optional padding and background styling.
 open class Text: Component {
     private var text: String
-    private let paddingX: Int
+    private var paddingX: Int
     private let paddingY: Int
     private var customBgFn: ((String) -> String)?
 
@@ -28,6 +28,12 @@ open class Text: Component {
     /// Update the optional background formatter and invalidate cached lines.
     public func setCustomBgFn(_ customBgFn: ((String) -> String)?) {
         self.customBgFn = customBgFn
+        invalidate()
+    }
+
+    /// Set the horizontal padding and clear cached lines.
+    public func setPaddingX(_ paddingX: Int) {
+        self.paddingX = paddingX
         invalidate()
     }
 

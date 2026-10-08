@@ -384,6 +384,11 @@ private func detectCapabilitiesFromEnvironment(_ env: [String: String], tmuxForw
 
     let hyperlinks = !isMultiplexed || tmuxForwardsHyperlink()
 
+    if termProgram == "herdr" {
+        let trueColor = colorTerm == "truecolor" || colorTerm == "24bit" || term.hasSuffix("-direct")
+        return TerminalCapabilities(images: nil, trueColor: trueColor, hyperlinks: hyperlinks)
+    }
+
     if env["KITTY_WINDOW_ID"] != nil || termProgram == "kitty" || term.contains("kitty") {
         return TerminalCapabilities(images: .kitty, trueColor: true, hyperlinks: hyperlinks)
     }

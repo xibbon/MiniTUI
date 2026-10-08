@@ -30,6 +30,8 @@ public protocol Terminal: AnyObject {
     var columns: Int { get }
     /// Current terminal row count.
     var rows: Int { get }
+    /// Return true for terminals that can receive feature queries.
+    var supportsTerminalQueries: Bool { get }
     /// Return true when Kitty keyboard protocol is active.
     var kittyProtocolActive: Bool { get }
     /// Move the cursor by a number of lines.
@@ -53,6 +55,9 @@ public protocol Terminal: AnyObject {
 }
 
 public extension Terminal {
+    /// Existing terminal implementations do not receive new feature queries.
+    var supportsTerminalQueries: Bool { false }
+
     /// Terminals without checked I/O can keep the default implementation.
     func setIOErrorHandler(_ handler: (@Sendable (TerminalIOError) -> Void)?) {}
 
@@ -100,6 +105,9 @@ public final class ProcessTerminal: Terminal {
     }
 
     var readAttempts: Int { io.readAttempts }
+    var isLost: Bool { io.isLost }
+
+    public var supportsTerminalQueries: Bool { true }
 
     public var kittyProtocolActive: Bool {
         return kittyProtocolActiveFlag

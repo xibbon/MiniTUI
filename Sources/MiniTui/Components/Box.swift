@@ -4,7 +4,7 @@ import Foundation
 open class Box: Component {
     /// Current child components.
     public private(set) var children: [Component] = []
-    private let paddingX: Int
+    private var paddingX: Int
     private let paddingY: Int
     private var bgFn: ((String) -> String)?
 
@@ -44,6 +44,12 @@ open class Box: Component {
     /// Update the background formatter.
     public func setBgFn(_ bgFn: ((String) -> String)?) {
         self.bgFn = bgFn
+    }
+
+    /// Set the horizontal padding and clear cached lines.
+    public func setPaddingX(_ paddingX: Int) {
+        self.paddingX = paddingX
+        invalidateCache()
     }
 
     /// Invalidate cached lines and child state.

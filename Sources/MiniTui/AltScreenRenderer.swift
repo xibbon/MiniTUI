@@ -354,6 +354,12 @@ public final class AltScreenRenderer: TuiRenderer, TuiLayoutRenderer, TuiInputRe
         return await copyTextToClipboard(text)
     }
 
+    /// Clear the text selection and the click history.
+    public func resetTextSelection() {
+        clearTextSelection()
+        lastClick = nil
+    }
+
     public func setScrollbar(_ mode: ScrollViewScrollbar) {
         primaryScrollView.setScrollbar(mode)
     }

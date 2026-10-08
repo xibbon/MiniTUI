@@ -170,7 +170,17 @@ public final class TUI: Container {
     private var inputBuffer = ""
     private var cellSizeQueryPending = false
     private var terminalColorSchemeListeners: [UUID: (TerminalColorScheme) -> Void] = [:]
-    private var pendingTerminalColorQueries: [TerminalColorQuery] = []
+    private var pendingDeviceAttributesQueries: [DeviceAttributesQuery] = []
+    private var programStatus = ProgramStatusNegotiation()
+    /// Supply PI_PROGRAM_STATUS. The default reads the process environment at start.
+    public var programStatusEnvironment: () -> String? = {
+        ProcessInfo.processInfo.environment["PI_PROGRAM_STATUS"]
+    }
+
+    private enum DeviceAttributesQuery {
+        case colors(TerminalColorQuery)
+        case programStatus(stale: Bool)
+    }
     private var terminalColorSchemeNotificationsEnabled = false
     private var clearOnShrink = false
     /// v0.70.5: rate-limit renders to ~60Hz so streaming token bursts don't redraw faster
@@ -473,6 +483,17 @@ public final class TUI: Container {
         terminal.setIOErrorHandler(handler)
     }
 
+    /// Store the latest status and report it when the terminal has confirmed support.
+    public func setProgramStatus(_ status: ProgramStatus) {
+        let bytes = programStatus.set(status)
+        if canWriteProgramStatus, !bytes.isEmpty { terminal.write(bytes) }
+    }
+
+    private var canWriteProgramStatus: Bool {
+        terminalStarted && !stopped && terminal.supportsTerminalQueries
+            && (terminal as? ProcessTerminal)?.isLost != true
+    }
+
     /// Start terminal input and initial rendering.
     public func start() {
         stopped = false
@@ -487,6 +508,15 @@ public final class TUI: Container {
             }
         })
         terminalStarted = true
+        if canWriteProgramStatus {
+            let bytes = programStatus.start(environmentValue: programStatusEnvironment())
+            if programStatus.queryPending {
+                pendingDeviceAttributesQueries.append(.programStatus(stale: false))
+                terminal.write(bytes + "\u{001B}[c")
+            } else if !bytes.isEmpty {
+                terminal.write(bytes)
+            }
+        }
         updateCursorMode()
         if terminalColorSchemeNotificationsEnabled {
             terminal.write("\u{001B}[?2031h")
@@ -497,12 +527,22 @@ public final class TUI: Container {
 
     /// Stop terminal input and restore terminal state.
     public func stop() {
+        let canClearProgramStatus = canWriteProgramStatus
         stopped = true
+        for index in pendingDeviceAttributesQueries.indices {
+            if case .programStatus = pendingDeviceAttributesQueries[index] {
+                pendingDeviceAttributesQueries[index] = .programStatus(stale: true)
+            }
+        }
         // Clear OSC 9;4 progress indicator on shutdown so the host terminal doesn't keep
         // showing activity after pi exits.
         progressTimer?.cancel()
         progressTimer = nil
         terminal.setProgress(false)
+        let clearStatus = programStatus.stop()
+        if canClearProgramStatus, ((terminal as? ProcessTerminal)?.isLost != true), !clearStatus.isEmpty {
+            terminal.write(clearStatus)
+        }
         if terminalColorSchemeNotificationsEnabled {
             terminal.write("\u{001B}[?2031l")
         }
@@ -590,6 +630,11 @@ public final class TUI: Container {
         var input = data
 
         while !input.isEmpty {
+            let afterProgramStatus = consumeProgramStatusReplyPrefix(input)
+            if afterProgramStatus.count != input.count {
+                input = afterProgramStatus
+                continue
+            }
             let afterColorResponse = consumeTerminalColorResponsePrefix(input)
             if afterColorResponse.count != input.count {
                 input = afterColorResponse
@@ -708,7 +753,7 @@ public final class TUI: Container {
                 query.continuation = nil
                 continuation.resume(returning: query.result)
             }
-            pendingTerminalColorQueries.append(query)
+            pendingDeviceAttributesQueries.append(.colors(query))
             let paletteRequests = (0..<16).map { "\u{001B}]4;\($0);?\u{0007}" }.joined()
             terminal.write("\u{001B}]10;?\u{0007}\u{001B}]11;?\u{0007}" + paletteRequests + "\u{001B}[c")
         }
@@ -723,14 +768,42 @@ public final class TUI: Container {
         return data.substring(from: report.length, length: data.count - report.length)
     }
 
+    private func consumeProgramStatusReplyPrefix(_ data: String) -> String {
+        guard data.utf8.starts(with: "\u{001B}]7501;?".utf8) else { return data }
+        let scalars = data.unicodeScalars
+        for index in scalars.indices.dropFirst(8) {
+            let end: String.Index
+            if scalars[index].value == 7 {
+                end = scalars.index(after: index)
+            } else if scalars[index].value == 27 {
+                let next = scalars.index(after: index)
+                guard next != scalars.endIndex, scalars[next].value == 92 else { return data }
+                end = scalars.index(after: next)
+            } else {
+                continue
+            }
+            guard isProgramStatusReply(String(data[..<end])) else { return data }
+            if canWriteProgramStatus {
+                let bytes = programStatus.receiveReply()
+                if !bytes.isEmpty { terminal.write(bytes) }
+            }
+            return String(data[end...])
+        }
+        return data
+    }
+
     private func consumeTerminalColorResponsePrefix(_ data: String) -> String {
-        guard let query = pendingTerminalColorQueries.first else { return data }
-        if let length = parseDeviceAttributesResponsePrefix(data) {
-            pendingTerminalColorQueries.removeFirst()
-            query.finish()
+        if !pendingDeviceAttributesQueries.isEmpty, let length = parseDeviceAttributesResponsePrefix(data) {
+            switch pendingDeviceAttributesQueries.removeFirst() {
+            case .colors(let query): query.finish()
+            case .programStatus(let stale): _ = programStatus.endQuery(isStale: stale)
+            }
             return data.substring(from: length, length: data.count - length)
         }
-        guard let response = parseOscColorResponsePrefix(data) else { return data }
+        guard let query = pendingDeviceAttributesQueries.lazy.compactMap({ entry -> TerminalColorQuery? in
+            if case .colors(let query) = entry { return query }
+            return nil
+        }).first, let response = parseOscColorResponsePrefix(data) else { return data }
         if !query.complete, query.replied.insert(response.target).inserted {
             switch response.target {
             case .foreground:
