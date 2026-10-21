@@ -523,8 +523,9 @@ struct B2AltScreenRendererTests {
         #expect(copied == ["  alpha\nbeta"])
     }
 
-    @Test("Focused overlay receives wheel and viewport keys")
-    func focusedOverlayNavigation() async {
+    // Upstream #10769 sends unhandled wheel input to the transcript.
+    @Test("Focused overlay receives viewport keys")
+    func focusedOverlayViewportKeys() async {
         let terminal = B2Terminal(20, 6)
         let (tui, renderer) = await b2Start(terminal, root: b2Transcript(12))
         defer { tui.stop() }
@@ -533,7 +534,7 @@ struct B2AltScreenRendererTests {
         let handle = tui.showOverlay(overlay)
         await b2Wait(tui)
         #expect(overlay.focused)
-        let keys = ["\u{1b}[5~", "\u{1b}[6~", "\u{1b}OH", "\u{1b}OF", "\u{1b}[<64;10;3M"]
+        let keys = ["\u{1b}[5~", "\u{1b}[6~", "\u{1b}OH", "\u{1b}OF"]
         for key in keys { terminal.send(key) }
         await b2Wait(tui)
         #expect(overlay.inputs == keys)

@@ -1,4 +1,5 @@
 import Foundation
+import MiniTui
 
 func stripAnsiCodes(_ text: String) -> String {
     let pattern = "\u{001B}\\[[0-9;]*[mGKHJ]"
@@ -10,7 +11,8 @@ func stripAnsiCodes(_ text: String) -> String {
 }
 
 func stripVTControlCharacters(_ text: String) -> String {
-    let stripped = stripAnsiCodes(text)
+    // Upstream fake cursor APC markers must be removed with their full payload.
+    let stripped = stripTerminalSequences(text)
     let filtered = stripped.unicodeScalars.filter { scalar in
         scalar.value >= 32 || scalar == "\n"
     }

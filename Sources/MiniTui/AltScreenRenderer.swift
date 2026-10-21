@@ -284,6 +284,7 @@ public final class AltScreenRenderer: TuiRenderer, TuiLayoutRenderer, TuiInputRe
     private var previousHeight = 0
     private var currentLayout: LayoutFrame?
     private var altScreenActive = false
+    private var lastUseSystemCursor = false
     private var imageProtocol: ImageProtocol?
     private var savedCapabilities: TerminalCapabilities?
     private var uploadedKittyImages: [UInt32: CachedKittyImage] = [:]
@@ -385,7 +386,8 @@ public final class AltScreenRenderer: TuiRenderer, TuiLayoutRenderer, TuiInputRe
             layout = renderLayoutFrame(root: explicitLayoutRoot ?? implicitScrollView,
                 width: width, height: height, requestRender: requestRender)
         }
-        layout.lines = layout.lines.map(stripLeadingOSC133Zones)
+        layout.lines = resolveFakeCursors(layout.lines.map(stripLeadingOSC133Zones),
+            useSystemCursor: host?.useSystemCursor ?? false)
         layout.lines = applySearchHighlights(layout.lines, layout: layout)
         layout.lines = compositeScrollToEndIndicator(layout.lines, layout: layout, width: width)
         return layout
@@ -516,7 +518,9 @@ public final class AltScreenRenderer: TuiRenderer, TuiLayoutRenderer, TuiInputRe
         let width = max(1, frame.width)
         let height = max(1, frame.height)
         let nextLayout = frame.layoutFrame
-        var screen = frame.lines.map(stripLeadingOSC133Zones)
+        lastUseSystemCursor = frame.useSystemCursor
+        var screen = resolveFakeCursors(frame.lines.map(stripLeadingOSC133Zones),
+            useSystemCursor: frame.useSystemCursor)
         if screen.count > height { screen = Array(screen.suffix(height)) }
         let contentScreen = screen
         screen = applySelection(to: screen, layout: nextLayout)
@@ -652,7 +656,6 @@ public final class AltScreenRenderer: TuiRenderer, TuiLayoutRenderer, TuiInputRe
                 if applyMouseDispatchResult(event, result) { requestRender() }
                 return true
             }
-            if shouldDeferViewportInputToOverlay { return false }
             routeWheel(delta: wheelDelta, x: wheel.x, y: wheel.y)
             return true
         }
@@ -1066,7 +1069,7 @@ public final class AltScreenRenderer: TuiRenderer, TuiLayoutRenderer, TuiInputRe
         } else {
             lines = previousScreen
         }
-        return lines.map { line in
+        return resolveFakeCursors(lines, useSystemCursor: host?.useSystemCursor ?? lastUseSystemCursor).map { line in
             let clean = stripLeadingOSC133Zones(line).replacingOccurrences(of: systemCursorMarker, with: "")
             if isImageLine(clean) || visibleWidth(clean) <= width { return clean }
             return sliceByColumn(clean, startCol: 0, length: width, strict: true)

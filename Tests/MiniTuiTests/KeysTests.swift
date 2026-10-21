@@ -162,6 +162,9 @@ struct MatchesKeyTests {
             #expect(parseKey("\u{001B}[27;7;104~") == "ctrl+alt+h")
             #expect(matchesKey("\u{001B}[104;7u", "ctrl+alt+h") == true)
             #expect(parseKey("\u{001B}[104;7u") == "ctrl+alt+h")
+            // Upstream v1.3.0: accept the produced plus symbol with Ctrl.
+            #expect(matchesKey("\u{001B}[27;6;43~", "ctrl++") == true)
+            #expect(parseKey("\u{001B}[27;6;43~") == "ctrl++")
         }
 
         @Test("should parse shifted xterm modifyOtherKeys printable letters")
@@ -416,6 +419,9 @@ struct ParseKeyTests {
             #expect(parseKey("\n") == "enter")
             #expect(parseKey("\u{0000}") == "ctrl+space")
             #expect(parseKey(" ") == "space")
+            // Upstream v1.3.0: accept plus as a key identifier.
+            #expect(parseKey("+") == "+")
+            #expect(matchesKey("+", "+") == true)
         }
 
         @Test("should parse arrow keys")

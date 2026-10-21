@@ -471,16 +471,15 @@ open class Editor: SystemCursorAware, KillBufferAware, EditorComponent {
                 let before = displayText.prefixCharacters(cursorPos)
                 let after = displayText.substring(from: cursorPos, length: max(0, displayText.count - cursorPos))
 
-                if usesSystemCursor {
-                    displayText = before + systemCursorMarker + after
-                } else if !after.isEmpty {
+                let marker = usesSystemCursor ? systemCursorMarker : ""
+                if !after.isEmpty {
                     let first = after.prefixCharacters(1)
                     let rest = after.substring(from: 1, length: max(0, after.count - 1))
-                    let cursor = "\u{001B}[7m\(first)\u{001B}[0m"
-                    displayText = before + cursor + rest
+                    let cursor = renderFakeCursor(first)
+                    displayText = before + marker + cursor + rest
                 } else if lineVisibleWidth < width {
-                    let cursor = "\u{001B}[7m \u{001B}[0m"
-                    displayText = before + cursor
+                    let cursor = renderFakeCursor(" ")
+                    displayText = before + marker + cursor
                     lineVisibleWidth += 1
                     if lineVisibleWidth > contentWidth && effectivePaddingX > 0 {
                         cursorInPadding = true
@@ -488,9 +487,9 @@ open class Editor: SystemCursorAware, KillBufferAware, EditorComponent {
                 } else {
                     let beforeChars = Array(before)
                     if let last = beforeChars.last {
-                        let cursor = "\u{001B}[7m\(String(last))\u{001B}[0m"
+                        let cursor = renderFakeCursor(String(last))
                         let prefix = beforeChars.dropLast().map(String.init).joined()
-                        displayText = prefix + cursor
+                        displayText = prefix + marker + cursor
                     }
                 }
             }

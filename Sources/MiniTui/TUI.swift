@@ -976,7 +976,7 @@ public final class TUI: Container {
             if !isOverlayVisible(entry) { continue }
 
             let baseLayout = resolveOverlayLayout(options: entry.options, overlayHeight: 0, termWidth: termWidth, termHeight: termHeight)
-            var overlayLines = entry.component.render(width: baseLayout.width)
+            var overlayLines = resolveFakeCursors(entry.component.render(width: baseLayout.width), useSystemCursor: useSystemCursor)
             if let maxHeight = baseLayout.maxHeight, overlayLines.count > maxHeight {
                 overlayLines = Array(overlayLines.prefix(maxHeight))
             }
@@ -1116,6 +1116,7 @@ public final class TUI: Container {
         } else {
             renderedLines = render(width: width)
         }
+        renderedLines = resolveFakeCursors(renderedLines, useSystemCursor: useSystemCursor)
         do {
             renderedLines = compositeOverlays(
                 renderedLines,

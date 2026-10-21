@@ -21,7 +21,8 @@ func detectsHerdrCapabilities() {
     let capabilities = detectCapabilities(environment: [
         "TERM_PROGRAM": "herdr", "KITTY_WINDOW_ID": "1", "COLORTERM": "truecolor",
     ])
-    #expect(capabilities.images == nil)
+    // Upstream enables the Kitty image protocol in direct Herdr sessions.
+    #expect(capabilities.images == .kitty)
     #expect(capabilities.trueColor)
     #expect(capabilities.hyperlinks)
     #expect(!detectCapabilities(environment: ["TERM_PROGRAM": "herdr"]).trueColor)

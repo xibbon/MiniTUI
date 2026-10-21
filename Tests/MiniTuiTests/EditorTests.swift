@@ -697,7 +697,8 @@ func wrapsCjk() {
     for line in lines.dropFirst().dropLast() {
         #expect(visibleWidth(line) == width)
     }
-    let contentLines = lines.dropFirst().dropLast().map { stripVTControlCharacters($0).trimmingCharacters(in: .whitespaces) }
+    // Upstream fake cursor APC markers require full terminal sequence stripping.
+    let contentLines = lines.dropFirst().dropLast().map { stripTerminalSequences($0).trimmingCharacters(in: .whitespaces) }
     #expect(contentLines.count == 2)
     #expect(contentLines[0] == "日本語テ")
     #expect(contentLines[1] == "スト")
@@ -723,7 +724,8 @@ func rendersCursorOnWideChars() {
     editor.setText("A✅B")
     let lines = editor.render(width: width)
     let contentLine = lines[1]
-    #expect(contentLine.contains("\u{001B}[7m"))
+    // Upstream direct Editor output now contains a fake cursor APC marker.
+    #expect(contentLine.contains("\u{1b}_pi:fc\u{07}"))
     #expect(visibleWidth(contentLine) == width)
 }
 
@@ -748,7 +750,8 @@ func wrapsAtWordBoundaries() {
     let lines = editor.render(width: width)
 
     for line in lines.dropFirst().dropLast() {
-        let stripped = stripVTControlCharacters(line).trimmingTrailingWhitespace()
+        // Upstream fake cursor APC markers require full terminal sequence stripping.
+        let stripped = stripTerminalSequences(line).trimmingTrailingWhitespace()
         if stripped.isEmpty { continue }
         #expect(!stripped.first!.isWhitespace)
     }

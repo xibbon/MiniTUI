@@ -233,7 +233,7 @@ public final class Input: SystemCursorAware, KillBufferAware, Focusable {
             let first = placeholder.first.map(String.init) ?? " "
             let rest = String(placeholder.dropFirst())
             let marker = focused || usesSystemCursor ? systemCursorMarker : ""
-            let text = marker + "\u{001B}[7m" + options.placeholderStyle(first) + "\u{001B}[27m" + options.placeholderStyle(rest)
+            let text = marker + renderFakeCursor(options.placeholderStyle(first)) + options.placeholderStyle(rest)
             return [prompt + text + String(repeating: " ", count: max(0, availableWidth - visibleWidth(text)))]
         }
         renderedStartColumn = 0
@@ -271,14 +271,10 @@ public final class Input: SystemCursorAware, KillBufferAware, Focusable {
         let afterCursor = visibleText.substring(from: cursorDisplay, length: max(0, visibleText.count - cursorDisplay))
         let textWithCursor: String
 
-        if usesSystemCursor {
-            textWithCursor = beforeCursor + systemCursorMarker + afterCursor
-        } else {
-            let atCursor = afterCursor.isEmpty ? " " : afterCursor.prefixCharacters(1)
-            let remaining = afterCursor.isEmpty ? "" : afterCursor.substring(from: 1, length: max(0, afterCursor.count - 1))
-            let cursorChar = "\u{001B}[7m\(atCursor)\u{001B}[27m"
-            textWithCursor = beforeCursor + (focused ? systemCursorMarker : "") + cursorChar + remaining
-        }
+        let atCursor = afterCursor.isEmpty ? " " : afterCursor.prefixCharacters(1)
+        let remaining = afterCursor.isEmpty ? "" : afterCursor.substring(from: 1, length: max(0, afterCursor.count - 1))
+        let cursorChar = renderFakeCursor(atCursor)
+        textWithCursor = beforeCursor + (focused || usesSystemCursor ? systemCursorMarker : "") + cursorChar + remaining
 
         let visualLength = visibleWidth(textWithCursor)
         let padding = String(repeating: " ", count: max(0, availableWidth - visualLength))

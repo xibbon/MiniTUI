@@ -23,7 +23,8 @@ struct B1ComponentTests {
         input.focused = true
         let empty = input.render(width: 20)[0]
         #expect(empty.contains("\u{1b}[2m"))
-        #expect(empty.contains(systemCursorMarker + "\u{1b}[7m"))
+        // Upstream fake cursor APC contract for placeholder output.
+        #expect(empty.contains(systemCursorMarker + "\u{1b}_pi:fc\u{07}"))
         #expect(stripTerminalSequences(empty.replacingOccurrences(of: systemCursorMarker, with: "")).trimmingCharacters(in: .whitespacesAndNewlines) == "Find transcript")
         input.handleInput("n")
         #expect(stripTerminalSequences(input.render(width: 20)[0].replacingOccurrences(of: systemCursorMarker, with: "")).trimmingCharacters(in: .whitespacesAndNewlines) == "n")

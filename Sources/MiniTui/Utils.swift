@@ -826,7 +826,9 @@ public func extractSegments(
             pooledStyleTracker.process(ansi.code)
             if currentCol < beforeEnd {
                 pendingAnsiBefore += ansi.code
-            } else if currentCol >= afterStart && currentCol < afterEnd && afterStarted {
+            } else if currentCol >= afterStart && currentCol < afterEnd
+                && (afterStarted || ansi.code.hasPrefix("\u{1b}_")) {
+                // Keep APC markers at the start of the retained suffix.
                 after += ansi.code
             }
             i += ansi.length

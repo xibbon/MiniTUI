@@ -151,6 +151,8 @@ private let symbolKeys: Set<String> = [
     "?",
 ]
 
+private let shiftedSymbolKeys = Set("~!@#$%^&*()_+|{}:<>?".map(String.init))
+
 // Legacy key sequences for various terminals
 private let legacyKeySequences: [String: [String]] = [
     "up": ["\u{001B}[A", "\u{001B}OA"],
@@ -491,15 +493,17 @@ private func matchesKittySequence(_ data: String, expectedCodepoint: Int, expect
     let actualMod = parsed.modifier & ~lockMask
     let expectedMod = expectedModifier & ~lockMask
 
-    // Check if modifiers match
-    if actualMod != expectedMod { return false }
-
-    // Primary match: codepoint matches directly. v0.70.5: also normalize Kitty functional
-    // KP_* codepoints (57399-57426) to their semantic equivalents (digits, arrows, nav) so
-    // a binding for "Up" matches both the dedicated arrow and KP_8 with num-lock off.
+    // Keep the physical key and all its modifiers.
     let normalizedActual = normalizeKittyFunctionalCodepoint(parsed.codepoint)
     let normalizedExpected = normalizeKittyFunctionalCodepoint(expectedCodepoint)
-    if normalizedActual == normalizedExpected { return true }
+    if actualMod == expectedMod && normalizedActual == normalizedExpected { return true }
+
+    // Remove only the implicit Shift from the produced symbol.
+    if let logical = logicalShiftedSymbol(parsed.shiftedKey, modifier: actualMod, allowedSymbols: symbolKeys),
+       logical.modifier == expectedMod, logical.codepoint == normalizedExpected {
+        return true
+    }
+    if actualMod != expectedMod { return false }
 
     // Alternate match: use base layout key for non-Latin keyboard layouts
     // This allows Ctrl+С (Cyrillic) to match Ctrl+c (Latin) when terminal reports
@@ -518,7 +522,20 @@ private func matchesKittySequence(_ data: String, expectedCodepoint: Int, expect
 
 private func matchesModifyOtherKeys(_ data: String, expectedKeycode: Int, expectedModifier: Int) -> Bool {
     guard let parsed = parseModifyOtherKeysSequence(data) else { return false }
-    return parsed.codepoint == expectedKeycode && parsed.modifier == expectedModifier
+    if parsed.codepoint == expectedKeycode && parsed.modifier == expectedModifier { return true }
+    guard let logical = logicalShiftedSymbol(parsed.codepoint, modifier: parsed.modifier, allowedSymbols: shiftedSymbolKeys) else {
+        return false
+    }
+    return logical.codepoint == expectedKeycode && logical.modifier == expectedModifier
+}
+
+private func logicalShiftedSymbol(
+    _ codepoint: Int?, modifier: Int, allowedSymbols: Set<String>
+) -> (codepoint: Int, modifier: Int)? {
+    guard let codepoint, modifier & Modifiers.shift != 0 else { return nil }
+    let normalized = normalizeKittyFunctionalCodepoint(codepoint)
+    guard let scalar = UnicodeScalar(normalized), allowedSymbols.contains(String(scalar)) else { return nil }
+    return (normalized, modifier & ~Modifiers.shift)
 }
 
 private struct ParsedModifyOtherKeysSequence {
@@ -554,19 +571,31 @@ private struct ParsedKeyId {
 }
 
 private func parseKeyId(_ keyId: String) -> ParsedKeyId? {
-    let parts = keyId.lowercased().split(separator: "+").map(String.init)
-    guard let key = parts.last, !key.isEmpty else { return nil }
+    var key = keyId.lowercased()
+    var modifiers: Set<String> = []
+    let names = ["shift", "alt", "ctrl", "super", "cmd", "meta"]
+    while let name = names.first(where: { key.hasPrefix($0 + "+") }) {
+        let modifier = (name == "cmd" || name == "meta") ? "super" : name
+        guard modifiers.insert(modifier).inserted else { return nil }
+        key.removeFirst(name.count + 1)
+    }
+    guard !key.isEmpty, !key.contains("+") || key == "+" else { return nil }
     return ParsedKeyId(
         key: key,
-        ctrl: parts.contains("ctrl"),
-        shift: parts.contains("shift"),
-        alt: parts.contains("alt"),
-        superKey: parts.contains("super") || parts.contains("cmd") || parts.contains("meta")
+        ctrl: modifiers.contains("ctrl"),
+        shift: modifiers.contains("shift"),
+        alt: modifiers.contains("alt"),
+        superKey: modifiers.contains("super")
     )
 }
 
 /// Return true when input matches a key identifier (legacy or Kitty protocol).
 public func matchesKey(_ data: String, _ keyId: KeyId) -> Bool {
+    matchesKey(data, keyId, kittyActive: isKittyProtocolActive())
+}
+
+// An explicit mode lets tests avoid shared terminal state.
+func matchesKey(_ data: String, _ keyId: KeyId, kittyActive: Bool) -> Bool {
     guard let parsed = parseKeyId(keyId) else { return false }
 
     let key = parsed.key
@@ -581,9 +610,8 @@ public func matchesKey(_ data: String, _ keyId: KeyId) -> Bool {
     if ctrl { modifier |= Modifiers.ctrl }
     // v0.67.2: super (bit 8) — only honored under Kitty keyboard protocol.
     if superKey { modifier |= 8 }
-    let kittyActive = isKittyProtocolActive()
-    // Super-modified bindings can only ever match through the Kitty parser,
-    // since legacy escape sequences cannot encode super.
+    // Keep Super bindings limited to Kitty mode. Encoded input can use
+    // Kitty sequences or modifyOtherKeys once that mode is active.
     if superKey && !kittyActive {
         return false
     }
@@ -847,6 +875,11 @@ public func matchesKey(_ data: String, _ keyId: KeyId) -> Bool {
         if isLetter || isDigit || isSymbol {
             let codepoint = Int(scalar.value)
 
+            if superKey {
+                return matchesKittySequence(data, expectedCodepoint: codepoint, expectedModifier: modifier)
+                    || matchesModifyOtherKeys(data, expectedKeycode: codepoint, expectedModifier: modifier)
+            }
+
             if ctrl && !shift && !alt {
                 if let raw = rawCtrlChar(key) {
                     if data == raw { return true }
@@ -902,6 +935,7 @@ private func formatParsedKey(codepoint: Int, modifier: Int) -> KeyId? {
     if (effectiveMod & Modifiers.shift) != 0 { mods.append("shift") }
     if (effectiveMod & Modifiers.ctrl) != 0 { mods.append("ctrl") }
     if (effectiveMod & Modifiers.alt) != 0 { mods.append("alt") }
+    if (effectiveMod & Modifiers.superKey) != 0 { mods.append("super") }
 
     let normalizedCodepoint = normalizeKittyFunctionalCodepoint(codepoint)
     let keyName: String?
@@ -963,11 +997,15 @@ public func parseKey(_ data: String) -> KeyId? {
     let kittyActive = isKittyProtocolActive()
 
     if let kitty = parseKittySequence(data) {
+        if let logical = logicalShiftedSymbol(kitty.shiftedKey, modifier: kitty.modifier, allowedSymbols: symbolKeys) {
+            return formatParsedKey(codepoint: logical.codepoint, modifier: logical.modifier)
+        }
         let effectiveMod = kitty.modifier & ~lockMask
         var mods: [String] = []
         if (effectiveMod & Modifiers.shift) != 0 { mods.append("shift") }
         if (effectiveMod & Modifiers.ctrl) != 0 { mods.append("ctrl") }
         if (effectiveMod & Modifiers.alt) != 0 { mods.append("alt") }
+        if (effectiveMod & Modifiers.superKey) != 0 { mods.append("super") }
 
         // When shift is held and a shifted codepoint is reported, prefer the shifted
         // character for printable keys (e.g., 'C' instead of shift+'c').
@@ -1038,6 +1076,9 @@ public func parseKey(_ data: String) -> KeyId? {
     }
 
     if let modifyOtherKeys = parseModifyOtherKeysSequence(data) {
+        if let logical = logicalShiftedSymbol(modifyOtherKeys.codepoint, modifier: modifyOtherKeys.modifier, allowedSymbols: shiftedSymbolKeys) {
+            return formatParsedKey(codepoint: logical.codepoint, modifier: logical.modifier)
+        }
         return formatParsedKey(codepoint: modifyOtherKeys.codepoint, modifier: modifyOtherKeys.modifier)
     }
 

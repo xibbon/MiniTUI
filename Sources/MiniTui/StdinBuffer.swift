@@ -4,6 +4,24 @@ private let esc = "\u{001B}"
 private let bracketedPasteStart = "\u{001B}[200~"
 private let bracketedPasteEnd = "\u{001B}[201~"
 
+private let terminalReplyHeaderPattern = #"^\x1b(?:\](?:1[01];|4;\d{1,3};|7501;\?)|P>\||_G(?:[a-z]=\d+,)*[a-z]=\d+;)"#
+
+// ICU includes Unicode digits in \d. JavaScript uses only ASCII digits.
+private let terminalReplyHeaderRegex = try! NSRegularExpression(
+    pattern: terminalReplyHeaderPattern.replacingOccurrences(of: #"\d"#, with: "[0-9]")
+)
+
+private func isControlString(_ data: String) -> Bool {
+    data.hasPrefix("\(esc)]") || data.hasPrefix("\(esc)P") || data.hasPrefix("\(esc)_")
+}
+
+private func hasTerminalReplyHeader(_ data: String) -> Bool {
+    terminalReplyHeaderRegex.firstMatch(
+        in: data,
+        range: NSRange(data.startIndex..<data.endIndex, in: data)
+    ) != nil
+}
+
 /// v0.70.1: decode CSI-u Ctrl+letter sequences inside bracketed-paste payloads.
 ///
 /// When Kitty keyboard protocol is active and the user pastes text that contains a Ctrl+letter
@@ -165,9 +183,27 @@ private func extractCompleteSequences(_ buffer: String) -> (sequences: [String],
     while pos < buffer.count {
         let remaining = buffer.substring(from: pos, length: buffer.count - pos)
         if remaining.hasPrefix(esc) {
+            let terminalReply = isControlString(remaining) && hasTerminalReplyHeader(remaining)
             var seqEnd = 1
             var found = false
             while seqEnd <= remaining.count {
+                if terminalReply && seqEnd > 2 {
+                    let character = remaining.substring(from: seqEnd - 1, length: 1)
+                    if character == "\u{0018}" || character == "\u{001A}" {
+                        // CAN and SUB cancel the reply. Keep the input after it.
+                        pos += seqEnd
+                        found = true
+                        break
+                    }
+                    if character == esc && seqEnd < remaining.count,
+                       remaining.substring(from: seqEnd, length: 1) != "\\" {
+                        // A new escape aborts the reply. Hold a final ESC until
+                        // the next byte identifies ST or a new escape sequence.
+                        pos += seqEnd - 1
+                        found = true
+                        break
+                    }
+                }
                 let candidate = remaining.substring(from: 0, length: seqEnd)
                 let status = isCompleteSequence(candidate)
 
@@ -358,19 +394,24 @@ public final class StdinBuffer {
         buffer = result.remainder
 
         for sequence in result.sequences {
-            if shouldDropPendingKittyDuplicate(sequence) {
-                continue
-            }
-            emit(.data, payload: sequence)
-            pendingKittyDuplicate = kittyPrintableCharacter(sequence)
+            emitDataSequence(sequence)
         }
 
         if !buffer.isEmpty {
+            // A recognized reply must wait for its terminator. A timeout can
+            // turn its delayed tail into text and its BEL into Ctrl+G.
+            if hasTerminalReplyHeader(buffer) { return }
             let workItem = DispatchWorkItem { [weak self] in
                 guard let self else { return }
                 let flushed = self.flush()
                 for sequence in flushed {
-                    self.emit(.data, payload: sequence)
+                    if sequence.count > 2 && isControlString(sequence) {
+                        // Recover the Alt key, then parse text and control keys.
+                        self.emitDataSequence(String(sequence.prefix(2)))
+                        self.process(String(sequence.dropFirst(2)))
+                    } else {
+                        self.emitDataSequence(sequence)
+                    }
                 }
             }
             timeoutWorkItem = workItem
@@ -446,6 +487,12 @@ public final class StdinBuffer {
         }
         self.pendingKittyDuplicate = nil
         return true
+    }
+
+    private func emitDataSequence(_ sequence: String) {
+        if shouldDropPendingKittyDuplicate(sequence) { return }
+        emit(.data, payload: sequence)
+        pendingKittyDuplicate = kittyPrintableCharacter(sequence)
     }
 }
 
