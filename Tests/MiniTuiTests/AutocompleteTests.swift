@@ -94,3 +94,29 @@ func scopesFuzzyAtSearchToPathPrefix() throws {
     #expect(values.contains("@../outside/nested/deeper/also-alpha.ts"))
     #expect(!values.contains("@../outside/nested/deeper/zzz.ts"))
 }
+
+@MainActor
+@Test("reads a large fd listing without blocking", .timeLimit(.minutes(1)))
+func readsLargeFdListingWithoutBlocking() throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("mt-autocomplete-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+
+    // More output than a pipe holds, on stdout and on stderr.
+    let fdScriptPath = root.appendingPathComponent("fake-fd.sh").path
+    let script = """
+    #!/bin/sh
+    head -c 1048576 /dev/zero >&2
+    i=0
+    while [ $i -lt 20000 ]; do echo "dir/file-$i.ts"; i=$((i + 1)); done
+    """
+    try script.write(toFile: fdScriptPath, atomically: true, encoding: .utf8)
+    try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: fdScriptPath)
+
+    let provider = CombinedAutocompleteProvider(commands: [], items: [], basePath: root.path, fdPath: fdScriptPath)
+    let line = "@file-1999"
+    let result = provider.getSuggestions(lines: [line], cursorLine: 0, cursorCol: line.count)
+    let values = result?.items.map(\.value) ?? []
+
+    #expect(values.contains("@dir/file-1999.ts"))
+}

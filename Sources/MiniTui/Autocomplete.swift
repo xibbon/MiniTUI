@@ -141,9 +141,8 @@ private func walkDirectoryWithFd(
     process.arguments = args
 
     let outputPipe = Pipe()
-    let errorPipe = Pipe()
     process.standardOutput = outputPipe
-    process.standardError = errorPipe
+    process.standardError = FileHandle.nullDevice
 
     do {
         try process.run()
@@ -151,13 +150,14 @@ private func walkDirectoryWithFd(
         return []
     }
 
+    // Read before the wait: a large listing fills the pipe and blocks fd.
+    let data = outputPipe.fileHandleForReading.readDataToEndOfFile()
     process.waitUntilExit()
 
     guard process.terminationStatus == 0 else {
         return []
     }
 
-    let data = outputPipe.fileHandleForReading.readDataToEndOfFile()
     guard let output = String(data: data, encoding: .utf8), !output.isEmpty else {
         return []
     }
