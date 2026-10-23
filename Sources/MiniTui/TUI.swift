@@ -240,7 +240,7 @@ public final class TUI: Container {
     fileprivate final class OverlayEntry {
         let component: Component
         let options: OverlayOptions?
-        let preFocus: Component?
+        var preFocus: Component?
         var hidden: Bool
         var bounds: OverlayBounds?
 
@@ -351,7 +351,9 @@ public final class TUI: Container {
 
     /// Hide the topmost overlay and restore previous focus.
     public func hideOverlay() {
-        guard let overlay = overlayStack.popLast() else { return }
+        guard let overlay = overlayStack.last else { return }
+        retargetOverlayPreFocus(overlay)
+        overlayStack.removeLast()
         let topVisible = getTopmostVisibleOverlay()
         setFocus(topVisible?.component ?? overlay.preFocus)
         updateCursorMode()
@@ -365,6 +367,7 @@ public final class TUI: Container {
 
     fileprivate func removeOverlay(_ entry: OverlayEntry) {
         guard let index = overlayStack.firstIndex(where: { $0 === entry }) else { return }
+        retargetOverlayPreFocus(entry)
         overlayStack.remove(at: index)
         if focusedComponent === entry.component {
             let topVisible = getTopmostVisibleOverlay()
@@ -372,6 +375,13 @@ public final class TUI: Container {
         }
         updateCursorMode()
         requestRender()
+    }
+
+    /// An overlay that saved the removed one as its previous focus now restores the removed one's previous focus.
+    private func retargetOverlayPreFocus(_ removed: OverlayEntry) {
+        for overlay in overlayStack where overlay !== removed && overlay.preFocus === removed.component {
+            overlay.preFocus = removed.preFocus
+        }
     }
 
     fileprivate func setOverlayHidden(_ entry: OverlayEntry, hidden: Bool) {

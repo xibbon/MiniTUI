@@ -509,3 +509,28 @@ func overlayStackHideOrder() async {
     #expect(viewport[0].contains("FIRST"))
     tui.stop()
 }
+
+// Upstream tui.ts retargetOverlayPreFocus: closing a lower overlay must not leave the upper one
+// restoring focus to the removed component.
+@MainActor
+@Test("closing a lower capturing overlay retargets the upper overlay's previous focus", arguments: [false, true])
+func closingLowerOverlayRetargetsPreFocus(useHideOverlay: Bool) async {
+    let terminal = VirtualTerminal(columns: 80, rows: 24)
+    let tui = TUI(terminal: terminal)
+    let editor = StaticOverlay(["editor"])
+    let lower = StaticOverlay(["LOWER"])
+    let upper = StaticOverlay(["UPPER"])
+    tui.addChild(editor)
+    tui.setFocus(editor)
+
+    let lowerHandle = tui.showOverlay(lower)
+    let upperHandle = tui.showOverlay(upper)
+    #expect(tui.getFocusedComponent() === upper)
+
+    lowerHandle.hide()
+    #expect(tui.getFocusedComponent() === upper)
+
+    if useHideOverlay { tui.hideOverlay() } else { upperHandle.hide() }
+    #expect(tui.getFocusedComponent() === editor)
+    #expect(!tui.hasOverlay())
+}
