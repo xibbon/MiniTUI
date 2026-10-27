@@ -105,6 +105,14 @@ private func buildCompletionValue(
     return "\(prefix)\"\(path)\""
 }
 
+private func escapeFdRegex(_ query: String) -> String {
+    let metacharacters: Set<Character> = Set(".*+?^${}()|[]\\")
+    return query.reduce(into: "") { result, character in
+        if metacharacters.contains(character) { result.append("\\") }
+        result.append(character)
+    }
+}
+
 private func walkDirectoryWithFd(
     baseDir: String,
     fdPath: String,
@@ -133,7 +141,7 @@ private func walkDirectoryWithFd(
     ]
     if let maxDepth { args += ["--max-depth", String(maxDepth)] }
     if !query.isEmpty {
-        args.append(query)
+        args.append(escapeFdRegex(query))
     }
 
     let process = Process()

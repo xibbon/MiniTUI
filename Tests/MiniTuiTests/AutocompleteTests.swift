@@ -76,7 +76,8 @@ func scopesFuzzyAtSearchToPathPrefix() throws {
 
     if [[ "$base" == */outside ]]; then
       for path in "nested/alpha.ts" "nested/deeper/also-alpha.ts" "nested/deeper/zzz.ts"; do
-        if [[ -z "$query" || "$path" == *"$query"* ]]; then
+        # Upstream v1.4.0 escapes fd regex queries. Apply the regex as fd does.
+        if [[ -z "$query" || "$path" =~ $query ]]; then
           echo "$path"
         fi
       done

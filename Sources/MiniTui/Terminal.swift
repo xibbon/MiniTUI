@@ -22,6 +22,10 @@ public protocol Terminal: AnyObject {
     func setIOErrorHandler(_ handler: (@Sendable (TerminalIOError) -> Void)?)
     /// Stop the terminal and restore any modified state.
     func stop()
+    /// Return a synchronous emergency restore hook. The returned closure must be safe
+    /// to call from a process exit callback, without an actor or normal I/O teardown.
+    /// It writes `before`, its own mode resets, then `after`.
+    var restoreOnExit: TerminalExitRestoreHandler { get }
     /// Drain stdin before exiting to prevent Kitty key release events leaking to the parent shell.
     func drainInput(maxMs: Int, idleMs: Int)
     /// Write raw data to the terminal output.
@@ -55,6 +59,9 @@ public protocol Terminal: AnyObject {
 }
 
 public extension Terminal {
+    /// Existing terminals can omit emergency restore support.
+    var restoreOnExit: TerminalExitRestoreHandler { { _, _ in } }
+
     /// Existing terminal implementations do not receive new feature queries.
     var supportsTerminalQueries: Bool { false }
 
@@ -109,6 +116,14 @@ public final class ProcessTerminal: Terminal {
 
     public var supportsTerminalQueries: Bool { true }
 
+    public var restoreOnExit: TerminalExitRestoreHandler {
+        let state = io.exitState
+        return { before, after in state.restore(before: before, after: after) }
+    }
+
+    // TUI can enter renderer modes before raw input starts.
+    func prepareExitRestore() { io.exitState.arm() }
+
     public var kittyProtocolActive: Bool {
         return kittyProtocolActiveFlag
     }
@@ -153,12 +168,14 @@ public final class ProcessTerminal: Terminal {
 
     /// Stop raw input and restore the previous terminal state.
     public func stop() {
+        io.exitState.disarm()
         write("\u{001B}[?2004l")
-        if kittyProtocolActiveFlag {
+        if kittyProtocolActiveFlag || io.exitState.kitty {
             write("\u{001B}[<u")
             kittyProtocolActiveFlag = false
             setKittyProtocolActive(false)
         }
+        if io.exitState.modifyOtherKeys { write("\u{001B}[>4;0m") }
 
         kittyQueryWorkItem?.cancel()
         kittyQueryWorkItem = nil
@@ -178,11 +195,12 @@ public final class ProcessTerminal: Terminal {
     public func drainInput(maxMs: Int = 1000, idleMs: Int = 50) {
         guard io.beginDrain() else { return }
         defer { io.endDrain() }
-        if kittyProtocolActiveFlag {
+        if kittyProtocolActiveFlag || io.exitState.kitty {
             write("\u{001B}[<u")
             kittyProtocolActiveFlag = false
             setKittyProtocolActive(false)
         }
+        if io.exitState.modifyOtherKeys { write("\u{001B}[>4;0m") }
 
         let endTime = Date().addingTimeInterval(Double(maxMs) / 1000.0)
         while !io.isLost && Date() < endTime {
@@ -285,6 +303,7 @@ public final class ProcessTerminal: Terminal {
 
     /// Write UTF-8 data to stdout.
     public func write(_ data: String) {
+        io.exitState.recordOutput(data)
         if let output = data.data(using: .utf8), io.write(output) {
             if let writeLogPath {
                 do {

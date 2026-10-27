@@ -97,6 +97,11 @@ public protocol TuiRenderer: AnyObject {
     func stop(preserveScreen: Bool)
     func present(_ frame: TuiRenderFrame)
 
+    /// Synchronous mode resets that precede the common and terminal resets at exit.
+    var exitRestorePrefix: String { get }
+    /// Synchronous mode resets that follow the terminal resets at exit.
+    var exitRestoreSuffix: String { get }
+
     /// Drop cached differential state for an explicit full render.
     func invalidateRenderState()
 
@@ -108,4 +113,9 @@ public protocol TuiRenderer: AnyObject {
 
     /// Receive render state from the renderer that previously owned the terminal.
     func takeOverRenderState(from previous: any TuiRenderer)
+}
+
+public extension TuiRenderer {
+    var exitRestorePrefix: String { "" }
+    var exitRestoreSuffix: String { "" }
 }

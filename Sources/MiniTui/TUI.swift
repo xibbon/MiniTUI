@@ -182,6 +182,7 @@ public final class TUI: Container {
         case programStatus(stale: Bool)
     }
     private var terminalColorSchemeNotificationsEnabled = false
+    private let exitRestoreRegistration = TerminalExitRegistration()
     private var clearOnShrink = false
     /// v0.70.5: rate-limit renders to ~60Hz so streaming token bursts don't redraw faster
     /// than terminals can repaint. `lastRenderAt` is updated each time `doRender()` actually
@@ -267,6 +268,9 @@ public final class TUI: Container {
 
     /// Register a renderer that can become active in a later mode switch.
     public func registerRenderer(_ renderer: any TuiRenderer) {
+        if let renderer = renderer as? AltScreenRenderer {
+            renderer.exitRestoreDidChange = { [weak self] in self?.updateExitRestore() }
+        }
         if let renderer = renderer as? MainScreenRenderer {
             renderer.setRenderFailureHandler { [weak self] in
                 self?.stop()
@@ -304,6 +308,7 @@ public final class TUI: Container {
         invalidate()
         if terminalStarted {
             activeRenderer.start()
+            updateExitRestore()
             requestRender()
         }
         return true
@@ -507,7 +512,10 @@ public final class TUI: Container {
     /// Start terminal input and initial rendering.
     public func start() {
         stopped = false
+        (terminal as? ProcessTerminal)?.prepareExitRestore()
+        updateExitRestore()
         activeRenderer.start()
+        updateExitRestore()
         terminal.start(onInput: { [weak self] data in
             Task { @MainActor in
                 self?.handleTerminalInput(data)
@@ -539,6 +547,7 @@ public final class TUI: Container {
     public func stop() {
         let canClearProgramStatus = canWriteProgramStatus
         stopped = true
+        exitRestoreRegistration.disarm()
         for index in pendingDeviceAttributesQueries.indices {
             if case .programStatus = pendingDeviceAttributesQueries[index] {
                 pendingDeviceAttributesQueries[index] = .programStatus(stale: true)
@@ -560,6 +569,16 @@ public final class TUI: Container {
         terminal.showCursor()
         terminal.stop()
         terminalStarted = false
+    }
+
+    private func updateExitRestore() {
+        guard !stopped else { return }
+        let common = (terminalColorSchemeNotificationsEnabled ? "\u{001B}[?2031l" : "") + "\u{001B}[?25h"
+        exitRestoreRegistration.arm(
+            restore: terminal.restoreOnExit,
+            before: activeRenderer.exitRestorePrefix + common,
+            after: activeRenderer.exitRestoreSuffix
+        )
     }
 
     /// Request a render, optionally forcing a full redraw. v0.70.5: renders are throttled to
@@ -740,6 +759,7 @@ public final class TUI: Container {
         guard terminalColorSchemeNotificationsEnabled != enabled else { return }
         terminalColorSchemeNotificationsEnabled = enabled
         if !stopped {
+            updateExitRestore()
             terminal.write(enabled ? "\u{001B}[?2031h" : "\u{001B}[?2031l")
         }
     }

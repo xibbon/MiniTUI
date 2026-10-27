@@ -141,6 +141,7 @@ public final class Markdown: Component {
     private let options: MarkdownOptions
     private var defaultStylePrefix: String?
     private var sourceText = ""
+    private var cjkParserPadding: String?
 
     private var cachedText: String?
     private var cachedTransformedText: String?
@@ -208,8 +209,10 @@ public final class Markdown: Component {
         let normalizedText = trimPartialClosingFence(
             escapeSingleTildeDelimiters(transformedText.replacingOccurrences(of: "\t", with: "   "))
         )
-        sourceText = normalizedText
-        let document = MarkdownDocumentCache.shared.document(for: normalizedText).document
+        let parserInput = MarkdownCJKParserInput(normalizedText)
+        sourceText = parserInput.source
+        cjkParserPadding = parserInput.padding
+        let document = MarkdownDocumentCache.shared.document(for: parserInput.source).document
         let blocks = Array(document.children)
 
         let blockOutputs: [(lines: [String], isBlank: Bool)] = blocks.map { block in
@@ -616,6 +619,7 @@ public final class Markdown: Component {
             return theme.strikethrough(renderInlineChildren(del, context: context)) + context.stylePrefix
         }
         if let html = markup as? InlineHTML {
+            if html.rawHTML == cjkParserPadding { return "" }
             return applyTextWithNewlines(html.rawHTML, context: context)
         }
 

@@ -39,7 +39,13 @@ let package = Package(
         .testTarget(
             name: "MiniTuiTests",
             dependencies: ["MiniTui"],
+            exclude: ["ExitRestoreFixture"],
             resources: [.process("Resources")]
+        ),
+        .executableTarget(
+            name: "MiniTuiExitRestoreFixture",
+            dependencies: ["MiniTui"],
+            path: "Tests/MiniTuiTests/ExitRestoreFixture"
         ),
         .executableTarget(
             name: "MiniTuiDemo",

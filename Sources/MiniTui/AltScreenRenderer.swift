@@ -284,6 +284,7 @@ public final class AltScreenRenderer: TuiRenderer, TuiLayoutRenderer, TuiInputRe
     private var previousHeight = 0
     private var currentLayout: LayoutFrame?
     private var altScreenActive = false
+    var exitRestoreDidChange: (() -> Void)?
     private var lastUseSystemCursor = false
     private var imageProtocol: ImageProtocol?
     private var savedCapabilities: TerminalCapabilities?
@@ -400,6 +401,7 @@ public final class AltScreenRenderer: TuiRenderer, TuiLayoutRenderer, TuiInputRe
         stopScrollbarDrag()
         flashes.dispose()
         altScreenActive = true
+        exitRestoreDidChange?()
         let capabilities = getCapabilities()
         imageProtocol = capabilities.images
         uploadedKittyImages.removeAll()
@@ -425,6 +427,14 @@ public final class AltScreenRenderer: TuiRenderer, TuiLayoutRenderer, TuiInputRe
                 + (options.mouse ? mouseSequence : "")
                 + "\u{001B}[2J\u{001B}[H\u{001B}[?25l"
         )
+    }
+
+    public var exitRestorePrefix: String {
+        altScreenActive ? endSynchronizedOutput + (options.mouse ? disableMouse : "") + enableAutowrap : ""
+    }
+
+    public var exitRestoreSuffix: String {
+        altScreenActive ? exitAltScreen + "\u{001B}[?25h" : ""
     }
 
     public func stop(preserveScreen: Bool = false) {
@@ -464,6 +474,7 @@ public final class AltScreenRenderer: TuiRenderer, TuiLayoutRenderer, TuiInputRe
             terminal.write(buffer)
         }
         altScreenActive = false
+        exitRestoreDidChange?()
         if let savedCapabilities {
             setCapabilities(savedCapabilities)
             self.savedCapabilities = nil

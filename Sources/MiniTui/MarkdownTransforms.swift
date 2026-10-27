@@ -100,6 +100,21 @@ private func isLikelyInlineDollarMath(
     return true
 }
 
+// Match the table boundary used by the upstream display-math tokenizer. One of the
+// two rows must have a pipe, so an ordinary thematic break is not a table boundary.
+func containsMarkdownTableStart(_ source: String) -> Bool {
+    let lines = source.split(separator: "\n", omittingEmptySubsequences: false)
+    let delimiter = #"^ {0,3}\|?[ \t]*:?-+:?[ \t]*(?:\|[ \t]*:?-+:?[ \t]*)*\|?[ \t]*$"#
+    for index in lines.indices.dropLast() {
+        let next = lines[index + 1]
+        if (lines[index].contains("|") || next.contains("|")),
+           next.range(of: delimiter, options: .regularExpression) != nil {
+            return true
+        }
+    }
+    return false
+}
+
 private func transformMathSegment(_ source: String) -> String {
     let characters = Array(source)
     var result = ""
@@ -159,6 +174,11 @@ private func transformMathSegment(_ source: String) -> String {
 
         let body = String(characters[(position + opening.count)..<close])
         let closeEnd = close + closing.count
+        if display, containsMarkdownTableStart(body) {
+            result += String(opening)
+            position += opening.count
+            continue
+        }
         if opening == ["$"], !isLikelyInlineDollarMath(body: body, closeEnd: closeEnd, characters: characters) {
             result.append(characters[position])
             position += 1

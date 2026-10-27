@@ -74,6 +74,7 @@ struct TerminalIOCalls: Sendable {
 /// All I/O state and system calls use this lock. Callbacks run outside the lock.
 final class CheckedTerminalIO: Sendable {
     private struct State {
+        let exitRestore: TerminalExitState
         var handler: (@Sendable (TerminalIOError) -> Void)?
         var lost = false
         var inputStopped = false
@@ -90,6 +91,8 @@ final class CheckedTerminalIO: Sendable {
         mutating func record(_ error: TerminalIOError) {
             guard !lost else { return }
             if error.isTerminalLoss {
+                // Disarm before the host can exit from error delivery.
+                exitRestore.invalidate()
                 lost = true
                 inputStopped = true
                 outputStopped = true
@@ -109,13 +112,15 @@ final class CheckedTerminalIO: Sendable {
     let outputDescriptor: Int32
     private let isTerminalInput: Bool
     private let calls: TerminalIOCalls
+    let exitState: TerminalExitState
 
     init(inputDescriptor: Int32, outputDescriptor: Int32, calls: TerminalIOCalls) {
         self.inputDescriptor = inputDescriptor
         self.outputDescriptor = outputDescriptor
         self.calls = calls
         isTerminalInput = isatty(inputDescriptor) == 1
-        var initial = State()
+        exitState = TerminalExitState(inputDescriptor: inputDescriptor, outputDescriptor: outputDescriptor, calls: calls)
+        var initial = State(exitRestore: exitState)
         #if canImport(Darwin)
         if fcntl(outputDescriptor, F_SETNOSIGPIPE, 1) == -1 {
             let savedErrno = errno
@@ -160,6 +165,7 @@ final class CheckedTerminalIO: Sendable {
     }
 
     func startRawMode() {
+        exitState.arm()
         state.withLock { state in
             guard !state.lost else { return }
             state.inputStopped = false
@@ -170,6 +176,7 @@ final class CheckedTerminalIO: Sendable {
                 return
             }
             state.originalTermios = attributes
+            exitState.save(attributes)
             cfmakeraw(&attributes)
             if calls.setAttributes(inputDescriptor, TCSANOW, &attributes) != 0 {
                 let savedErrno = errno
@@ -244,6 +251,7 @@ final class CheckedTerminalIO: Sendable {
     }
 
     func stop() {
+        exitState.disarm()
         state.withLock { state in
             state.inputStopped = true
             state.readSource?.cancel()

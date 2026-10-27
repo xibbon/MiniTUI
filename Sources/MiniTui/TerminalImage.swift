@@ -389,6 +389,15 @@ private func detectCapabilitiesFromEnvironment(_ env: [String: String], tmuxForw
         return TerminalCapabilities(images: isMultiplexed ? nil : .kitty, trueColor: trueColor, hyperlinks: hyperlinks)
     }
 
+    if termProgram == "rex" {
+        // Keep multiplexer limits before Rex's own terminal capabilities.
+        if isMultiplexed {
+            let trueColor = colorTerm == "truecolor" || colorTerm == "24bit" || term.hasSuffix("-direct")
+            return TerminalCapabilities(images: nil, trueColor: trueColor, hyperlinks: hyperlinks)
+        }
+        return TerminalCapabilities(images: .kitty, trueColor: true, hyperlinks: true)
+    }
+
     if env["KITTY_WINDOW_ID"] != nil || termProgram == "kitty" || term.contains("kitty") {
         return TerminalCapabilities(images: .kitty, trueColor: true, hyperlinks: hyperlinks)
     }
