@@ -157,6 +157,7 @@ private struct KittyMetadataRegistry: Sendable {
     var values: [UInt32: KittyImageMetadata] = [:]
     var insertionOrder: [UInt32] = []
     var transmissionGeneration = 0
+    var maxRows = 0
 }
 
 private let kittyMetadataRegistry = LockedValue(KittyMetadataRegistry())
@@ -204,6 +205,7 @@ func registerKittyImageMetadata(
 ) {
     kittyMetadataRegistry.update { registry in
         registry.transmissionGeneration += 1
+        registry.maxRows = max(registry.maxRows, rows)
         registry.insertionOrder.removeAll { $0 == imageID }
         registry.insertionOrder.append(imageID)
         registry.values[imageID] = KittyImageMetadata(
@@ -219,6 +221,11 @@ func registerKittyImageMetadata(
             registry.values.removeValue(forKey: oldestID)
         }
     }
+}
+
+/// The tallest registered image bounds a reverse search for a visible crop.
+func getMaxKittyImageRows() -> Int {
+    kittyMetadataRegistry.get().maxRows
 }
 
 func getKittyImageMetadata(_ line: String) -> KittyImageMetadata? {

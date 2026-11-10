@@ -532,25 +532,24 @@ private func paintBox(_ box: LayoutBox, screen: inout [String], totalWidth: Int)
        let scrollContentLines = box.scrollContentLines,
        scrollView.scrollTop > 0,
        box.rect.height > 0 {
-        for imageRow in stride(from: scrollView.scrollTop - 1, through: 0, by: -1) {
+        let minimumRow = max(0, scrollView.scrollTop - getMaxKittyImageRows())
+        for imageRow in stride(from: scrollView.scrollTop - 1, through: minimumRow, by: -1) {
             let imageLine = scrollContentLines.indices.contains(imageRow) ? scrollContentLines[imageRow] : ""
-            if let metadata = getKittyImageMetadata(imageLine) {
-                let hiddenRows = scrollView.scrollTop - imageRow
-                if hiddenRows < metadata.rows {
-                    let visibleRows = min(box.rect.height, metadata.rows - hiddenRows)
-                    let cropped = cropKittyImageLine(
-                        imageLine,
-                        hiddenRows: hiddenRows,
-                        visibleRows: visibleRows
-                    )
-                    if box.rect.x == 0, box.rect.width >= totalWidth,
-                       screen.indices.contains(box.rect.y) {
-                        screen[box.rect.y] = cropped
-                    }
+            guard isImageLine(imageLine), let metadata = getKittyImageMetadata(imageLine) else { continue }
+            let hiddenRows = scrollView.scrollTop - imageRow
+            if hiddenRows < metadata.rows {
+                let visibleRows = min(box.rect.height, metadata.rows - hiddenRows)
+                let cropped = cropKittyImageLine(
+                    imageLine,
+                    hiddenRows: hiddenRows,
+                    visibleRows: visibleRows
+                )
+                if box.rect.x == 0, box.rect.width >= totalWidth,
+                   screen.indices.contains(box.rect.y) {
+                    screen[box.rect.y] = cropped
                 }
-                break
             }
-            if !imageLine.isEmpty { break }
+            break
         }
     }
     paintScrollbar(box, screen: &screen, totalWidth: totalWidth)

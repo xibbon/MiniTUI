@@ -553,8 +553,7 @@ public final class AltScreenRenderer: TuiRenderer, TuiLayoutRenderer, TuiInputRe
             let previous = previousScreen.indices.contains(row) ? previousScreen[row] : ""
             return changedRows[row] && (isImageLine(screen[row]) || isImageLine(previous))
         }
-        let wezTerm = isWezTerm(environment: ProcessInfo.processInfo.environment)
-        let imageCellsNeedRedraw = !imageAnchorsNeedRedraw && wezTerm && imageProtocol == .kitty
+        let imageCellsNeedRedraw = !imageAnchorsNeedRedraw && imageProtocol == .kitty
             && changedRows.contains(true) && screen.indices.contains { row in
                 guard let placementRows = getKittyImagePlacementRows(screen[row]), placementRows > 0 else {
                     return false
@@ -582,10 +581,9 @@ public final class AltScreenRenderer: TuiRenderer, TuiLayoutRenderer, TuiInputRe
         }
         buffer += prepared.evictedImageDeletion
 
-        // In WezTerm, a later row write can remove image cells. Write image placements last.
+        // A later row write can remove covered image cells. Write Kitty placements last.
         let drawKittyImagesLast = redrawImages && imageProtocol == .kitty
             && screen.contains(where: isImageLine)
-            && wezTerm
         if drawKittyImagesLast {
             for row in 0..<height {
                 let line = screen.indices.contains(row) ? screen[row] : ""

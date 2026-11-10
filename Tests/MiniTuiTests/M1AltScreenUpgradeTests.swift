@@ -158,7 +158,12 @@ struct M1AltScreenUpgradeTests {
                 renderer.present(imageFrame(lines))
                 let output = try #require(terminal.writes.last)
                 #expect(output.contains("changed"))
-                #expect(!output.contains("\u{1B}_G"))
+                // M16, upstream 4622edb79: redraw on every Kitty terminal.
+                if pane == nil, imageProtocol == .kitty, changedRow < explicitRows {
+                    #expect(output.contains("\u{1B}_Ga=p,q=2"))
+                } else {
+                    #expect(!output.contains("\u{1B}_G"))
+                }
             }
         }
     }
@@ -273,7 +278,8 @@ struct M1AltScreenUpgradeTests {
         if let text = otherOutput.range(of: "text")?.lowerBound,
            let secondClear = otherOutput.range(of: "\u{1B}[2;1H\u{1B}[2K")?.lowerBound,
            let image = otherOutput.range(of: kitty)?.lowerBound {
-            #expect(text < secondClear && secondClear < image)
+            // M16, upstream 4622edb79: clear every row before writing text, then place images.
+            #expect(secondClear < text && text < image)
         } else {
             Issue.record("Expected interleaved row clearing on another terminal")
         }

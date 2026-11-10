@@ -17,6 +17,29 @@ public func fuzzyMatch(_ query: String, _ text: String) -> FuzzyMatch {
     let queryLower = query.lowercased()
     let textLower = text.lowercased()
 
+    let primary = matchFuzzyQuery(queryLower, textLower)
+    if primary.matches { return primary }
+
+    let letters = queryLower.prefix { $0 >= "a" && $0 <= "z" }
+    let digitsAfterLetters = queryLower.dropFirst(letters.count)
+    let digits = queryLower.prefix { $0 >= "0" && $0 <= "9" }
+    let lettersAfterDigits = queryLower.dropFirst(digits.count)
+    let swapped: String
+    if !letters.isEmpty, !digitsAfterLetters.isEmpty,
+       digitsAfterLetters.allSatisfy({ $0 >= "0" && $0 <= "9" }) {
+        swapped = String(digitsAfterLetters) + letters
+    } else if !digits.isEmpty, !lettersAfterDigits.isEmpty,
+              lettersAfterDigits.allSatisfy({ $0 >= "a" && $0 <= "z" }) {
+        swapped = String(lettersAfterDigits) + digits
+    } else {
+        return primary
+    }
+    let fallback = matchFuzzyQuery(swapped, textLower)
+    return fallback.matches ? FuzzyMatch(matches: true, score: fallback.score + 5) : primary
+}
+
+private func matchFuzzyQuery(_ queryLower: String, _ textLower: String) -> FuzzyMatch {
+
     if queryLower.isEmpty {
         return FuzzyMatch(matches: true, score: 0)
     }

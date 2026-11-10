@@ -189,8 +189,8 @@ struct MT1MarkdownTests {
         let source = "字<!--minitui-cjk--> **这是测试。**后面 &lt;!--minitui-cjk-x--&gt;"
         let input = MarkdownCJKParserInput(source)
         #expect(input.padding != "<!--minitui-cjk-->")
-        // cmark's existing smart punctuation converts decoded double hyphens.
-        #expect(mt1Render(source, theme: tagTheme) == ["字<!--minitui-cjk--> <b>这是测试。</b>后面 <!–minitui-cjk-x–>"])
+        // M14, upstream 54280c4ff: user HTML comments are hidden; decoded entities remain.
+        #expect(mt1Render(source, theme: tagTheme) == ["字 <b>这是测试。</b>后面 <!–minitui-cjk-x–>"])
     }
 
     @Test("the document cache uses the final parser input")

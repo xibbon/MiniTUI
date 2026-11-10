@@ -314,10 +314,11 @@ private func wrapSingleLine(_ line: String, width: Int, tracker: AnsiCodeTracker
 
     for token in tokens {
         let tokenVisibleLength = visibleWidth(token)
-        let isWhitespace = token.trimmingCharacters(in: .whitespaces).isEmpty
+        let isWhitespace = stripAnsiCodes(token).trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
 
         if tokenVisibleLength > width && !isWhitespace {
             if !currentLine.isEmpty {
+                currentLine = trimTrailingSpaces(currentLine)
                 let lineEndReset = tracker.getLineEndReset()
                 if !lineEndReset.isEmpty {
                     currentLine += lineEndReset
@@ -339,6 +340,10 @@ private func wrapSingleLine(_ line: String, width: Int, tracker: AnsiCodeTracker
         let totalNeeded = currentVisibleLength + tokenVisibleLength
         if totalNeeded > width && currentVisibleLength > 0 {
             var lineToWrap = trimTrailingSpaces(currentLine)
+            if isWhitespace {
+                lineToWrap += ansiCodes(in: token)
+                updateTrackerFromText(token, tracker: tracker)
+            }
             let lineEndReset = tracker.getLineEndReset()
             if !lineEndReset.isEmpty {
                 lineToWrap += lineEndReset
@@ -348,10 +353,13 @@ private func wrapSingleLine(_ line: String, width: Int, tracker: AnsiCodeTracker
             if isWhitespace {
                 currentLine = tracker.getActiveCodes()
                 currentVisibleLength = 0
+                continue
             } else {
                 currentLine = tracker.getActiveCodes() + token
                 currentVisibleLength = tokenVisibleLength
             }
+        } else if isWhitespace && totalNeeded > width && token.contains("\u{001B}") {
+            currentLine += ansiCodes(in: token)
         } else {
             currentLine += token
             currentVisibleLength += tokenVisibleLength
@@ -368,6 +376,20 @@ private func wrapSingleLine(_ line: String, width: Int, tracker: AnsiCodeTracker
     return trimmed.isEmpty ? [""] : trimmed
 }
 
+private func ansiCodes(in text: String) -> String {
+    var result = ""
+    var index = text.startIndex
+    while index < text.endIndex {
+        if let range = ansiCodeRange(in: text, at: index) {
+            result += text[range]
+            index = range.upperBound
+        } else {
+            index = text.index(after: index)
+        }
+    }
+    return result
+}
+
 /// Return true when a character is whitespace or a newline.
 public func isWhitespaceChar(_ char: Character) -> Bool {
     return char.unicodeScalars.allSatisfy { CharacterSet.whitespacesAndNewlines.contains($0) }
@@ -376,21 +398,7 @@ public func isWhitespaceChar(_ char: Character) -> Bool {
 /// A completion token ends at whitespace or CJK punctuation. CJK letters stay in the token.
 func isAutocompleteSeparator(_ char: Character) -> Bool {
     if isWhitespaceChar(char) { return true }
-    let explicitPunctuation = "，．：；！？（）［］｛｝“”‘’…—"
-    return char.unicodeScalars.contains { scalar in
-        if explicitPunctuation.unicodeScalars.contains(scalar) { return true }
-        switch scalar.properties.generalCategory {
-        case .connectorPunctuation, .dashPunctuation, .openPunctuation, .closePunctuation,
-             .initialPunctuation, .finalPunctuation, .otherPunctuation:
-            let value = scalar.value
-            return (0x3000...0x303F).contains(value)
-                || (0x3040...0x30FF).contains(value)
-                || (0x31F0...0x31FF).contains(value)
-                || (0xFF00...0xFFEF).contains(value)
-        default:
-            return false
-        }
-    }
+    return isCJKPunctuation(char)
 }
 
 /// Match the CJK script families used to refresh symbol completion as users type.
@@ -1137,10 +1145,14 @@ private final class AnsiCodeTracker {
     }
 
     func getLineEndReset() -> String {
+        var reset = ""
         if underline {
-            return "\u{001B}[24m"
+            reset += "\u{001B}[24m"
         }
-        return ""
+        if strikethrough {
+            reset += "\u{001B}[29m"
+        }
+        return reset
     }
 
     private func reset() {

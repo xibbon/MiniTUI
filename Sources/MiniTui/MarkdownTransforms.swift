@@ -115,7 +115,7 @@ func containsMarkdownTableStart(_ source: String) -> Bool {
     return false
 }
 
-private func transformMathSegment(_ source: String) -> String {
+private func transformMathSegment(_ source: String, width: Int, rawFallback: (String) -> String) -> String {
     let characters = Array(source)
     var result = ""
     var position = 0
@@ -187,31 +187,50 @@ private func transformMathSegment(_ source: String) -> String {
 
         let latexSource = display ? body.trimmingCharacters(in: .whitespacesAndNewlines) : body
         if let rendered = renderLatex(latexSource, options: RenderLatexOptions(display: display)) {
-            // Swift Markdown changes soft line breaks to spaces. Use Markdown hard breaks so a
-            // stacked layout remains a line array after parsing.
-            result += display ? rendered.replacingOccurrences(of: "\n", with: "  \n") : rendered
+            if display, rendered.split(separator: "\n", omittingEmptySubsequences: false).contains(where: { visibleWidth(String($0)) > width }) {
+                result += rawFallback(String(characters[position..<closeEnd]).trimmingCharacters(in: .whitespacesAndNewlines))
+            } else {
+                // Swift Markdown changes soft line breaks to spaces. Use Markdown hard breaks so a
+                // stacked layout remains a line array after parsing.
+                result += display ? rendered.replacingOccurrences(of: "\n", with: "  \n") : rendered
+            }
         } else {
-            result += String(characters[position..<closeEnd])
+            let raw = String(characters[position..<closeEnd])
+            result += display ? rawFallback(raw.trimmingCharacters(in: .whitespacesAndNewlines)) : raw
         }
         position = closeEnd
     }
     return result
 }
 
-/// Replace complete LaTeX spans in Markdown source with Unicode terminal text.
-///
-/// Fenced code blocks and inline code spans are not changed. The width parameter is part of the
-/// transform contract. The current LaTeX layout does not wrap to that width.
-public func transformMarkdownLatex(_ source: String, width: Int) -> String {
-    _ = width
+struct MarkdownLatexTransformResult {
+    let source: String
+    let rawDisplayMath: [String: String]
+}
+
+private func transformMarkdownLatexResult(_ source: String, width: Int, protectRaw: Bool) -> MarkdownLatexTransformResult {
     let lines = source.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
     var result: [String] = []
     var pending: [String] = []
     var openFence: MarkdownFence?
+    var rawDisplayMath: [String: String] = [:]
+    var markerIndex = 0
+
+    func rawFallback(_ raw: String) -> String {
+        guard protectRaw else { return raw }
+        var marker = "\u{E000}MiniTuiMath\(markerIndex)\u{E001}"
+        while source.contains(marker) {
+            markerIndex += 1
+            marker = "\u{E000}MiniTuiMath\(markerIndex)\u{E001}"
+        }
+        rawDisplayMath[marker] = raw
+        markerIndex += 1
+        return marker
+    }
 
     func flushPending() {
         guard !pending.isEmpty else { return }
-        let transformed = transformMathSegment(pending.joined(separator: "\n"))
+        let transformed = transformMathSegment(pending.joined(separator: "\n"), width: width, rawFallback: rawFallback)
         result += transformed.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
         pending.removeAll(keepingCapacity: true)
     }
@@ -234,5 +253,17 @@ public func transformMarkdownLatex(_ source: String, width: Int) -> String {
         }
     }
     flushPending()
-    return result.joined(separator: "\n")
+    return MarkdownLatexTransformResult(source: result.joined(separator: "\n"), rawDisplayMath: rawDisplayMath)
+}
+
+/// Replace complete LaTeX spans in Markdown source with Unicode terminal text.
+///
+/// Fenced code blocks and inline code spans are not changed. Display layouts wider than the
+/// available width stay as raw source.
+public func transformMarkdownLatex(_ source: String, width: Int) -> String {
+    transformMarkdownLatexResult(source, width: width, protectRaw: false).source
+}
+
+func transformMarkdownLatexForRendering(_ source: String, width: Int) -> MarkdownLatexTransformResult {
+    transformMarkdownLatexResult(source, width: width, protectRaw: true)
 }

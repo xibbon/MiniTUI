@@ -128,6 +128,18 @@ public struct MarkdownTheme: Sendable {
 
 /// Markdown renderer that outputs styled terminal lines.
 public final class Markdown: Component {
+    private struct BlockKey: Hashable {
+        let source: String
+        let kind: String
+        let nextKind: String
+        let width: Int
+    }
+
+    private var renderedBlocks: [BlockKey: [String]] = [:]
+    private var highlightedCode: [String: [String]] = [:]
+    private var highlightedBytes = 0
+    private var renderingLink = false
+    private var renderingTable = false
     private struct InlineStyleContext {
         let applyText: (String) -> String
         let stylePrefix: String
@@ -145,8 +157,10 @@ public final class Markdown: Component {
 
     private var cachedText: String?
     private var cachedTransformedText: String?
+    private var cachedRawDisplayMath: [String: String]?
     private var cachedWidth: Int?
     private var cachedLines: [String]?
+    private var rawDisplayMath: [String: String] = [:]
 
     /// Create a Markdown component.
     public init(
@@ -168,31 +182,50 @@ public final class Markdown: Component {
     /// Update the Markdown text and invalidate cached lines.
     public func setText(_ text: String) {
         self.text = text
-        invalidate()
+        clearRenderCache()
     }
 
     /// Clear cached render state.
     public func invalidate() {
+        clearRenderCache()
+        renderedBlocks.removeAll()
+        highlightedCode.removeAll()
+        highlightedBytes = 0
+        defaultStylePrefix = nil
+    }
+
+    private func clearRenderCache() {
         cachedText = nil
         cachedTransformedText = nil
+        cachedRawDisplayMath = nil
         cachedWidth = nil
         cachedLines = nil
+        rawDisplayMath.removeAll()
     }
 
     /// Render the Markdown content into terminal lines.
     public func render(width: Int) -> [String] {
+        // A component without caller-supplied transforms has deterministic source at this width.
+        if options.sourceTransforms.isEmpty, let cachedLines,
+           cachedText == text, cachedWidth == width {
+            return cachedLines
+        }
         let contentWidth = max(1, width - paddingX * 2)
         var transformedText = text
+        var wideMathBlocks: [String: String] = [:]
         for transform in options.sourceTransforms {
             transformedText = transform(transformedText, contentWidth)
         }
         if options.renderLatex {
-            transformedText = transformMarkdownLatex(transformedText, width: contentWidth)
+            let latex = transformMarkdownLatexForRendering(transformedText, width: contentWidth)
+            transformedText = latex.source
+            wideMathBlocks = latex.rawDisplayMath
         }
 
         if let cachedLines,
            cachedText == text,
            cachedTransformedText == transformedText,
+           cachedRawDisplayMath == wideMathBlocks,
            cachedWidth == width {
             return cachedLines
         }
@@ -201,6 +234,7 @@ public final class Markdown: Component {
             let result: [String] = []
             cachedText = text
             cachedTransformedText = transformedText
+            cachedRawDisplayMath = wideMathBlocks
             cachedWidth = width
             cachedLines = result
             return result
@@ -210,16 +244,40 @@ public final class Markdown: Component {
             escapeSingleTildeDelimiters(transformedText.replacingOccurrences(of: "\t", with: "   "))
         )
         let parserInput = MarkdownCJKParserInput(normalizedText)
+        rawDisplayMath = wideMathBlocks
         sourceText = parserInput.source
         cjkParserPadding = parserInput.padding
         let document = MarkdownDocumentCache.shared.document(for: parserInput.source).document
         let blocks = Array(document.children)
+        let sourceLines = parserInput.source.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+        let previousBlocks = renderedBlocks
+        var nextBlocks: [BlockKey: [String]] = [:]
+        var cacheBytes = 0
+        // Definitions outside a block can change a reference link in that block.
+        let hasReferenceDefinitions = parserInput.source.range(
+            of: #"(?m)^ {0,3}\[[^\]]+\]:"#, options: .regularExpression
+        ) != nil
 
-        let blockOutputs: [(lines: [String], isBlank: Bool)] = blocks.map { block in
-            let lines = renderBlock(block, width: contentWidth)
+        let blockOutputs: [(lines: [String], isBlank: Bool)] = blocks.enumerated().map { index, block in
+            let key = rawBlockSource(block, lines: sourceLines).map {
+                BlockKey(source: $0, kind: String(describing: type(of: block)),
+                         nextKind: index + 1 < blocks.count ? String(describing: type(of: blocks[index + 1])) : "",
+                         width: contentWidth)
+            }
+            let hasRawMath = key?.source.contains("\u{E000}MiniTuiMath") == true
+            let lines = key.flatMap { hasReferenceDefinitions || hasRawMath ? nil : previousBlocks[$0] }
+                ?? renderBlock(block, width: contentWidth)
+            if let key, !hasReferenceDefinitions, !hasRawMath, nextBlocks.count < 128 {
+                let cost = key.source.utf8.count + lines.reduce(0) { $0 + $1.utf8.count }
+                if cacheBytes + cost <= 1_048_576 {
+                    nextBlocks[key] = lines
+                    cacheBytes += cost
+                }
+            }
             let isBlank = lines.allSatisfy { $0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
             return (lines, isBlank)
         }
+        renderedBlocks = nextBlocks
 
         var renderedLines: [String] = []
         var hasPreviousNonBlank = false
@@ -295,6 +353,7 @@ public final class Markdown: Component {
         let result = emptyLines + collapsedContentLines + emptyLines
         cachedText = text
         cachedTransformedText = transformedText
+        cachedRawDisplayMath = wideMathBlocks
         cachedWidth = width
         cachedLines = result
 
@@ -477,6 +536,12 @@ public final class Markdown: Component {
         }
 
         if let paragraph = block as? Paragraph {
+            let children = Array(paragraph.children)
+            if children.count == 1,
+               let marker = (children[0] as? InlineMarkup)?.plainText,
+               let raw = rawDisplayMath[marker] {
+                return raw.components(separatedBy: "\n").map(applyDefaultStyle)
+            }
             if let context {
                 return [renderInlineChildren(paragraph, context: context)]
             }
@@ -488,7 +553,16 @@ public final class Markdown: Component {
             lines.append(theme.codeBlockBorder("```\(codeBlock.language ?? "")"))
             let code = codeBlock.code.hasSuffix("\n") ? String(codeBlock.code.dropLast()) : codeBlock.code
             if let highlightCode = theme.highlightCode {
-                for line in highlightCode(code, codeBlock.language) {
+                let key = (codeBlock.language ?? "") + "\u{0000}" + code
+                let highlighted = highlightedCode[key] ?? highlightCode(code, codeBlock.language)
+                if highlightedCode[key] == nil, highlightedCode.count < 128 {
+                    let cost = key.utf8.count + highlighted.reduce(0) { $0 + $1.utf8.count }
+                    if highlightedBytes + cost <= 1_048_576 {
+                        highlightedCode[key] = highlighted
+                        highlightedBytes += cost
+                    }
+                }
+                for line in highlighted {
                     lines.append("  \(line)")
                 }
             } else {
@@ -540,7 +614,8 @@ public final class Markdown: Component {
         }
 
         if let html = block as? HTMLBlock {
-            return [applyDefaultStyle(html.rawHTML.trimmingCharacters(in: .whitespacesAndNewlines))]
+            let remaining = stripHtmlComments(html.rawHTML).trimmingCharacters(in: .whitespacesAndNewlines)
+            return remaining.isEmpty ? [] : [applyDefaultStyle(remaining)]
         }
 
         return renderBlocks(Array(block.children), width: width)
@@ -574,7 +649,17 @@ public final class Markdown: Component {
     }
 
     private func renderInlineChildren(_ markup: Markup, context: InlineStyleContext) -> String {
-        let rendered = markup.children.map { renderInline($0, context: context) }.joined()
+        var rendered = ""
+        var dropSpace = false
+        for child in markup.children {
+            var piece = renderInline(child, context: context)
+            if dropSpace, let space = piece.firstIndex(of: " "),
+               stripAnsiCodes(String(piece[..<space])).isEmpty {
+                piece.remove(at: space)
+            }
+            dropSpace = child is InlineHTML && piece.isEmpty && rendered.hasSuffix(" ")
+            rendered += piece
+        }
         return removeTrailingStylePrefix(from: rendered, stylePrefix: context.stylePrefix)
     }
 
@@ -589,12 +674,26 @@ public final class Markdown: Component {
             return theme.code(code.code) + context.stylePrefix
         }
         if let link = markup as? Link {
+            let previousRenderingLink = renderingLink
+            renderingLink = true
             let linkText = renderInlineChildren(link, context: context)
+            renderingLink = previousRenderingLink
             // v0.67.6: when the terminal advertises OSC 8 support (and isn't running under tmux/
             // screen, where the sequence is silently dropped), wrap the styled link text with
             // the OSC 8 escape so the link is clickable. Otherwise fall back to the legacy
             // "text (url)" rendering so the URL doesn't disappear on terminals that swallow OSC 8.
             let supportsHyperlink = getCapabilities().hyperlinks
+            if link.isAutolink, let raw = sourceText(for: link), !raw.hasPrefix("<"),
+               let punctuation = raw.firstIndex(where: isCJKPunctuation),
+               let destination = link.destination {
+                let prefix = String(raw[..<punctuation])
+                let suffix = String(raw[punctuation...])
+                let target = destination.hasPrefix("http://") && prefix.hasPrefix("www.")
+                    ? "http://" + prefix : prefix
+                let styled = theme.link(theme.underline(context.applyText(prefix)))
+                return (supportsHyperlink ? hyperlink(styled, url: target) : styled)
+                    + context.applyText(suffix) + context.stylePrefix
+            }
             if link.isAutolink {
                 if supportsHyperlink, let destination = link.destination {
                     return hyperlink(theme.link(theme.underline(linkText)), url: destination) + context.stylePrefix
@@ -620,14 +719,15 @@ public final class Markdown: Component {
         }
         if let html = markup as? InlineHTML {
             if html.rawHTML == cjkParserPadding { return "" }
-            return applyTextWithNewlines(html.rawHTML, context: context)
+            return applyTextWithNewlines(stripHtmlComments(html.rawHTML), context: context)
         }
 
         if let text = (markup as? InlineMarkup)?.plainText {
             let renderedText = options.preserveBackslashEscapes
                 ? sourceText(for: markup) ?? text
                 : text
-            return applyTextWithNewlines(renderedText, context: context)
+            return renderingLink ? applyTextWithNewlines(renderedText, context: context)
+                : renderBareURLs(renderedText, context: context)
         }
 
         return ""
@@ -675,8 +775,56 @@ public final class Markdown: Component {
         return source
     }
 
+    private func rawBlockSource(_ block: Markup, lines: [String]) -> String? {
+        guard let range = block.range,
+              range.lowerBound.line > 0, range.upperBound.line >= range.lowerBound.line,
+              lines.indices.contains(range.lowerBound.line - 1),
+              lines.indices.contains(range.upperBound.line - 1) else { return nil }
+        var parts: [String] = []
+        for lineNumber in range.lowerBound.line...range.upperBound.line {
+            let line = lines[lineNumber - 1]
+            let start = lineNumber == range.lowerBound.line ? range.lowerBound.column - 1 : 0
+            let end = lineNumber == range.upperBound.line ? range.upperBound.column - 1 : line.utf8.count
+            guard start >= 0, end >= start, end <= line.utf8.count else { return nil }
+            let first = line.utf8.index(line.utf8.startIndex, offsetBy: start)
+            let last = line.utf8.index(line.utf8.startIndex, offsetBy: end)
+            guard let firstIndex = String.Index(first, within: line),
+                  let lastIndex = String.Index(last, within: line) else { return nil }
+            parts.append(String(line[firstIndex..<lastIndex]))
+        }
+        return parts.joined(separator: "\n")
+    }
+
     private func isMarkdownEscapable(_ character: Character) -> Bool {
         "!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~".contains(character)
+    }
+
+    private func renderBareURLs(_ text: String, context: InlineStyleContext) -> String {
+        var remaining = text
+        var output = ""
+        while let match = remaining.range(of: #"(?:https?://|www\.)[^\s<>]+"#, options: .regularExpression) {
+            output += applyTextWithNewlines(String(remaining[..<match.lowerBound]), context: context)
+            let candidate = String(remaining[match])
+            // Keep the existing ASCII table-cell rendering and its width accounting.
+            if renderingTable, candidate.unicodeScalars.allSatisfy({ $0.value < 128 }) {
+                output += context.applyText(candidate)
+                remaining = String(remaining[match.upperBound...])
+                continue
+            }
+            let boundary = candidate.firstIndex(where: isCJKPunctuation) ?? candidate.endIndex
+            var url = String(candidate[..<boundary])
+            while let last = url.last, ".,;:!?".contains(last) { url.removeLast() }
+            if url.isEmpty {
+                output += context.applyText(candidate)
+            } else {
+                let target = url.hasPrefix("www.") ? "http://" + url : url
+                let styled = theme.link(theme.underline(context.applyText(url)))
+                output += getCapabilities().hyperlinks ? hyperlink(styled, url: target) : styled
+                output += context.applyText(String(candidate.dropFirst(url.count)))
+            }
+            remaining = String(remaining[match.upperBound...])
+        }
+        return output + applyTextWithNewlines(remaining, context: context)
     }
 
     private struct ListLine {
@@ -759,6 +907,9 @@ public final class Markdown: Component {
     }
 
     private func renderTable(table: Table, availableWidth: Int, context: InlineStyleContext?) -> [String] {
+        let previousRenderingTable = renderingTable
+        renderingTable = true
+        defer { renderingTable = previousRenderingTable }
         let context = context ?? defaultInlineStyleContext()
         let headerCells = Array(table.head.cells)
         let rows = Array(table.body.rows)
@@ -877,4 +1028,12 @@ public final class Markdown: Component {
         }
         return lines.joined(separator: "\n")
     }
+}
+
+private func stripHtmlComments(_ html: String) -> String {
+    var remaining = html
+    while let range = remaining.range(of: #"<!--[\s\S]*?(?:-->|$)"#, options: .regularExpression) {
+        remaining.removeSubrange(range)
+    }
+    return remaining
 }

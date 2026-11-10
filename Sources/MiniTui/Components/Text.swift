@@ -21,6 +21,7 @@ open class Text: Component {
 
     /// Update the text content and invalidate cached lines.
     public func setText(_ text: String) {
+        guard self.text != text else { return }
         self.text = text
         invalidate()
     }
