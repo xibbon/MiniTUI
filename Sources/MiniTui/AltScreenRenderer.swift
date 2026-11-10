@@ -693,7 +693,9 @@ public final class AltScreenRenderer: TuiRenderer, TuiLayoutRenderer, TuiInputRe
                 if !release { closeSearch() }; return true
             }
         }
-        if shouldDeferViewportInputToOverlay { return false }
+        if shouldDeferViewportInputToOverlay || host?.getFocusedComponent()?.capturesViewportInput == true {
+            return false
+        }
         if keybindings.matches(data, TUIKeybinding.altScreenLineUp) {
             if !release { scrollBy(-1) }; return true
         }
@@ -1303,7 +1305,7 @@ public final class AltScreenRenderer: TuiRenderer, TuiLayoutRenderer, TuiInputRe
         let segments = parts.map { part -> (start: Int, end: Int, selectable: Bool, joiner: Bool) in
             let start = column
             column += visibleWidth(part.text)
-            let joiner = part.text == "/" || part.text == "-"
+            let joiner = ["/", "-", "+", "\\", "~", "_", "."].contains(part.text)
             return (start, column, part.word || joiner, joiner)
         }
         guard let clicked = segments.firstIndex(where: { point.col >= $0.start && point.col < $0.end }) else { return nil }

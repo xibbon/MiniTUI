@@ -398,7 +398,11 @@ private func detectCapabilitiesFromEnvironment(_ env: [String: String], tmuxForw
         return TerminalCapabilities(images: .kitty, trueColor: true, hyperlinks: true)
     }
 
-    if env["KITTY_WINDOW_ID"] != nil || termProgram == "kitty" || term.contains("kitty") {
+    if termProgram == "orca" && env["ORCA_IMAGE_PROTOCOL"] == "kitty" {
+        return TerminalCapabilities(images: .kitty, trueColor: true, hyperlinks: hyperlinks)
+    }
+
+    if env["KITTY_WINDOW_ID"] != nil || termProgram == "kitty" {
         return TerminalCapabilities(images: .kitty, trueColor: true, hyperlinks: hyperlinks)
     }
 
@@ -423,7 +427,7 @@ private func detectCapabilitiesFromEnvironment(_ env: [String: String], tmuxForw
         return TerminalCapabilities(images: nil, trueColor: true, hyperlinks: hyperlinks)
     }
 
-    if termProgram == "alacritty" || termProgram == "zed" {
+    if termProgram == "alacritty" || term.hasPrefix("alacritty") || env["ALACRITTY_WINDOW_ID"] != nil || termProgram == "zed" {
         return TerminalCapabilities(images: nil, trueColor: true, hyperlinks: hyperlinks)
     }
 

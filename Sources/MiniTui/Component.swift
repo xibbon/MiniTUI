@@ -11,6 +11,8 @@ public protocol Component: AnyObject {
     func handleMouse(_ event: TuiMouseEvent) -> TuiMouseEventResult?
     /// Return true to receive Kitty key release events.
     var wantsKeyRelease: Bool { get }
+    /// Return true to receive viewport keys before the fullscreen renderer.
+    var capturesViewportInput: Bool { get }
     /// Clear any cached render state.
     func invalidate()
 }
@@ -22,6 +24,8 @@ public extension Component {
     func handleInput(_ data: String) {}
     /// Default to filtering key release events.
     var wantsKeyRelease: Bool { false }
+    /// Existing components leave viewport keys with the renderer.
+    var capturesViewportInput: Bool { false }
     /// Default no-op invalidation.
     func invalidate() {}
 }

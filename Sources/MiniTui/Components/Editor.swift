@@ -281,6 +281,7 @@ private let attachmentAutocompleteDebounceMilliseconds = 20
 
 /// Multi-line editor with history and autocomplete support.
 open class Editor: SystemCursorAware, KillBufferAware, EditorComponent {
+    open var capturesViewportInput: Bool { isAutocompleting }
     private var state = EditorState(lines: [""], cursorLine: 0, cursorCol: 0)
     private let theme: EditorTheme
     private var lastWidth: Int = 80
@@ -1508,7 +1509,9 @@ open class Editor: SystemCursorAware, KillBufferAware, EditorComponent {
             let currentLine = state.lines[safe: state.cursorLine] ?? ""
             if deltaCol > 0 {
                 if state.cursorCol < currentLine.count {
-                    setCursorCol(state.cursorCol + 1)
+                    let marker = findPasteMarkerRanges(in: currentLine, validIds: Set(pastes.keys))
+                        .first { $0.start == state.cursorCol }
+                    setCursorCol(marker?.end ?? state.cursorCol + 1)
                 } else if state.cursorLine < state.lines.count - 1 {
                     state.cursorLine += 1
                     setCursorCol(0)
@@ -1521,7 +1524,9 @@ open class Editor: SystemCursorAware, KillBufferAware, EditorComponent {
                 }
             } else {
                 if state.cursorCol > 0 {
-                    setCursorCol(state.cursorCol - 1)
+                    let marker = findPasteMarkerRanges(in: currentLine, validIds: Set(pastes.keys))
+                        .first { $0.end == state.cursorCol }
+                    setCursorCol(marker?.start ?? state.cursorCol - 1)
                 } else if state.cursorLine > 0 {
                     state.cursorLine -= 1
                     let prevLine = state.lines[state.cursorLine]

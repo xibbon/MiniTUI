@@ -1,5 +1,8 @@
 import Foundation
 import Dispatch
+#if os(macOS)
+import CoreGraphics
+#endif
 
 #if os(Linux)
 import Glibc
@@ -82,8 +85,25 @@ public func isAppleTerminalSession(environment: [String: String] = ProcessInfo.p
     #endif
 }
 
+/// Resolve Apple Terminal's ambiguous Enter sequence with the native Shift state.
+public func normalizeAppleTerminalInput(_ data: String, isAppleTerminal: Bool, isShiftPressed: Bool) -> String {
+    if isAppleTerminal && isShiftPressed && (data == "\r" || data == "\u{001B}\r") {
+        return "\u{001B}[13;2u"
+    }
+    return data
+}
+
+private func nativeShiftPressed() -> Bool {
+    #if os(macOS)
+    return CGEventSource.flagsState(.combinedSessionState).contains(.maskShift)
+    #else
+    return false
+    #endif
+}
+
 /// Terminal backed by stdin/stdout with raw mode enabled.
 public final class ProcessTerminal: Terminal {
+    private let isAppleTerminal = isAppleTerminalSession()
     private var inputHandler: ((String) -> Void)?
     private var resizeHandler: (() -> Void)?
     private var resizeSource: DispatchSourceSignal?
@@ -216,7 +236,10 @@ public final class ProcessTerminal: Terminal {
         let buffer = StdinBuffer(options: StdinBufferOptions(escapeTimeout: resolveEscapeTimeoutMs() / 1000))
         buffer.onData = { [weak self] sequence in
             guard let self, self.io.acceptsInput else { return }
-            self.inputHandler?(sequence)
+            // Upstream terminal.ts:404-413: read the native Shift state only for an Enter candidate.
+            let candidate = (sequence == "\r" || sequence == "\u{001B}\r") && self.isAppleTerminal
+            self.inputHandler?(normalizeAppleTerminalInput(sequence,
+                isAppleTerminal: candidate, isShiftPressed: candidate && nativeShiftPressed()))
         }
         buffer.onPaste = { [weak self] content in
             guard let self, self.io.acceptsInput else { return }
@@ -398,7 +421,7 @@ public final class ProcessTerminal: Terminal {
 
     /// Set the terminal window title.
     public func setTitle(_ title: String) {
-        write("\u{001B}]0;\(title)\u{0007}")
+        write("\u{001B}]0;\(replaceControlCharacters(title))\u{0007}")
     }
 
     /// v0.69.0: emit OSC 9;4 to toggle terminal progress indicator.

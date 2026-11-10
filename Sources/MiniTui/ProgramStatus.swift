@@ -54,20 +54,9 @@ public func formatProgramStatus(_ status: ProgramStatus) -> String {
     if status.state == .blocked, let kind = status.kind {
         pairs.append("kind=\(kind.rawValue)")
     }
-    var clean = String.UnicodeScalarView()
-    var inControls = false
-    for scalar in (status.message ?? "").unicodeScalars {
-        let control = scalar.value <= 0x1f || (0x7f...0x9f).contains(scalar.value)
-        if control {
-            if !inControls { clean.append(" ") }
-        } else {
-            clean.append(scalar)
-        }
-        inControls = control
-    }
     // Use ECMAScript trim characters, including the byte order mark.
     let trim = CharacterSet(charactersIn: "\u{0009}\u{000A}\u{000B}\u{000C}\u{000D} \u{00A0}\u{1680}\u{2000}\u{2001}\u{2002}\u{2003}\u{2004}\u{2005}\u{2006}\u{2007}\u{2008}\u{2009}\u{200A}\u{2028}\u{2029}\u{202F}\u{205F}\u{3000}\u{FEFF}")
-    let trimmed = String(clean).trimmingCharacters(in: trim)
+    let trimmed = replaceControlCharacters(status.message ?? "").trimmingCharacters(in: trim)
     var message = String.UnicodeScalarView()
     var byteCount = 0
     for scalar in trimmed.unicodeScalars {

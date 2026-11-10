@@ -90,6 +90,7 @@ public struct SettingsListOptions: Sendable {
 
 /// List UI for editing and selecting setting values.
 public final class SettingsList: SystemCursorAware, MouseFocusOwner {
+    public var capturesViewportInput: Bool { true }
     private var items: [SettingItem]
     private var filteredItems: [SettingItem]
     private let theme: SettingsListTheme
@@ -169,12 +170,10 @@ public final class SettingsList: SystemCursorAware, MouseFocusOwner {
         } else if kb.matches(data, TUIKeybinding.selectDown) {
             guard !displayItems.isEmpty else { return }
             selectedIndex = selectedIndex == max(displayItems.count - 1, 0) ? 0 : selectedIndex + 1
-        } else if kb.matches(data, TUIKeybinding.selectPageUp) {
+        } else if let pageIndex = getSelectPageIndex(keybindings: kb, data: data,
+            selectedIndex: selectedIndex, itemCount: displayItems.count, pageSize: maxVisible) {
             guard !displayItems.isEmpty else { return }
-            selectedIndex = max(0, selectedIndex - maxVisible)
-        } else if kb.matches(data, TUIKeybinding.selectPageDown) {
-            guard !displayItems.isEmpty else { return }
-            selectedIndex = min(max(displayItems.count - 1, 0), selectedIndex + maxVisible)
+            selectedIndex = pageIndex
         } else if kb.matches(data, TUIKeybinding.selectConfirm) || data == " " {
             activateItem()
         } else if kb.matches(data, TUIKeybinding.selectCancel) {

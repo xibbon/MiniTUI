@@ -77,6 +77,7 @@ private let MIN_DESCRIPTION_WIDTH = 10
 
 /// Scrollable list of selectable items.
 public final class SelectList: SystemCursorAware {
+    public var capturesViewportInput: Bool { true }
     private var items: [SelectItem]
     private var filteredItems: [SelectItem]
     private var selectedIndex: Int = 0
@@ -278,13 +279,10 @@ public final class SelectList: SystemCursorAware {
         } else if kb.matches(data, TUIKeybinding.selectDown) {
             selectedIndex = selectedIndex == max(filteredItems.count - 1, 0) ? 0 : selectedIndex + 1
             notifySelectionChange()
-        } else if kb.matches(data, TUIKeybinding.selectPageUp) {
+        } else if let pageIndex = getSelectPageIndex(keybindings: kb, data: data,
+            selectedIndex: selectedIndex, itemCount: filteredItems.count, pageSize: maxVisible) {
             guard !filteredItems.isEmpty else { return }
-            selectedIndex = max(0, selectedIndex - maxVisible)
-            notifySelectionChange()
-        } else if kb.matches(data, TUIKeybinding.selectPageDown) {
-            guard !filteredItems.isEmpty else { return }
-            selectedIndex = min(max(filteredItems.count - 1, 0), selectedIndex + maxVisible)
+            selectedIndex = pageIndex
             notifySelectionChange()
         } else if kb.matches(data, TUIKeybinding.selectConfirm) {
             if let selected = filteredItems[safe: selectedIndex] {

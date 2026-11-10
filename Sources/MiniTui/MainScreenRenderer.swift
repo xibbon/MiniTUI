@@ -1,5 +1,14 @@
 import Foundation
 
+private let osc133ZonePrefix = try! NSRegularExpression(pattern: "^(?:\\x1B\\]133;[ABC](?:\\x07|\\x1B\\\\))+")
+
+private func stripLeadingPromptZones(_ line: String) -> String {
+    let range = NSRange(line.startIndex..<line.endIndex, in: line)
+    guard let match = osc133ZonePrefix.firstMatch(in: line, range: range),
+          let matchRange = Range(match.range, in: line) else { return line }
+    return String(line[matchRange.upperBound...])
+}
+
 private struct KittyImageHeader {
     let ids: [UInt32]
     let rows: Int
@@ -174,7 +183,7 @@ public final class MainScreenRenderer: TuiRenderer {
     }
 
     public func present(_ frame: TuiRenderFrame) {
-        let normalizedLines = frame.lines.map(normalizeTerminalOutput)
+        let normalizedLines = frame.lines.map { normalizeTerminalOutput(stripLeadingPromptZones($0)) }
         let newLines = applyLineResets(
             normalizedLines,
             previousSource: previousResetSource,

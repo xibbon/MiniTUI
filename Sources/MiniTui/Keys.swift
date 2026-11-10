@@ -323,6 +323,8 @@ private enum FunctionalCodepoints {
     static let pageDown = -13
     static let home = -14
     static let end = -15
+    static let f1 = -21
+    static let f12 = -32
 }
 
 /// v0.70.5: Kitty functional-key codepoints emitted by KP_* (numeric keypad) keys when
@@ -384,7 +386,8 @@ public func isKeyRelease(_ data: String) -> Bool {
     if data.contains(":3u") || data.contains(":3~") || data.contains(":3A") || data.contains(":3B") {
         return true
     }
-    if data.contains(":3C") || data.contains(":3D") || data.contains(":3H") || data.contains(":3F") {
+    if data.contains(":3C") || data.contains(":3D") || data.contains(":3H") || data.contains(":3F")
+        || data.contains(":3P") || data.contains(":3Q") || data.contains(":3S") {
         return true
     }
     return false
@@ -398,7 +401,8 @@ public func isKeyRepeat(_ data: String) -> Bool {
     if data.contains(":2u") || data.contains(":2~") || data.contains(":2A") || data.contains(":2B") {
         return true
     }
-    if data.contains(":2C") || data.contains(":2D") || data.contains(":2H") || data.contains(":2F") {
+    if data.contains(":2C") || data.contains(":2D") || data.contains(":2H") || data.contains(":2F")
+        || data.contains(":2P") || data.contains(":2Q") || data.contains(":2S") {
         return true
     }
     return false
@@ -466,6 +470,9 @@ private func parseKittySequence(_ data: String) -> ParsedKittySequence? {
             6: FunctionalCodepoints.pageDown,
             7: FunctionalCodepoints.home,
             8: FunctionalCodepoints.end,
+            11: -21, 12: -22, 13: -23, 14: -24, 15: -25,
+            17: -26, 18: -27, 19: -28, 20: -29, 21: -30,
+            23: -31, 24: -32,
         ]
         if let codepoint = funcCodes[keyNum] {
             return ParsedKittySequence(codepoint: codepoint, shiftedKey: nil, baseLayoutKey: nil, modifier: modBits)
@@ -479,6 +486,16 @@ private func parseKittySequence(_ data: String) -> ParsedKittySequence? {
         if modBits != 0 && (modBits & ~validKittyModifierMask) != 0 { return nil }
         let letter = match.last ?? ""
         let codepoint = letter == "H" ? FunctionalCodepoints.home : FunctionalCodepoints.end
+        return ParsedKittySequence(codepoint: codepoint, shiftedKey: nil, baseLayoutKey: nil, modifier: modBits)
+    }
+
+    // Legacy Kitty F1/F2/F4. CSI R is a cursor position report, so F3 uses CSI 13~.
+    if let match = matchRegex("^\\x1B\\[(?:1;(\\d+)(?::(\\d+))?)?([PQS])$", in: data) {
+        let modValue = Int(match[1].isEmpty ? "1" : match[1]) ?? 1
+        let modBits = modValue - 1
+        if modBits != 0 && (modBits & ~validKittyModifierMask) != 0 { return nil }
+        let codes = ["P": -21, "Q": -22, "S": -24]
+        guard let codepoint = codes[match[3]] else { return nil }
         return ParsedKittySequence(codepoint: codepoint, shiftedKey: nil, baseLayoutKey: nil, modifier: modBits)
     }
 
@@ -859,11 +876,11 @@ func matchesKey(_ data: String, _ keyId: KeyId, kittyActive: Bool) -> Bool {
         }
         return matchesKittySequence(data, expectedCodepoint: ArrowCodepoints.right, expectedModifier: modifier)
     case "f1", "f2", "f3", "f4", "f5", "f6", "f7", "f8", "f9", "f10", "f11", "f12":
-        if modifier != 0 { return false }
-        if let seqs = legacyKeySequences[key] {
-            return matchesLegacySequence(data, seqs)
+        if modifier == 0, let seqs = legacyKeySequences[key], matchesLegacySequence(data, seqs) {
+            return true
         }
-        return false
+        guard let number = Int(key.dropFirst()), (1...12).contains(number) else { return false }
+        return matchesKittySequence(data, expectedCodepoint: -20 - number, expectedModifier: modifier)
     default:
         break
     }
@@ -1049,6 +1066,8 @@ public func parseKey(_ data: String) -> KeyId? {
             keyName = "pageUp"
         case FunctionalCodepoints.pageDown:
             keyName = "pageDown"
+        case FunctionalCodepoints.f12...FunctionalCodepoints.f1:
+            keyName = "f\(-20 - effectiveCodepoint)"
         case ArrowCodepoints.up:
             keyName = "up"
         case ArrowCodepoints.down:

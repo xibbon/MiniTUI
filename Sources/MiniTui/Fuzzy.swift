@@ -28,9 +28,7 @@ public func fuzzyMatch(_ query: String, _ text: String) -> FuzzyMatch {
     let queryChars = Array(queryLower)
     let textChars = Array(textLower)
     var queryIndex = 0
-    var score = 0.0
-    var lastMatchIndex: Int? = nil
-    var consecutiveMatches = 0
+    var positions: [Int] = []
 
     for i in 0..<textChars.count {
         if queryIndex >= queryChars.count {
@@ -40,30 +38,7 @@ public func fuzzyMatch(_ query: String, _ text: String) -> FuzzyMatch {
             continue
         }
 
-        let isWordBoundary: Bool
-        if i == 0 {
-            isWordBoundary = true
-        } else {
-            let prev = textChars[i - 1]
-            isWordBoundary = prev == " " || prev == "\t" || prev == "\n" || "-_./:".contains(prev)
-        }
-
-        if let last = lastMatchIndex, last == i - 1 {
-            consecutiveMatches += 1
-            score -= Double(consecutiveMatches * 5)
-        } else {
-            consecutiveMatches = 0
-            if let last = lastMatchIndex {
-                score += Double(i - last - 1) * 2
-            }
-        }
-
-        if isWordBoundary {
-            score -= 10
-        }
-
-        score += Double(i) * 0.1
-        lastMatchIndex = i
+        positions.append(i)
         queryIndex += 1
     }
 
@@ -71,6 +46,34 @@ public func fuzzyMatch(_ query: String, _ text: String) -> FuzzyMatch {
         return FuzzyMatch(matches: false, score: 0)
     }
 
+    func scorePositions(_ positions: [Int]) -> Double {
+        var score = 0.0
+        var last: Int? = nil
+        var consecutive = 0
+        for i in positions {
+            if let last, last == i - 1 {
+                consecutive += 1
+                score -= Double(consecutive * 5)
+            } else {
+                consecutive = 0
+                if let last { score += Double(i - last - 1) * 2 }
+            }
+            if i == 0 || textChars[i - 1].isWhitespace || "-_./:".contains(textChars[i - 1]) {
+                score -= 10
+            }
+            score += Double(i) * 0.1
+            last = i
+        }
+        return score
+    }
+    var score = scorePositions(positions)
+    if queryChars.count <= textChars.count {
+        for start in 0...(textChars.count - queryChars.count)
+            where Array(textChars[start..<(start + queryChars.count)]) == queryChars {
+            score = min(score, scorePositions(Array(start..<(start + queryChars.count))))
+        }
+    }
+    if queryLower == textLower { score -= 100 }
     return FuzzyMatch(matches: true, score: score)
 }
 

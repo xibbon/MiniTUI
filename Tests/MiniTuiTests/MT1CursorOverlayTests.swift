@@ -147,8 +147,9 @@ struct MT1CursorOverlayTests {
         if hardware {
             #expect(frame.cursor == CursorPosition(row: 0, col: 3))
         } else {
-            let marker = try #require(line.range(of: systemCursorMarker))
-            #expect(visibleWidth(String(line[..<marker.lowerBound])) == 3)
+            // M18, upstream 25490ea49: cursor markers are internal and leave no rendered line.
+            #expect(!line.contains(systemCursorMarker))
+            #expect(frame.cursor == nil)
         }
         // Swift keeps the existing rule that hides the hardware cursor under an overlay.
     }

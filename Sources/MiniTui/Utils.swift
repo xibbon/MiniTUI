@@ -1,4 +1,20 @@
 import Foundation
+
+/// Replace each run of C0, DEL, or C1 control characters with one space.
+public func replaceControlCharacters(_ text: String) -> String {
+    var result = String.UnicodeScalarView()
+    var inControls = false
+    for scalar in text.unicodeScalars {
+        let control = scalar.value <= 0x1f || (0x7f...0x9f).contains(scalar.value)
+        if control {
+            if !inControls { result.append(" ") }
+        } else {
+            result.append(scalar)
+        }
+        inControls = control
+    }
+    return String(result)
+}
 #if canImport(os)
 import os
 #else

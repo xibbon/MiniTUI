@@ -255,6 +255,17 @@ public func getKeybindings() -> TUIKeybindingsManager {
     globalTUIKeybindings.get()
 }
 
+/// Return the clamped index for a selection page key, or nil for another key.
+public func getSelectPageIndex(
+    keybindings: TUIKeybindingsManager, data: String, selectedIndex: Int, itemCount: Int, pageSize: Int
+) -> Int? {
+    let direction: Int
+    if keybindings.matches(data, TUIKeybinding.selectPageUp) { direction = -1 }
+    else if keybindings.matches(data, TUIKeybinding.selectPageDown) { direction = 1 }
+    else { return nil }
+    return max(0, min(itemCount - 1, selectedIndex + direction * pageSize))
+}
+
 // MARK: - Backward compatibility (EditorAction-based API)
 
 /// Editor actions that can be bound to keys.

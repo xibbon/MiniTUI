@@ -1163,7 +1163,9 @@ public final class TUI: Container {
             cleanedLines = extraction.lines
             cursorPosition = extraction.cursor
         } else {
-            cleanedLines = renderedLines
+            cleanedLines = renderedLines.map { line in
+                isImageLine(line) ? line : line.replacingOccurrences(of: systemCursorMarker, with: "")
+            }
             cursorPosition = nil
         }
 
@@ -1214,6 +1216,9 @@ public final class TUI: Container {
             }
         }
 
+        for row in cleaned.indices where !isImageLine(cleaned[row]) {
+            cleaned[row] = cleaned[row].replacingOccurrences(of: systemCursorMarker, with: "")
+        }
         return (cleaned, cursor)
     }
 
