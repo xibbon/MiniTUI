@@ -63,6 +63,17 @@ private final class AltLinesComponent: Component {
 }
 
 @MainActor
+private final class AltViewportInputContainer: Container {
+    private(set) var inputs: [String] = []
+
+    override var capturesViewportInput: Bool { true }
+
+    override func handleInput(_ data: String) {
+        inputs.append(data)
+    }
+}
+
+@MainActor
 private func startAltTUI(
     terminal: Terminal,
     lines: [String],
@@ -211,6 +222,34 @@ struct AltScreenRendererTests {
         await terminal.waitForRender(tui)
         #expect(renderer.viewportTop == 14)
         tui.stop()
+    }
+
+    @Test("a container subclass receives page keys before the fullscreen viewport")
+    func containerCapturesViewportInput() async {
+        let terminal = VirtualTerminal(columns: 12, rows: 6)
+        let content = AltViewportInputContainer()
+        content.addChild(AltLinesComponent((0..<20).map { "line-\($0)" }))
+        let scrollView = ScrollView(content, options: ScrollViewOptions(primary: true))
+        let tui = TUI(terminal: terminal)
+        let renderer = tui.enableAltScreen()
+        renderer.setLayoutRoot(scrollView)
+        #expect(tui.switchRenderer(to: .altScreen))
+        tui.start()
+        defer { tui.stop() }
+        await terminal.waitForRender(tui)
+
+        terminal.sendInput("\u{001B}[6~")
+        await terminal.waitForRender(tui)
+        #expect(renderer.viewportTop == 2)
+
+        tui.setFocus(content)
+        terminal.sendInput("\u{001B}[5~")
+        await terminal.waitForRender(tui)
+        #expect(renderer.viewportTop == 2)
+        terminal.sendInput("\u{001B}[6~")
+        await terminal.waitForRender(tui)
+        #expect(renderer.viewportTop == 2)
+        #expect(content.inputs == ["\u{001B}[5~", "\u{001B}[6~"])
     }
 
     @Test("scrollbar reserves only the always-visible column and dragging is proportional")

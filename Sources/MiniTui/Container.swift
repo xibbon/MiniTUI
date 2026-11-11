@@ -32,6 +32,9 @@ open class Container: Component {
     /// Current child components in render order.
     public private(set) var children: [Component] = []
 
+    /// Return true to receive viewport keys before the fullscreen renderer.
+    open var capturesViewportInput: Bool { false }
+
     private var mouseLayout: (width: Int, children: [(component: any Component, height: Int)])?
 
     open func handleMouse(_ event: TuiMouseEvent) -> TuiMouseEventResult? {
