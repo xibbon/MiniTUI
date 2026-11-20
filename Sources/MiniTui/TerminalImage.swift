@@ -28,6 +28,60 @@ public func isImageLine(_ line: String) -> Bool {
     return line.contains(kittyPrefix) || line.contains(iterm2Prefix)
 }
 
+/// Cells covered by an image sequence. Rows are relative to its line.
+/// A missing width has no finite right edge.
+struct ImageLineExtent: Sendable, Equatable {
+    let firstRow: Int
+    let lastRow: Int
+    let startCol: Int
+    let endCol: Int?
+}
+
+private func imageControl(_ key: String, in controls: Substring) -> Int? {
+    for control in controls.split(separator: ",") where control.hasPrefix("\(key)=") {
+        return Int(control.dropFirst(key.count + 1))
+    }
+    return nil
+}
+
+/// Find the cells drawn by a Kitty or iTerm2 image line.
+/// A nil end column means the image width is unknown.
+func getImageLineExtent(_ line: String) -> ImageLineExtent? {
+    if let start = line.range(of: kittyPrefix)?.lowerBound {
+        let controlsStart = line.index(start, offsetBy: kittyPrefix.count)
+        let controlsEnd = line[controlsStart...].firstIndex(of: ";") ?? controlsStart
+        let controls = line[controlsStart..<controlsEnd]
+        let columns = imageControl("c", in: controls) ?? getKittyImageMetadata(line)?.columns
+        let startCol = visibleWidth(String(line[..<start]))
+        return ImageLineExtent(firstRow: 0, lastRow: (getKittyImagePlacementRows(line) ?? 1) - 1,
+            startCol: startCol, endCol: columns.map { startCol + $0 })
+    }
+    guard let start = line.range(of: iterm2Prefix)?.lowerBound else { return nil }
+    var before = String(line[..<start])
+    var firstRow = 0
+    if let match = before.range(of: #"\x1B\[(\d+)A$"#, options: .regularExpression),
+       let rows = Int(before[match].dropFirst(2).dropLast()) {
+        firstRow = -rows
+        before = String(before[..<match.lowerBound])
+    }
+    let image = String(line[start...])
+    let widthRange = image.range(of: #"[;=]width=(\d+)[;:]"#, options: .regularExpression)
+    let columns: Int? = widthRange.flatMap { match in
+        let field = image[match]
+        return Int(field.dropFirst(7).dropLast())
+    }
+    let startCol = visibleWidth(before)
+    return ImageLineExtent(firstRow: firstRow, lastRow: 0, startCol: startCol,
+        endCol: columns.map { startCol + $0 })
+}
+
+/// Remove image commands and an iTerm2 cursor-up prefix. Keep adjacent text.
+func stripImageSequences(_ line: String) -> String {
+    line.replacingOccurrences(of: #"\x1B_G[^\x1B]*\x1B\\"#, with: "", options: .regularExpression)
+        .replacingOccurrences(of: #"(?:\x1B\[\d+A)?\x1B\]1337;File=[^\x07]*\x07"#,
+            with: "", options: .regularExpression)
+}
+
 /// Terminal capability flags used for rendering.
 public struct TerminalCapabilities: Sendable {
     /// Supported image protocol, if any.

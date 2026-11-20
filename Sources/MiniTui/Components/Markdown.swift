@@ -308,8 +308,17 @@ public final class Markdown: Component {
         }
 
         var wrappedLines: [String] = []
+        var imageBreakLines = Set<Int>()
         for line in normalizedLines {
-            wrappedLines.append(contentsOf: wrapTextWithAnsi(line, width: contentWidth))
+            let tokenLines = isImageLine(line) ? line.components(separatedBy: "\n") : [line]
+            for (index, tokenLine) in tokenLines.enumerated() {
+                if isImageLine(tokenLine) {
+                    wrappedLines.append(tokenLine)
+                } else {
+                    if index > 0 { imageBreakLines.insert(wrappedLines.count) }
+                    wrappedLines.append(contentsOf: wrapTextWithAnsi(tokenLine, width: contentWidth))
+                }
+            }
         }
 
         let leftMargin = String(repeating: " ", count: paddingX)
@@ -318,6 +327,10 @@ public final class Markdown: Component {
         var contentLines: [String] = []
 
         for line in wrappedLines {
+            if isImageLine(line) {
+                contentLines.append(line)
+                continue
+            }
             let lineWithMargins = leftMargin + line + rightMargin
             if let bgFn {
                 contentLines.append(applyBackgroundToLine(lineWithMargins, width: width, bgFn: bgFn))
@@ -330,15 +343,25 @@ public final class Markdown: Component {
 
         var collapsedContentLines: [String] = []
         var lastWasBlank = false
-        for line in contentLines {
+        var preserveFollowingSeparator = false
+        for (index, line) in contentLines.enumerated() {
+            if isImageLine(line) {
+                lastWasBlank = false
+                preserveFollowingSeparator = false
+                collapsedContentLines.append(line)
+                continue
+            }
             let stripped = stripAnsiCodes(line).trimmingCharacters(in: .whitespaces)
             if stripped.isEmpty {
-                if lastWasBlank {
+                let imageBreak = imageBreakLines.contains(index)
+                if lastWasBlank && !imageBreak && !preserveFollowingSeparator {
                     continue
                 }
                 lastWasBlank = true
+                preserveFollowingSeparator = imageBreak
             } else {
                 lastWasBlank = false
+                preserveFollowingSeparator = false
             }
             collapsedContentLines.append(line)
         }

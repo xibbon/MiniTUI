@@ -14,6 +14,7 @@ final class VirtualTerminal: Terminal {
     private var cursorCol: Int = 0
     private var italicActive = false
     private var lastFrame: [String] = []
+    var writes: [String] = []
 
     private let blankCell = Cell(char: " ", italic: false)
 
@@ -43,6 +44,7 @@ final class VirtualTerminal: Terminal {
     func drainInput(maxMs: Int, idleMs: Int) {}
 
     func write(_ data: String) {
+        writes.append(data)
         if let frame = parseFrame(from: data) {
             lastFrame = frame
         }

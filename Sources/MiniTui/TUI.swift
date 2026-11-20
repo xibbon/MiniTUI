@@ -998,6 +998,25 @@ public final class TUI: Container {
         }
     }
 
+    private func hideImagesUnderOverlay(
+        _ lines: inout [String], bounds: OverlayBounds, viewportStart: Int
+    ) {
+        guard bounds.height > 0 else { return }
+        // Kitty images above the viewport can extend into the visible rows.
+        let first = max(0, viewportStart - getMaxKittyImageRows())
+        guard first < lines.count else { return }
+        for index in first..<lines.count {
+            guard let extent = getImageLineExtent(lines[index]) else { continue }
+            let firstRow = index + extent.firstRow - viewportStart
+            let lastRow = index + extent.lastRow - viewportStart
+            if firstRow < bounds.row + bounds.height && lastRow >= bounds.row
+                && extent.startCol < bounds.col + bounds.width
+                && (extent.endCol.map { $0 > bounds.col } ?? true) {
+                lines[index] = stripImageSequences(lines[index])
+            }
+        }
+    }
+
     private func compositeOverlays(
         _ lines: [String],
         termWidth: Int,
@@ -1041,6 +1060,9 @@ public final class TUI: Container {
         var modifiedLines = Set<Int>()
 
         for overlay in rendered {
+            hideImagesUnderOverlay(&result, bounds: OverlayBounds(
+                row: overlay.row, col: overlay.col, width: overlay.width, height: overlay.lines.count
+            ), viewportStart: viewportStart)
             let overlayObj: AnyObject = overlay.component
             let overlayName = "\(type(of: overlay.component))@\(Unmanaged.passUnretained(overlayObj).toOpaque())"
             for i in 0..<overlay.lines.count {

@@ -583,10 +583,12 @@ public final class AltScreenRenderer: TuiRenderer, TuiLayoutRenderer, TuiInputRe
 
         var buffer = beginSynchronizedOutput
         if fullRedraw {
-            if imageProtocol == .kitty {
-                buffer += hadUploadedKittyImages ? deleteAllKittyPlacements() : deleteKittyImages()
+            if imageProtocol == .kitty && hadUploadedKittyImages {
+                // ED 2 frees Kitty uploads without placements. The row loop uses EL 2.
+                buffer += deleteAllKittyPlacements()
+            } else {
+                buffer += deleteKittyImages() + "\u{001B}[2J"
             }
-            buffer += "\u{001B}[2J"
         } else if imagesNeedRedraw {
             if imageProtocol == .iterm2 { buffer += "\u{001B}[2J" }
             if imageProtocol == .kitty { buffer += deleteAllKittyPlacements() }
