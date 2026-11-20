@@ -608,6 +608,10 @@ open class Editor: SystemCursorAware, KillBufferAware, EditorComponent {
 
             if kb.matches(input, TUIKeybinding.selectConfirm) {
                 if let selected = autocompleteList.getSelectedItem(), let provider = autocompleteProvider {
+                    let currentLine = state.lines[safe: state.cursorLine] ?? ""
+                    let beforeCursor = currentLine.prefixCharacters(state.cursorCol)
+                    let submitsCommand = autocompletePrefix.hasPrefix("/")
+                        && isInSlashCommandNameContext(beforeCursor)
                     pushUndoSnapshot()
                     setLastAction(nil)
                     let result = provider.applyCompletion(
@@ -621,7 +625,7 @@ open class Editor: SystemCursorAware, KillBufferAware, EditorComponent {
                     state.cursorLine = result.cursorLine
                     setCursorCol(result.cursorCol)
 
-                    if autocompletePrefix.hasPrefix("/") {
+                    if submitsCommand {
                         cancelAutocomplete()
                     } else {
                         cancelAutocomplete()
@@ -1765,6 +1769,12 @@ open class Editor: SystemCursorAware, KillBufferAware, EditorComponent {
         return trimmed.isEmpty || trimmed == "/"
     }
 
+    private func isInSlashCommandNameContext(_ beforeCursor: String) -> Bool {
+        guard state.cursorLine == 0 else { return false }
+        let commandText = trimCommandStart(beforeCursor)
+        return commandText.hasPrefix("/") && !commandText.contains(" ")
+    }
+
     private func jumpToChar(_ char: String, direction: JumpMode) {
         setLastAction(nil)
         guard let target = char.first else { return }
@@ -1875,13 +1885,6 @@ open class Editor: SystemCursorAware, KillBufferAware, EditorComponent {
 
     private func tryTriggerAutocomplete(explicitTab: Bool) {
         guard let provider = autocompleteProvider else { return }
-
-        if explicitTab, let combined = provider as? CombinedAutocompleteProvider {
-            if !combined.shouldTriggerFileCompletion(lines: state.lines, cursorLine: state.cursorLine, cursorCol: state.cursorCol) {
-                return
-            }
-        }
-
         requestAutocomplete(provider: provider, explicitTab: explicitTab)
     }
 
@@ -1949,7 +1952,7 @@ open class Editor: SystemCursorAware, KillBufferAware, EditorComponent {
         let currentLine = state.lines[safe: state.cursorLine] ?? ""
         let beforeCursor = currentLine.prefixCharacters(state.cursorCol)
 
-        if beforeCursor.trimmingCharacters(in: .whitespaces).hasPrefix("/") && !beforeCursor.trimmingCharacters(in: .whitespaces).contains(" ") {
+        if isInSlashCommandNameContext(beforeCursor) {
             handleSlashCommandCompletion()
         } else {
             forceFileAutocomplete()
@@ -1964,6 +1967,9 @@ open class Editor: SystemCursorAware, KillBufferAware, EditorComponent {
         guard let provider = autocompleteProvider else { return }
 
         if let combined = provider as? CombinedAutocompleteProvider {
+            guard combined.shouldTriggerFileCompletion(
+                lines: state.lines, cursorLine: state.cursorLine, cursorCol: state.cursorCol
+            ) else { return }
             let requestToken = beginAutocompleteRequest()
             if let suggestions = combined.getForceFileSuggestions(lines: state.lines, cursorLine: state.cursorLine, cursorCol: state.cursorCol), !suggestions.items.isEmpty {
                 guard requestToken == autocompleteRequestToken else { return }

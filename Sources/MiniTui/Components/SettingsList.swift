@@ -181,8 +181,10 @@ public final class SettingsList: SystemCursorAware, MouseFocusOwner {
         } else if searchEnabled, let searchInput {
             let sanitized = data.replacingOccurrences(of: " ", with: "")
             guard !sanitized.isEmpty else { return }
+            let previousQuery = searchInput.getValue()
             searchInput.handleInput(sanitized)
-            applyFilter(query: searchInput.getValue())
+            let query = searchInput.getValue()
+            if query != previousQuery { applyFilter(query: query) }
         }
     }
 

@@ -15,6 +15,7 @@ final class VirtualTerminal: Terminal {
     private var italicActive = false
     private var lastFrame: [String] = []
     var writes: [String] = []
+    var stopObserver: (() -> Void)?
 
     private let blankCell = Cell(char: " ", italic: false)
 
@@ -37,6 +38,7 @@ final class VirtualTerminal: Terminal {
     }
 
     func stop() {
+        stopObserver?()
         inputHandler = nil
         resizeHandler = nil
     }

@@ -4,7 +4,7 @@ private let pathDelimiters: Set<Character> = [" ", "\t", "\"", "'", "="]
 private let pathWrappers: [Character: Character] = ["(": ")", "[": "]", "{": "}", "<": ">", "`": "`"]
 
 /// Remove leading whitespace with the same scalar set as JavaScript trimStart().
-private func trimCommandStart(_ text: String) -> String {
+func trimCommandStart(_ text: String) -> String {
     String(text.unicodeScalars.drop(while: { scalar in
         switch scalar.value {
         case 0x0009...0x000D, 0x0020, 0x00A0, 0x1680, 0x2000...0x200A,

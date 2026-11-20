@@ -1,4 +1,9 @@
 import Foundation
+#if os(Linux)
+import Glibc
+#else
+import Darwin
+#endif
 
 /// Anchor position for overlays.
 public enum OverlayAnchor: String, Sendable {
@@ -197,6 +202,10 @@ public final class TUI: Container {
     private var renderedOverlayLayouts: [(entry: OverlayEntry, bounds: OverlayBounds)] = []
     /// v0.69.0 + v0.70.0: keep-alive timer for OSC 9;4 progress indicator.
     private var progressTimer: DispatchSourceTimer?
+    private var suspendSignalHandler: (() -> Void)?
+    var suspendSignalSource: DispatchSourceSignal?
+    private var suspendOwnsTerminal = false
+    private var suspendSignalGeneration = 0
 
     @MainActor private final class TerminalColorQuery {
         var foreground: RgbColor?
@@ -501,6 +510,37 @@ public final class TUI: Container {
         terminal.setIOErrorHandler(handler)
     }
 
+    /// Set the SIGTSTP handler for the time this TUI owns the terminal.
+    /// The handler runs on the main actor. Set it before or during `start()`.
+    /// Clearing it, or calling `stop()`, restores the default SIGTSTP action.
+    public func setSuspendSignalHandler(_ handler: (() -> Void)?) {
+        suspendSignalHandler = handler
+        updateSuspendSignalListener()
+    }
+
+    private func updateSuspendSignalListener() {
+        let needed = suspendOwnsTerminal && suspendSignalHandler != nil
+        if needed {
+            guard suspendSignalSource == nil else { return }
+            suspendSignalGeneration += 1
+            let generation = suspendSignalGeneration
+            _ = signal(SIGTSTP, SIG_IGN)
+            let source = DispatchSource.makeSignalSource(signal: SIGTSTP, queue: .main)
+            source.setEventHandler { [self] in
+                Task { @MainActor in
+                    if suspendSignalGeneration == generation { suspendSignalHandler?() }
+                }
+            }
+            suspendSignalSource = source
+            source.resume()
+        } else if let source = suspendSignalSource {
+            suspendSignalGeneration += 1
+            source.cancel()
+            suspendSignalSource = nil
+            _ = signal(SIGTSTP, SIG_DFL)
+        }
+    }
+
     /// Store the latest status and report it when the terminal has confirmed support.
     public func setProgramStatus(_ status: ProgramStatus) {
         let bytes = programStatus.set(status)
@@ -517,6 +557,8 @@ public final class TUI: Container {
         stopped = false
         (terminal as? ProcessTerminal)?.prepareExitRestore()
         updateExitRestore()
+        suspendOwnsTerminal = true
+        updateSuspendSignalListener()
         activeRenderer.start()
         updateExitRestore()
         terminal.start(onInput: { [weak self] data in
@@ -572,6 +614,8 @@ public final class TUI: Container {
         terminal.showCursor()
         terminal.stop()
         terminalStarted = false
+        suspendOwnsTerminal = false
+        updateSuspendSignalListener()
     }
 
     private func updateExitRestore() {

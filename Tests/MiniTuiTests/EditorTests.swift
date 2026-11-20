@@ -1,5 +1,5 @@
 import Testing
-import MiniTui
+@testable import MiniTui
 
 private struct TriggerAutocompleteProvider: AutocompleteProvider {
     let triggerCharacters: [String]
@@ -794,6 +794,7 @@ func undoRestoresWord() {
 @MainActor
 @Test("yank-pop cycles through the kill ring")
 func yankPopCyclesKillRing() {
+    KillBuffer.shared.breakChain()
     let editor = Editor(theme: defaultEditorTheme)
     editor.setText("one two three")
     editor.handleInput("\u{0017}") // Ctrl+W kills "three"
@@ -808,6 +809,7 @@ func yankPopCyclesKillRing() {
 @MainActor
 @Test("Ctrl+U participates in kill ring for yank-pop")
 func ctrlUKillYankPopCyclesKillRing() {
+    KillBuffer.shared.breakChain()
     let editor = Editor(theme: defaultEditorTheme)
     editor.setText("one two three")
     editor.handleInput("\u{0015}") // Ctrl+U kills "one two three"
