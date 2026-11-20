@@ -84,6 +84,7 @@ protocol TuiHostedRenderer: TuiRenderer {
     func attach(
         root: Component,
         requestRender: @escaping () -> Void,
+        requestViewRender: @escaping () -> Void,
         hasOverlay: @escaping () -> Bool
     )
 }

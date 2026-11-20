@@ -165,6 +165,7 @@ public final class TUI: Container {
     public var debugLineOrigins = false
 
     private var renderRequested = false
+    private var contentChanged = true
     private var stopped = false
     private var terminalStarted = false
     private var inputBuffer = ""
@@ -280,6 +281,7 @@ public final class TUI: Container {
             renderer.attach(
                 root: self,
                 requestRender: { [weak self] in self?.requestRender() },
+                requestViewRender: { [weak self] in self?.requestViewRender() },
                 hasOverlay: { [weak self] in self?.hasOverlay() ?? false }
             )
         }
@@ -328,6 +330,7 @@ public final class TUI: Container {
     public func getFocusedComponent() -> Component? { focusedComponent }
 
     public func setFocus(_ component: Component?) {
+        contentChanged = true
         (focusedComponent as? any Focusable)?.focused = false
         (component as? any Focusable)?.focused = true
         if let focusedComponent = focusedComponent as? SystemCursorAware {
@@ -586,6 +589,7 @@ public final class TUI: Container {
     /// a single follow-up render at the end of the window. Force-renders skip the throttle.
     public func requestRender(force: Bool = false) {
         if stopped { return }
+        contentChanged = true
         if force {
             activeRenderer.invalidateRenderState()
             pendingRenderTask?.cancel()
@@ -601,7 +605,12 @@ public final class TUI: Container {
             }
             return
         }
-        if renderRequested { return }
+        requestViewRender()
+    }
+
+    /// Queue a frame when component output has not changed.
+    func requestViewRender() {
+        if stopped || renderRequested { return }
         renderRequested = true
         scheduleRender()
     }
@@ -1123,15 +1132,22 @@ public final class TUI: Container {
         var layoutFrame: LayoutFrame?
         var lineOrigins: LineOrigins?
         if let layoutRenderer = activeRenderer as? any TuiLayoutRenderer {
-            let nextLayout = layoutRenderer.renderLayout(
-                root: self,
-                width: width,
-                height: height,
-                requestRender: { [weak self] in self?.requestRender() }
-            )
+            let changed = contentChanged
+            contentChanged = false
+            let nextLayout: LayoutFrame
+            if let alternate = layoutRenderer as? AltScreenRenderer {
+                let callback: () -> Void = { [weak self] in self?.requestViewRender() }
+                nextLayout = alternate.renderLayout(root: self, width: width, height: height,
+                    requestRender: callback, reusePreviousOutput: !changed)
+            } else {
+                let callback: () -> Void = { [weak self] in self?.requestRender() }
+                nextLayout = layoutRenderer.renderLayout(root: self, width: width,
+                    height: height, requestRender: callback)
+            }
             layoutFrame = nextLayout
             renderedLines = nextLayout.lines
         } else if debugLineOrigins {
+            contentChanged = false
             let trace = RenderTrace()
             RenderTrace.active = trace
             renderedLines = render(width: width)
@@ -1144,6 +1160,7 @@ public final class TUI: Container {
             }
             lineOrigins = LineOrigins(origins)
         } else {
+            contentChanged = false
             renderedLines = render(width: width)
         }
         renderedLines = resolveFakeCursors(renderedLines, useSystemCursor: useSystemCursor)

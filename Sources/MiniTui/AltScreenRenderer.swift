@@ -277,6 +277,7 @@ public final class AltScreenRenderer: TuiRenderer, TuiLayoutRenderer, TuiInputRe
 
     private var explicitLayoutRoot: Component?
     private var requestRenderCallback: () -> Void = {}
+    private var requestViewRenderCallback: () -> Void = {}
     private var hasOverlayCallback: () -> Bool = { false }
     private var previousScreen: [String] = []
     private var previousContentScreen: [String] = []
@@ -322,10 +323,12 @@ public final class AltScreenRenderer: TuiRenderer, TuiLayoutRenderer, TuiInputRe
     func attach(
         root: Component,
         requestRender: @escaping () -> Void,
+        requestViewRender: @escaping () -> Void,
         hasOverlay: @escaping () -> Bool
     ) {
         weakRoot.root = root
         requestRenderCallback = requestRender
+        requestViewRenderCallback = requestViewRender
         hasOverlayCallback = hasOverlay
     }
 
@@ -376,16 +379,25 @@ public final class AltScreenRenderer: TuiRenderer, TuiLayoutRenderer, TuiInputRe
         height: Int,
         requestRender: @escaping () -> Void
     ) -> LayoutFrame {
+        renderLayout(root: root, width: width, height: height, requestRender: requestRender,
+            reusePreviousOutput: false)
+    }
+
+    func renderLayout(root: Component, width: Int, height: Int,
+                      requestRender: @escaping () -> Void,
+                      reusePreviousOutput: Bool) -> LayoutFrame {
         if weakRoot.root == nil { weakRoot.root = root }
         var layout = renderLayoutFrame(
             root: explicitLayoutRoot ?? implicitScrollView,
             width: width,
             height: height,
-            requestRender: requestRender
+            requestRender: requestRender,
+            reusableOutput: reusePreviousOutput ? currentLayout : nil
         )
         if refreshSearch(layout) {
             layout = renderLayoutFrame(root: explicitLayoutRoot ?? implicitScrollView,
-                width: width, height: height, requestRender: requestRender)
+                width: width, height: height, requestRender: requestRender,
+                reusableOutput: layout)
         }
         layout.lines = resolveFakeCursors(layout.lines.map(stripLeadingOSC133Zones),
             useSystemCursor: host?.useSystemCursor ?? false)
@@ -511,17 +523,17 @@ public final class AltScreenRenderer: TuiRenderer, TuiLayoutRenderer, TuiInputRe
 
     public func scrollBy(_ lines: Int) {
         primaryScrollView.scrollBy(lines)
-        requestRender()
+        requestViewRender()
     }
 
     public func scrollToTop() {
         primaryScrollView.scrollToStart()
-        requestRender()
+        requestViewRender()
     }
 
     public func scrollToBottom() {
         primaryScrollView.scrollToEnd()
-        requestRender()
+        requestViewRender()
     }
 
     public func present(_ frame: TuiRenderFrame) {
@@ -1052,6 +1064,10 @@ public final class AltScreenRenderer: TuiRenderer, TuiLayoutRenderer, TuiInputRe
         requestRenderCallback()
     }
 
+    private func requestViewRender() {
+        requestViewRenderCallback()
+    }
+
     private func resetInteractionState() {
         clearComponentMouseGesture()
         lastComponentClick = nil
@@ -1096,7 +1112,7 @@ public final class AltScreenRenderer: TuiRenderer, TuiLayoutRenderer, TuiInputRe
         while row >= 0 && row < lines.count {
             if isOSC133PromptStart(lines[row]) {
                 primaryScrollView.scrollTo(row)
-                requestRender()
+                requestViewRender()
                 return
             }
             row += direction
@@ -1144,7 +1160,7 @@ public final class AltScreenRenderer: TuiRenderer, TuiLayoutRenderer, TuiInputRe
             primary.scrollBy(remaining)
         }
         updateScrollbarHover(x: x, y: y)
-        requestRender()
+        requestViewRender()
     }
 
     private func handleRightClickPaste(_ event: SgrMouseEvent) -> Bool {
@@ -1441,7 +1457,7 @@ public final class AltScreenRenderer: TuiRenderer, TuiLayoutRenderer, TuiInputRe
         if let point = scrollSelectionPoint(scrollView: scrollView, x: pointer.x, y: pointer.y) {
             updateSelectionFocus(point)
         }
-        requestRender()
+        requestViewRender()
         return true
     }
 

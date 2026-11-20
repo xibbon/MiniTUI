@@ -25,6 +25,7 @@ open class Loader: Text {
     private var renderIndicatorVerbatim = false
     private var updatingDisplay = false
     private var timer: DispatchSourceTimer?
+    var onFrameAdvancedForTesting: (() -> Void)?
     private weak var ui: TUI?
 
     private let spinnerColorFn: (String) -> String
@@ -100,6 +101,9 @@ open class Loader: Text {
             guard let self else { return }
             self.currentFrame = (self.currentFrame + 1) % self.frames.count
             self.updateDisplay()
+            let callback = self.onFrameAdvancedForTesting
+            self.onFrameAdvancedForTesting = nil
+            callback?()
         }
         timer.resume()
         self.timer = timer

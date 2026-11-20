@@ -183,8 +183,13 @@ struct B2LayoutTests {
     }
 
     @Test("active scrollbar changes request a render and prevent its timer from hiding it")
-    func activeRequestsRender() async throws {
+    func activeRequestsRender() {
         let scroll = ScrollView(B2LayoutContent([]), options: ScrollViewOptions(scrollbar: .auto, scrollbarHideDelayMilliseconds: 10))
+        var scheduled: [@MainActor () -> Void] = []
+        scroll.scheduleScrollbarHideForTesting = { delay, callback in
+            #expect(delay == 10)
+            scheduled.append(callback)
+        }
         var requests = 0
         scroll.updateLayout(contentHeight: 10, viewportHeight: 4) { requests += 1 }
         scroll.setScrollbarActive(true)
@@ -193,14 +198,23 @@ struct B2LayoutTests {
         #expect(requests == 1)
         scroll.setScrollbarActive(true)
         #expect(requests == 1)
-        try await Task.sleep(for: .milliseconds(40))
+        #expect(scheduled.isEmpty)
         #expect(scroll.isScrollbarVisible)
         scroll.setScrollbarActive(false)
         #expect(!scroll.isScrollbarActive)
         #expect(requests == 2)
-        try await Task.sleep(for: .milliseconds(40))
+        #expect(scheduled.count == 1)
+        scheduled.removeFirst()()
         #expect(!scroll.isScrollbarVisible)
         #expect(requests == 3)
+        scroll.scrollBy(1)
+        #expect(scroll.isScrollbarVisible)
+        #expect(scheduled.count == 1)
+        scroll.setScrollbarActive(true)
+        let activeRequests = requests
+        scheduled.removeFirst()()
+        #expect(scroll.isScrollbarVisible)
+        #expect(requests == activeRequests)
     }
 
     @Test("hidden automatic geometry is available only when content overflows")

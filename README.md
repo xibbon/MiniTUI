@@ -24,6 +24,13 @@ array returned by a child or `super.render(width:)` does not change cached outpu
 When a custom component changes its content, call `invalidate()` and request a
 render from its host.
 
+In alternate-screen mode, a viewport-only frame can reuse the previous output
+of each component at the same width. A host that changes component text, child
+order, focus-dependent output, theme, or terminal-dependent output must call
+`tui.requestRender()` after the change. That call still renders content. Scrolling
+through `ScrollView` or the alternate-screen renderer requests a viewport frame.
+The main-screen renderer still renders components on each requested frame.
+
 ## Requirements
 
 - Swift 6.2+

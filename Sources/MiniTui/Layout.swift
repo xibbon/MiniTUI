@@ -60,6 +60,8 @@ public struct LayoutFrame {
     public var height: Int
     public var lines: [String]
     public var primaryScrollView: ScrollView?
+    /// Component output used by this frame, keyed by identity and normalized width.
+    var renderCache: LayoutRenderCache = [:]
 
     public init(
         root: LayoutBox,
@@ -75,6 +77,8 @@ public struct LayoutFrame {
         self.primaryScrollView = primaryScrollView
     }
 }
+
+typealias LayoutRenderCache = [ObjectIdentifier: [Int: [String]]]
 
 /// The cell geometry used to paint a scroll-view thumb.
 public struct ScrollbarGeometry {
@@ -105,13 +109,16 @@ public struct ScrollbarGeometry {
 @MainActor
 private final class LayoutContext {
     let viewport: LayoutViewport
-    var renderCache: [ObjectIdentifier: [Int: [String]]] = [:]
+    var renderCache: LayoutRenderCache = [:]
+    let reusableOutput: LayoutRenderCache?
     let requestRender: () -> Void
     var primaryScrollView: ScrollView?
 
-    init(viewport: LayoutViewport, requestRender: @escaping () -> Void) {
+    init(viewport: LayoutViewport, requestRender: @escaping () -> Void,
+         reusableOutput: LayoutRenderCache?) {
         self.viewport = viewport
         self.requestRender = requestRender
+        self.reusableOutput = reusableOutput
     }
 }
 
@@ -131,7 +138,7 @@ private func renderCached(_ context: LayoutContext, component: Component, width:
         return lines
     }
 
-    let lines = component.render(width: safeWidth)
+    let lines = context.reusableOutput?[identifier]?[safeWidth] ?? component.render(width: safeWidth)
     var widths = context.renderCache[identifier] ?? [:]
     widths[safeWidth] = lines
     context.renderCache[identifier] = widths
@@ -563,10 +570,24 @@ public func renderLayoutFrame(
     height: Int,
     requestRender: @escaping () -> Void
 ) -> LayoutFrame {
+    renderLayoutFrame(root: root, width: width, height: height,
+        requestRender: requestRender, reusableOutput: nil)
+}
+
+/// Reuse component output only when the host knows that content is unchanged.
+@MainActor
+func renderLayoutFrame(
+    root: Component,
+    width: Int,
+    height: Int,
+    requestRender: @escaping () -> Void,
+    reusableOutput: LayoutFrame?
+) -> LayoutFrame {
     let safeWidth = max(1, width)
     let safeHeight = max(1, height)
     let viewport = LayoutViewport(width: safeWidth, height: safeHeight)
-    let context = LayoutContext(viewport: viewport, requestRender: requestRender)
+    let context = LayoutContext(viewport: viewport, requestRender: requestRender,
+                                reusableOutput: reusableOutput?.renderCache)
     let viewportRect = LayoutRect(x: 0, y: 0, width: safeWidth, height: safeHeight)
     let rootBox = layoutComponent(
         context,
@@ -579,13 +600,15 @@ public func renderLayoutFrame(
     )
     var lines = Array(repeating: "", count: safeHeight)
     paintBox(rootBox, screen: &lines, totalWidth: safeWidth)
-    return LayoutFrame(
+    var frame = LayoutFrame(
         root: rootBox,
         width: safeWidth,
         height: safeHeight,
         lines: lines,
         primaryScrollView: context.primaryScrollView
     )
+    frame.renderCache = context.renderCache
+    return frame
 }
 
 private func containsPoint(_ rect: LayoutRect, x: Int, y: Int) -> Bool {

@@ -71,6 +71,9 @@ public final class ScrollView: Container, LayoutComponent, ScrollLayoutState {
     private var transientScrollbarVisible = false
     private var scrollbarActive = false
     private var scrollbarHideTask: Task<Void, Never>?
+    private var scrollbarHideGeneration = 0
+    /// Test seam: supply a clock callback and advance it without waiting for wall time.
+    var scheduleScrollbarHideForTesting: ((Int, @escaping @MainActor () -> Void) -> Void)?
 
     private var cachedWidth: Int?
     private var cachedChildLines: [String]?
@@ -124,15 +127,26 @@ public final class ScrollView: Container, LayoutComponent, ScrollLayoutState {
         transientScrollbarVisible = true
         scrollbarHideTask?.cancel()
         scrollbarHideTask = nil
+        scrollbarHideGeneration += 1
         if scrollbarActive { return }
 
         let delay = scrollbarHideDelayMilliseconds
-        scrollbarHideTask = Task { @MainActor [weak self] in
-            try? await Task.sleep(for: .milliseconds(delay))
-            guard !Task.isCancelled, let self else { return }
+        let generation = scrollbarHideGeneration
+        let hide: @MainActor () -> Void = { [weak self] in
+            guard let self, self.scrollbarHideGeneration == generation,
+                  !self.scrollbarActive else { return }
             self.scrollbarHideTask = nil
             self.transientScrollbarVisible = false
             self.requestRenderCallback?()
+        }
+        if let scheduleScrollbarHideForTesting {
+            scheduleScrollbarHideForTesting(delay, hide)
+            return
+        }
+        scrollbarHideTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .milliseconds(delay))
+            guard !Task.isCancelled, self != nil else { return }
+            hide()
         }
     }
 
@@ -140,6 +154,7 @@ public final class ScrollView: Container, LayoutComponent, ScrollLayoutState {
         transientScrollbarVisible = false
         scrollbarHideTask?.cancel()
         scrollbarHideTask = nil
+        scrollbarHideGeneration += 1
     }
 
     /// Keep an automatic scrollbar visible while an external interaction is active.
