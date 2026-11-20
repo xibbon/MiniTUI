@@ -8,11 +8,13 @@ open class Box: Component {
     private let paddingY: Int
     private var bgFn: ((String) -> String)?
 
-    private var mouseLayout: (width: Int, children: [(component: any Component, height: Int)])?
+    private var childRecord: ChildLines?
     private var cachedWidth: Int?
-    private var cachedChildLines: [String]?
+    private var cachedChildGeneration: Int?
     private var cachedBgSample: String?
     private var cachedLines: [String]?
+    internal private(set) var childRecordRebuildCount = 0
+    internal private(set) var outputRebuildCount = 0
 
     /// Create a box with padding and optional background formatter.
     public init(paddingX: Int = 1, paddingY: Int = 1, bgFn: ((String) -> String)? = nil) {
@@ -44,6 +46,7 @@ open class Box: Component {
     /// Update the background formatter.
     public func setBgFn(_ bgFn: ((String) -> String)?) {
         self.bgFn = bgFn
+        invalidateCache()
     }
 
     /// Set the horizontal padding and clear cached lines.
@@ -65,19 +68,12 @@ open class Box: Component {
         let contentY = event.y - paddingY
         let contentX = event.x - paddingX
         guard contentY >= 0, contentX >= 0, contentX < contentWidth else { return nil }
-        let layout = mouseLayout?.width == contentWidth ? mouseLayout!.children
-            : children.map { (component: $0, height: $0.render(width: contentWidth).count) }
-        var childY = 0
-        for (child, height) in layout {
-            if contentY >= childY && contentY < childY + height {
-                var local = event
-                local.x = contentX; local.y = contentY - childY
-                local.width = contentWidth; local.height = height
-                return dispatchMouseEvent(child, local)
-            }
-            childY += height
-        }
-        return nil
+        let layout = childRecord?.width == contentWidth ? childRecord!
+            : renderChildLines(children, width: contentWidth, previous: nil)
+        var local = event
+        local.x = contentX; local.y = contentY
+        local.width = contentWidth
+        return dispatchMouseToChildLines(layout, local)
     }
 
     /// Render children with padding and optional background.
@@ -89,21 +85,18 @@ open class Box: Component {
         let contentWidth = max(1, width - paddingX * 2)
         let leftPad = String(repeating: " ", count: paddingX)
 
-        var childLines: [String] = []
-        var mouseChildren: [(component: any Component, height: Int)] = []
-        defer { mouseLayout = (contentWidth, mouseChildren) }
-        for child in children {
-            let lines = child.render(width: contentWidth)
-            mouseChildren.append((child, lines.count))
-            childLines.append(contentsOf: lines)
-        }
+        let previous = childRecord
+        childRecord = renderChildLines(children, width: contentWidth, previous: previous)
+        if previous?.generation != childRecord?.generation { childRecordRebuildCount += 1 }
+        let childLines = childRecord!.lines
 
         if childLines.isEmpty {
             return []
         }
 
         let bgSample = bgFn?("test")
-        if let cachedLines, cachedWidth == width, cachedChildLines == childLines, cachedBgSample == bgSample {
+        if let cachedLines, cachedWidth == width,
+           cachedChildGeneration == childRecord?.generation, cachedBgSample == bgSample {
             return cachedLines
         }
 
@@ -122,9 +115,10 @@ open class Box: Component {
         }
 
         cachedWidth = width
-        cachedChildLines = childLines
+        cachedChildGeneration = childRecord?.generation
         cachedBgSample = bgSample
         cachedLines = result
+        outputRebuildCount += 1
 
         return result
     }
@@ -138,7 +132,8 @@ open class Box: Component {
 
     private func invalidateCache() {
         cachedWidth = nil
-        cachedChildLines = nil
+        childRecord = nil
+        cachedChildGeneration = nil
         cachedBgSample = nil
         cachedLines = nil
     }

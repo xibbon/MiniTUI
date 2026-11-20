@@ -741,6 +741,26 @@ public func getGraphemeCellRange(line: String, column: Int) -> GraphemeCellRange
         }
 
         let text = line.substring(from: index, length: textEnd - index)
+        if text.utf8.allSatisfy({ (0x20...0x7E).contains($0) }) {
+            let count = text.utf8.count
+            if column >= currentColumn && column < currentColumn + count {
+                return GraphemeCellRange(start: column, end: column + 1)
+            }
+            currentColumn += count
+            index = textEnd
+            continue
+        }
+        if text.unicodeScalars.allSatisfy({ isStandaloneSliceScalar($0.value) }) {
+            for scalar in text.unicodeScalars {
+                let width = visibleWidth(String(scalar))
+                if width > 0, column >= currentColumn, column < currentColumn + width {
+                    return GraphemeCellRange(start: currentColumn, end: currentColumn + width)
+                }
+                currentColumn += width
+            }
+            index = textEnd
+            continue
+        }
         for character in text {
             let width = graphemeWidth(character)
             if width > 0, column >= currentColumn, column < currentColumn + width {
@@ -758,6 +778,22 @@ public func sliceByColumn(_ line: String, startCol: Int, length: Int, strict: Bo
     return sliceWithWidth(line, startCol: startCol, length: length, strict: strict).text
 }
 
+/// These scalar ranges contain no marks, joiners, variation selectors,
+/// regional indicators, Hangul jamo, emoji modifiers, or prepend characters.
+private func isStandaloneSliceScalar(_ value: UInt32) -> Bool {
+    if (0x20...0x7E).contains(value) { return true }
+    if (0xA0...0x2FF).contains(value) { return value != 0xAD }
+    if (0x2010...0x2BFF).contains(value) {
+        return !(0x2028...0x202E).contains(value)
+            && !(0x2060...0x206F).contains(value)
+            && !(0x20D0...0x20FF).contains(value)
+    }
+    return (0x3040...0x3096).contains(value)
+        || (0x30A0...0x30FF).contains(value)
+        || (0x4E00...0x9FFF).contains(value)
+        || (0xFF01...0xFF60).contains(value)
+}
+
 /// Like sliceByColumn but also returns the actual visible width of the result.
 public func sliceWithWidth(
     _ line: String,
@@ -770,32 +806,85 @@ public func sliceWithWidth(
     }
 
     let endCol = startCol + length
+
+    // Every printable ASCII byte is one grapheme and one terminal cell.
+    // This covers plain rows without an ANSI scan or per-character widths.
+    if line.utf8.allSatisfy({ (0x20...0x7E).contains($0) }) {
+        let from = max(0, startCol)
+        let to = min(line.utf8.count, endCol)
+        guard to > from else { return ("", 0) }
+        let lower = line.utf8.index(line.utf8.startIndex, offsetBy: from)
+        let upper = line.utf8.index(lower, offsetBy: to - from)
+        return (String(line[lower..<upper]), to - from)
+    }
+
     var result = ""
     var resultWidth = 0
     var currentCol = 0
-    var i = 0
+    var index = line.startIndex
     var pendingAnsi = ""
-    let lineLength = line.count
 
-    while i < lineLength {
-        if let ansi = extractAnsiCode(line, at: i) {
+    while index < line.endIndex {
+        if let range = ansiCodeRange(in: line, at: index) {
+            let code = line[range]
             if currentCol >= startCol && currentCol < endCol {
                 // Keep codes before the range ahead of codes at the boundary.
-                result += pendingAnsi + ansi.code
+                result += pendingAnsi
+                result += code
                 pendingAnsi = ""
             } else if currentCol < startCol {
-                pendingAnsi += ansi.code
+                pendingAnsi += code
             }
-            i += ansi.length
+            index = range.upperBound
             continue
         }
 
-        var textEnd = i
-        while textEnd < lineLength && extractAnsiCode(line, at: textEnd) == nil {
-            textEnd += 1
+        var textEnd = index
+        while textEnd < line.endIndex && ansiCodeRange(in: line, at: textEnd) == nil {
+            textEnd = line.index(after: textEnd)
         }
 
-        let textPortion = line.substring(from: i, length: textEnd - i)
+        let textPortion = line[index..<textEnd]
+        // A printable ASCII run can be clipped with byte offsets. The byte
+        // boundaries are also scalar and grapheme boundaries in this run.
+        if textPortion.utf8.allSatisfy({ (0x20...0x7E).contains($0) }) {
+            let count = textPortion.utf8.count
+            let from = max(0, startCol - currentCol)
+            let to = min(count, endCol - currentCol)
+            if to > from {
+                result += pendingAnsi
+                pendingAnsi = ""
+                let lower = textPortion.utf8.index(textPortion.utf8.startIndex, offsetBy: from)
+                let upper = textPortion.utf8.index(lower, offsetBy: to - from)
+                result += textPortion[lower..<upper]
+                resultWidth += to - from
+            }
+            currentCol += count
+            index = textEnd
+            if currentCol >= endCol { break }
+            continue
+        }
+
+        // A whole standalone run has one grapheme per scalar. The existing
+        // visible-width cache memoizes widths for recurring non-ASCII scalars.
+        if textPortion.unicodeScalars.allSatisfy({ isStandaloneSliceScalar($0.value) }) {
+            for scalar in textPortion.unicodeScalars {
+                let width = visibleWidth(String(scalar))
+                let inRange = currentCol >= startCol && currentCol < endCol
+                if inRange && (!strict || currentCol + width <= endCol) {
+                    result += pendingAnsi
+                    pendingAnsi = ""
+                    result.unicodeScalars.append(scalar)
+                    resultWidth += width
+                }
+                currentCol += width
+                if currentCol >= endCol { break }
+            }
+            index = textEnd
+            if currentCol >= endCol { break }
+            continue
+        }
+
         for grapheme in textPortion {
             let w = visibleWidth(String(grapheme))
             let inRange = currentCol >= startCol && currentCol < endCol
@@ -813,7 +902,7 @@ public func sliceWithWidth(
                 break
             }
         }
-        i = textEnd
+        index = textEnd
         if currentCol >= endCol {
             break
         }

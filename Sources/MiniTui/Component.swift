@@ -3,7 +3,9 @@ import Foundation
 /// UI building block that can render lines and optionally handle input.
 @MainActor
 public protocol Component: AnyObject {
-    /// Render the component into an array of terminal lines for the given width.
+    /// Render terminal lines for the given width. The returned array is a value snapshot:
+    /// changing a copy does not change the component's cached output. A component that
+    /// changes its own content must invalidate its cache and request a render from its host.
     func render(width: Int) -> [String]
     /// Handle raw terminal input when the component is focused.
     func handleInput(_ data: String)

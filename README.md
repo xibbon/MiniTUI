@@ -11,9 +11,18 @@ A minimal, high-performance Terminal User Interface framework for Swift.
 - **Component-based architecture** with simple protocol-based API
 - **Kitty keyboard protocol** support with legacy fallback
 - **Built-in components**: Text, Input, Editor, Markdown, SelectList, SettingsList, MouseRegion, Loader, Image, and more
+
 - **Inline images** via Kitty or iTerm2 protocols
 - **Autocomplete** for slash commands and file paths
 - **Theming** with customizable styling functions
+
+## Components
+
+`Component.render(width:)` returns a value snapshot of terminal lines. Changing an
+array returned by a child or `super.render(width:)` does not change cached output.
+`Container` and `Box` reuse output while their children return unchanged lines.
+When a custom component changes its content, call `invalidate()` and request a
+render from its host.
 
 ## Requirements
 
